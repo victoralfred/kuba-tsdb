@@ -16,6 +16,9 @@ pub mod compression;
 pub mod storage;
 pub mod index;
 pub mod error;
+pub mod metrics;
+pub mod config;
+pub mod security;
 
 // Re-export main types
 pub use types::{DataPoint, TimeRange, SeriesId};

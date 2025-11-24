@@ -374,7 +374,7 @@ async fn test_maximum_chunk_size() {
 
     let start = Instant::now();
     let config = SealConfig {
-        max_points: MAX_POINTS as u32,
+        max_points: MAX_POINTS,
         max_duration_ms: i64::MAX,
         max_size_bytes: usize::MAX,
     };
