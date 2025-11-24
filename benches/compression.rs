@@ -23,8 +23,10 @@ fn bench_compression(c: &mut Criterion) {
         let compressor = GorillaCompressor::new();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                black_box(compressor.compress(&points).await.unwrap())
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(compressor.compress(&points).await.unwrap())
+                })
             });
         });
     }
@@ -43,8 +45,10 @@ fn bench_decompression(c: &mut Criterion) {
         let compressed = rt.block_on(compressor.compress(&points)).unwrap();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                black_box(compressor.decompress(&compressed).await.unwrap())
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(compressor.decompress(&compressed).await.unwrap())
+                })
             });
         });
     }
