@@ -496,6 +496,7 @@ dependencies = [
  "crossbeam-channel",
  "dashmap",
  "futures",
+ "libc",
  "memmap2",
  "parking_lot",
  "proptest",

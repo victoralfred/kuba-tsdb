@@ -43,7 +43,10 @@ pub mod active_chunk;
 pub mod chunk;
 /// Local disk storage engine implementation
 pub mod local_disk;
+/// Memory-mapped chunk implementation for zero-copy reads
+pub mod mmap;
 
 pub use active_chunk::ActiveChunk;
 pub use chunk::*;
 pub use local_disk::LocalDiskEngine;
+pub use mmap::MmapChunk;
