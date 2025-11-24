@@ -424,6 +424,8 @@ pub struct Chunk {
     data: ChunkData,
     /// Capacity for active chunks (pre-allocated size)
     capacity: usize,
+    /// P2.2: Cached header to avoid re-reading from disk on decompress
+    cached_header: Option<ChunkHeader>,
 }
 
 /// Configuration for when to seal active chunks
@@ -483,6 +485,7 @@ impl Chunk {
             state: ChunkState::Active,
             data: ChunkData::InMemory(std::collections::BTreeMap::new()),
             capacity,
+            cached_header: None,
         }
     }
 
@@ -537,6 +540,7 @@ impl Chunk {
             state: ChunkState::Active,
             data: ChunkData::InMemory(points),
             capacity: 0,
+            cached_header: None,
         })
     }
 
@@ -864,6 +868,7 @@ impl Chunk {
             state: ChunkState::Sealed,
             data: ChunkData::OnDisk(path),
             capacity: 0,
+            cached_header: Some(header),  // P2.2: Cache header for decompress()
         })
     }
 
@@ -912,21 +917,42 @@ impl Chunk {
             return Err("Invalid state: Sealed chunk without disk path".to_string());
         };
 
-        // Open file and skip header (64 bytes)
-        let mut file = fs::File::open(path).await
-            .map_err(|e| format!("Failed to open file: {}", e))?;
+        // P2.2: Use cached header if available, otherwise read from disk
+        let (header, compressed_data) = if let Some(ref cached) = self.cached_header {
+            // Fast path: header already cached, only read compressed data
+            let mut file = fs::File::open(path).await
+                .map_err(|e| format!("Failed to open file: {}", e))?;
 
-        let mut header_bytes = [0u8; 64];
-        file.read_exact(&mut header_bytes).await
-            .map_err(|e| format!("Failed to read header: {}", e))?;
+            // Seek past header to compressed data at offset 64
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(64)).await
+                .map_err(|e| format!("Failed to seek: {}", e))?;
 
-        let header = ChunkHeader::from_bytes(&header_bytes)
-            .map_err(|e| format!("Failed to parse header: {}", e))?;
+            // Read compressed data
+            let mut compressed_data = vec![0u8; cached.compressed_size as usize];
+            file.read_exact(&mut compressed_data).await
+                .map_err(|e| format!("Failed to read data: {}", e))?;
 
-        // Read compressed data
-        let mut compressed_data = vec![0u8; header.compressed_size as usize];
-        file.read_exact(&mut compressed_data).await
-            .map_err(|e| format!("Failed to read data: {}", e))?;
+            (cached.clone(), compressed_data)
+        } else {
+            // Slow path: read and parse header from disk
+            let mut file = fs::File::open(path).await
+                .map_err(|e| format!("Failed to open file: {}", e))?;
+
+            let mut header_bytes = [0u8; 64];
+            file.read_exact(&mut header_bytes).await
+                .map_err(|e| format!("Failed to read header: {}", e))?;
+
+            let header = ChunkHeader::from_bytes(&header_bytes)
+                .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+            // Read compressed data
+            let mut compressed_data = vec![0u8; header.compressed_size as usize];
+            file.read_exact(&mut compressed_data).await
+                .map_err(|e| format!("Failed to read data: {}", e))?;
+
+            (header, compressed_data)
+        };
 
         // Create CompressedBlock for decompressor
         let compressed_block = CompressedBlock {
