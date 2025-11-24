@@ -72,10 +72,12 @@ pub struct ActiveChunk {
     /// This allows should_seal() to check duration without acquiring read lock
     max_timestamp: AtomicI64,
 
-    /// Chunk creation time
+    /// Chunk creation time (reserved for future metrics)
+    #[allow(dead_code)]
     created_at: Instant,
 
-    /// Initial capacity hint
+    /// Initial capacity hint (reserved for future pre-allocation)
+    #[allow(dead_code)]
     capacity: usize,
 
     /// Sealing configuration

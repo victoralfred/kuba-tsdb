@@ -37,8 +37,11 @@
 //! # }
 //! ```
 
+/// Thread-safe active chunk implementation with concurrent write support
 pub mod active_chunk;
+/// Core chunk storage with lifecycle management
 pub mod chunk;
+/// Local disk storage engine implementation
 pub mod local_disk;
 
 pub use active_chunk::ActiveChunk;

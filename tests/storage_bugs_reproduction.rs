@@ -216,9 +216,9 @@ fn test_expected_sorted_insertion_after_fix() {
 #[tokio::test]
 #[ignore = "Requires manual inspection of memory usage"]
 async fn test_bug3_memory_spike_during_seal() {
-    use std::alloc::{GlobalAlloc, Layout, System};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[allow(dead_code)]
     struct TrackingAllocator;
     static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
