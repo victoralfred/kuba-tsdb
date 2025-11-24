@@ -42,12 +42,14 @@ use crate::error::CompressionError;
 /// - `bit_position`: Position within current_byte (0-7), indicating how many bits are used
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use gorilla_tsdb::compression::bit_stream::BitWriter;
+///
 /// let mut writer = BitWriter::new();
 /// writer.write_bit(true);   // Writes 1 to bit position 0
 /// writer.write_bits(5, 3);  // Writes 101 to bit positions 1-3
 /// let data = writer.finish(); // Flushes partial byte if needed
-/// ```ignore
+/// ```
 pub struct BitWriter {
     /// Buffer of fully completed bytes
     buffer: Vec<u8>,
@@ -81,11 +83,13 @@ impl BitWriter {
     /// * `bit` - The bit value to write (true = 1, false = 0)
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitWriter;
+    ///
     /// let mut writer = BitWriter::new();
     /// writer.write_bit(true);   // Writes bit 1
     /// writer.write_bit(false);  // Writes bit 0
-    /// ```ignore
+    /// ```
     pub fn write_bit(&mut self, bit: bool) {
         // If bit is true (1), set the appropriate bit in current_byte
         // Position is calculated as (7 - bit_position) for MSB-first ordering
@@ -122,11 +126,13 @@ impl BitWriter {
     /// In debug mode, panics if num_bits > 64
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitWriter;
+    ///
     /// let mut writer = BitWriter::new();
     /// writer.write_bits(0b1010, 4);  // Writes bits: 1, 0, 1, 0
     /// writer.write_bits(0xFF, 8);    // Writes 8 bits: all 1s
-    /// ```ignore
+    /// ```
     pub fn write_bits(&mut self, value: u64, num_bits: u8) {
         debug_assert!(num_bits <= 64, "Cannot write more than 64 bits");
 
@@ -154,12 +160,14 @@ impl BitWriter {
     /// Vector of bytes containing all written bits
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitWriter;
+    ///
     /// let mut writer = BitWriter::new();
     /// writer.write_bits(0b1010, 4);  // Only 4 bits written
     /// let buffer = writer.finish();   // Flushes with 4 trailing zero bits
     /// assert_eq!(buffer.len(), 1);    // One byte total
-    /// ```ignore
+    /// ```
     pub fn finish(mut self) -> Vec<u8> {
         // If there are any bits written in current_byte, flush it
         // The remaining bits (8 - bit_position) will be 0-padded
@@ -217,12 +225,14 @@ impl Default for BitWriter {
 /// of the buffer, which indicates corrupted or truncated compressed data.
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use gorilla_tsdb::compression::bit_stream::BitReader;
+///
 /// let data = vec![0b10101100];
 /// let mut reader = BitReader::new(&data);
 /// assert!(reader.read_bit().unwrap());   // Reads 1
 /// assert!(!reader.read_bit().unwrap());  // Reads 0
-/// ```ignore
+/// ```
 pub struct BitReader<'a> {
     /// Source byte buffer to read from (borrowed)
     buffer: &'a [u8],
@@ -241,10 +251,12 @@ impl<'a> BitReader<'a> {
     /// * `buffer` - Byte slice to read from
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitReader;
+    ///
     /// let data = vec![0xFF, 0x00];
     /// let reader = BitReader::new(&data);
-    /// ```ignore
+    /// ```
     pub fn new(buffer: &'a [u8]) -> Self {
         Self {
             buffer,
@@ -267,12 +279,14 @@ impl<'a> BitReader<'a> {
     /// indicating the compressed data is truncated or corrupted.
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitReader;
+    ///
     /// let data = vec![0b10101010];
     /// let mut reader = BitReader::new(&data);
     /// assert!(reader.read_bit().unwrap());   // 1
     /// assert!(!reader.read_bit().unwrap());  // 0
-    /// ```ignore
+    /// ```
     pub fn read_bit(&mut self) -> Result<bool, CompressionError> {
         // Check if we've reached the end of the buffer
         if self.byte_position >= self.buffer.len() {
@@ -318,12 +332,14 @@ impl<'a> BitReader<'a> {
     /// - `CorruptedData` if we run out of data while reading
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitReader;
+    ///
     /// let data = vec![0b10101100];
     /// let mut reader = BitReader::new(&data);
     /// let value = reader.read_bits(4).unwrap();  // Reads 0b1010
     /// assert_eq!(value, 0b1010);
-    /// ```ignore
+    /// ```
     pub fn read_bits(&mut self, num_bits: u8) -> Result<u64, CompressionError> {
         // Validate input: can't read more than 64 bits into a u64
         if num_bits > 64 {
@@ -367,13 +383,15 @@ impl<'a> BitReader<'a> {
     /// Tuple of (byte_position, bit_position)
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use gorilla_tsdb::compression::bit_stream::BitReader;
+    ///
     /// let mut reader = BitReader::new(&[0xFF]);
     /// reader.read_bits(5).unwrap();
     /// let (byte_pos, bit_pos) = reader.position();
     /// assert_eq!(byte_pos, 0);
     /// assert_eq!(bit_pos, 5);
-    /// ```ignore
+    /// ```
     pub fn position(&self) -> (usize, u8) {
         (self.byte_position, self.bit_position)
     }
@@ -480,4 +498,69 @@ mod tests {
         // Try to read more - should fail
         assert!(reader.read_bit().is_err());
     }
+    #[test]
+fn test_write_read_64_bits_boundary_patterns() {
+    let patterns = [
+        0xFFFFFFFFFFFFFFFFu64,
+        0x0000000000000000u64,
+        0xAAAAAAAAAAAAAAAAu64, // 1010...
+        0x5555555555555555u64, // 0101...
+        0x8000000000000001u64, // MSB + LSB
+    ];
+
+    for &value in &patterns {
+        let mut writer = BitWriter::new();
+        writer.write_bits(value, 64);
+
+        let buffer = writer.finish();
+        let mut reader = BitReader::new(&buffer);
+
+        assert_eq!(reader.read_bits(64).unwrap(), value);
+    }
+}
+#[test]
+fn test_cross_byte_boundaries() {
+    let mut writer = BitWriter::new();
+
+    writer.write_bits(0b1, 1);         // uses bit 0
+    writer.write_bits(0b1010101, 7);   // fills byte exactly
+    writer.write_bits(0b11, 2);        // crosses into next byte
+
+    let buffer = writer.finish();
+    let mut reader = BitReader::new(&buffer);
+
+    assert_eq!(reader.read_bits(1).unwrap(), 0b1);
+    assert_eq!(reader.read_bits(7).unwrap(), 0b1010101);
+    assert_eq!(reader.read_bits(2).unwrap(), 0b11);
+}
+#[test]
+fn test_is_at_end_bit_precision() {
+    let mut writer = BitWriter::new();
+    writer.write_bits(0b10110000, 8);
+    let buffer = writer.finish();
+
+    let mut reader = BitReader::new(&buffer);
+    assert!(!reader.is_at_end());
+
+    // read 4 bits (still in the same byte)
+    reader.read_bits(4).unwrap();
+    assert!(!reader.is_at_end(), "reader incorrectly reports end when bits remain");
+
+    // read remaining bits
+    reader.read_bits(4).unwrap();
+    assert!(reader.is_at_end());
+}
+#[test]
+fn test_partial_byte_padding_accuracy() {
+    let mut writer = BitWriter::new();
+    writer.write_bits(0b1011, 4); // expect top 4 bits = 1011
+
+    let buffer = writer.finish();
+    assert_eq!(buffer.len(), 1);
+
+    let byte = buffer[0];
+    assert_eq!(byte >> 4, 0b1011, "high nibble is wrong");
+    assert_eq!(byte & 0b1111, 0, "low nibble should be zero padding");
+}
+
 }
