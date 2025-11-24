@@ -49,7 +49,7 @@ pub struct LocalDiskEngine {
     base_path: PathBuf,
 
     /// In-memory index of chunks by series
-    /// Maps series_id -> Vec<ChunkMetadata>
+    /// Maps series_id -> `Vec<ChunkMetadata>`
     chunk_index: Arc<RwLock<HashMap<SeriesId, Vec<ChunkMetadata>>>>,
 
     /// Storage statistics
@@ -146,6 +146,9 @@ impl LocalDiskEngine {
 
     /// Load all chunks for a series
     async fn load_series_chunks(&self, series_id: SeriesId) -> Result<Vec<ChunkMetadata>, StorageError> {
+        use crate::storage::chunk::ChunkHeader;
+        use tokio::io::AsyncReadExt;
+
         let series_dir = self.series_path(series_id);
         if !series_dir.exists() {
             return Ok(Vec::new());
@@ -157,20 +160,53 @@ impl LocalDiskEngine {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("gor") {
-                // Load chunk metadata (simplified - would normally parse header)
-                let metadata = fs::metadata(&path).await?;
+                // Read chunk header to get metadata
+                let mut file = match fs::File::open(&path).await {
+                    Ok(f) => f,
+                    Err(_) => continue, // Skip files we can't open
+                };
+
+                let mut header_bytes = [0u8; 64];
+                if file.read_exact(&mut header_bytes).await.is_err() {
+                    continue; // Skip corrupted files
+                }
+
+                let header = match ChunkHeader::from_bytes(&header_bytes) {
+                    Ok(h) => h,
+                    Err(_) => continue, // Skip invalid headers
+                };
+
+                // Validate header before adding to index
+                if header.validate().is_err() {
+                    continue; // Skip invalid chunks
+                }
+
+                let file_metadata = fs::metadata(&path).await?;
+
+                // Parse chunk_id from filename (chunk_{uuid}.gor)
+                let chunk_id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_prefix("chunk_"))
+                    .map(ChunkId::from_string)
+                    .unwrap_or_else(ChunkId::new);
 
                 chunks.push(ChunkMetadata {
-                    chunk_id: ChunkId::new(),
+                    chunk_id,
                     series_id,
                     path: path.clone(),
-                    start_timestamp: 0,  // TODO: Load from chunk header
-                    end_timestamp: 0,    // TODO: Load from chunk header
-                    point_count: 0,       // TODO: Load from chunk header
-                    size_bytes: metadata.len(),
-                    compression: CompressionType::Gorilla,
-                    created_at: 0,
-                    last_accessed: 0,
+                    start_timestamp: header.start_timestamp,
+                    end_timestamp: header.end_timestamp,
+                    point_count: header.point_count,
+                    size_bytes: file_metadata.len(),
+                    compression: header.compression_type,
+                    created_at: file_metadata
+                        .created()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                    last_accessed: chrono::Utc::now().timestamp_millis(),
                 });
             }
         }
@@ -750,5 +786,65 @@ mod tests {
         // Reading should fail due to checksum mismatch
         let result = engine.read_chunk(&location).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_load_index_on_restart() {
+        use crate::engine::traits::{CompressedBlock, BlockMetadata, StorageEngine};
+        use bytes::Bytes;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create first engine and write data
+        {
+            let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+            let test_data = vec![42u8; 50];
+            let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+
+            let block = CompressedBlock {
+                algorithm_id: "gorilla".to_string(),
+                original_size: 100,
+                compressed_size: test_data.len(),
+                checksum,
+                data: Bytes::from(test_data),
+                metadata: BlockMetadata {
+                    start_timestamp: 5000,
+                    end_timestamp: 6000,
+                    point_count: 25,
+                    series_id: 42,
+                },
+            };
+
+            engine.write_chunk(42, ChunkId::new(), &block).await.unwrap();
+
+            // Verify stats before restart
+            let stats = engine.stats();
+            assert_eq!(stats.total_chunks, 1);
+            assert_eq!(stats.write_ops, 1);
+        }
+
+        // Create new engine instance (simulating restart)
+        let engine2 = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Initialize (load index from disk)
+        engine2.initialize(crate::engine::traits::StorageConfig::default()).await.unwrap();
+
+        // Verify chunks were loaded
+        let chunks = engine2.list_chunks(42, None).await.unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        // Verify metadata was correctly loaded from header
+        assert_eq!(chunks[0].time_range.start, 5000);
+        assert_eq!(chunks[0].time_range.end, 6000);
+        assert_eq!(chunks[0].point_count, 25);
+        assert_eq!(chunks[0].time_range.start, 5000);
+
+        // Verify we can read the chunk after restart
+        let read_block = engine2.read_chunk(&chunks[0].location).await.unwrap();
+        assert_eq!(read_block.metadata.start_timestamp, 5000);
+        assert_eq!(read_block.metadata.end_timestamp, 6000);
+        assert_eq!(read_block.metadata.point_count, 25);
+        assert_eq!(read_block.metadata.series_id, 42);
     }
 }

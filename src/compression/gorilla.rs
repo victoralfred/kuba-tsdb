@@ -78,7 +78,7 @@
 //! # References
 //!
 //! - Paper: "Gorilla: A Fast, Scalable, In-Memory Time Series Database"
-//! - URL: http://www.vldb.org/pvldb/vol8/p1816-teller.pdf
+//! - URL: <http://www.vldb.org/pvldb/vol8/p1816-teller.pdf>
 //! - Authors: Tuomas Pelkonen et al., Facebook Inc.
 
 use super::bit_stream::{BitReader, BitWriter};
