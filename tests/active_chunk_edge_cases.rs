@@ -599,7 +599,6 @@ fn test_memory_growth_out_of_order() {
 /// TODO: Currently ignored because Chunk::seal() doesn't implement actual disk I/O yet.
 /// Once disk writing is implemented, this test should pass.
 #[tokio::test]
-#[ignore = "Requires disk I/O implementation in Chunk::seal()"]
 async fn test_seal_invalid_path() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 

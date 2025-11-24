@@ -604,6 +604,7 @@ impl Chunk {
     /// - Chunk is not Active
     /// - Compression fails
     /// - Disk write fails
+    /// - Parent directory doesn't exist
     ///
     /// # Example
     ///
@@ -621,6 +622,11 @@ impl Chunk {
     /// # }
     /// ```
     pub async fn seal(&mut self, path: PathBuf) -> Result<(), String> {
+        use crate::compression::gorilla::GorillaCompressor;
+        use crate::engine::traits::Compressor;
+        use tokio::fs;
+        use tokio::io::AsyncWriteExt;
+
         if !self.is_active() {
             return Err(format!("Cannot seal {:?} chunk", self.state));
         }
@@ -636,14 +642,231 @@ impl Chunk {
             return Err("Cannot seal empty chunk".to_string());
         }
 
-        // TODO: Implement actual compression and disk write
-        // For now, just update state
+        // Create parent directory if needed
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+
+        // Compress data with Gorilla
+        let compressor = GorillaCompressor::new();
+        let compressed = compressor.compress(&points).await
+            .map_err(|e| format!("Compression failed: {}", e))?;
+
+        // Build chunk header
+        let mut header = ChunkHeader::new(self.metadata.series_id);
+        header.start_timestamp = self.metadata.start_timestamp;
+        header.end_timestamp = self.metadata.end_timestamp;
+        header.point_count = self.metadata.point_count;
+        header.compressed_size = compressed.compressed_size as u32;
+        header.uncompressed_size = compressed.original_size as u32;
+        header.checksum = compressed.checksum;
+        header.compression_type = CompressionType::Gorilla;
+        header.flags = ChunkFlags::sealed();
+
+        // Validate header
+        header.validate().map_err(|e| format!("Invalid header: {}", e))?;
+
+        // Write to disk: header + compressed data
+        let mut file = fs::File::create(&path).await
+            .map_err(|e| format!("Failed to create file: {}", e))?;
+
+        // Write 64-byte header
+        file.write_all(&header.to_bytes()).await
+            .map_err(|e| format!("Failed to write header: {}", e))?;
+
+        // Write compressed data
+        file.write_all(&compressed.data).await
+            .map_err(|e| format!("Failed to write data: {}", e))?;
+
+        // Flush to ensure data is on disk
+        file.flush().await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
+
+        // Update chunk state
         self.metadata.path = path.clone();
         self.metadata.compression = CompressionType::Gorilla;
+        self.metadata.size_bytes = (64 + compressed.compressed_size) as u64;
         self.state = ChunkState::Sealed;
         self.data = ChunkData::OnDisk(path);
 
         Ok(())
+    }
+
+    /// Load a sealed chunk from disk
+    ///
+    /// Reads the chunk header, validates it, and creates a Chunk in Sealed state.
+    /// The actual point data remains on disk until decompressed.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the chunk file
+    ///
+    /// # Returns
+    ///
+    /// A `Chunk` in Sealed state with metadata populated from the file header.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - File doesn't exist
+    /// - File is too small (< 64 bytes)
+    /// - Header validation fails
+    /// - Checksum doesn't match
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use gorilla_tsdb::storage::chunk::Chunk;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let chunk = Chunk::read("/tmp/chunk.gor".into()).await?;
+    /// assert!(chunk.is_sealed());
+    /// println!("Loaded chunk with {} points", chunk.point_count());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn read(path: PathBuf) -> Result<Self, String> {
+        use tokio::fs;
+        use tokio::io::AsyncReadExt;
+
+        // Open and read header
+        let mut file = fs::File::open(&path).await
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+
+        let mut header_bytes = [0u8; 64];
+        file.read_exact(&mut header_bytes).await
+            .map_err(|e| format!("Failed to read header: {}", e))?;
+
+        // Parse and validate header
+        let header = ChunkHeader::from_bytes(&header_bytes)
+            .map_err(|e| format!("Failed to parse header: {}", e))?;
+        header.validate()
+            .map_err(|e| format!("Invalid header: {}", e))?;
+
+        // Read compressed data for checksum verification
+        let mut compressed_data = vec![0u8; header.compressed_size as usize];
+        file.read_exact(&mut compressed_data).await
+            .map_err(|e| format!("Failed to read data: {}", e))?;
+
+        // Verify checksum
+        use crate::compression::gorilla::GorillaCompressor;
+        let calculated_checksum = GorillaCompressor::calculate_checksum(&compressed_data);
+        if calculated_checksum != header.checksum {
+            return Err(format!(
+                "Checksum mismatch: expected {}, got {}",
+                header.checksum, calculated_checksum
+            ));
+        }
+
+        // Create chunk in Sealed state
+        let now = chrono::Utc::now().timestamp_millis();
+        let chunk_id = ChunkId::from_string(
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("chunk_"))
+                .unwrap_or("00000000-0000-0000-0000-000000000000")
+        );
+
+        Ok(Self {
+            metadata: ChunkMetadata {
+                chunk_id,
+                series_id: header.series_id,
+                path: path.clone(),
+                start_timestamp: header.start_timestamp,
+                end_timestamp: header.end_timestamp,
+                point_count: header.point_count,
+                size_bytes: (64 + header.compressed_size) as u64,
+                compression: header.compression_type,
+                created_at: now,
+                last_accessed: now,
+            },
+            state: ChunkState::Sealed,
+            data: ChunkData::OnDisk(path),
+            capacity: 0,
+        })
+    }
+
+    /// Decompress and extract points from a sealed chunk
+    ///
+    /// Reads the compressed data from disk and decompresses it using the
+    /// appropriate algorithm (based on header).
+    ///
+    /// # Returns
+    ///
+    /// Vector of decompressed data points in chronological order.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Chunk is not Sealed
+    /// - File read fails
+    /// - Decompression fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use gorilla_tsdb::storage::chunk::Chunk;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let chunk = Chunk::read("/tmp/chunk.gor".into()).await?;
+    /// let points = chunk.decompress().await?;
+    /// println!("Decompressed {} points", points.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn decompress(&self) -> Result<Vec<crate::types::DataPoint>, String> {
+        use crate::compression::gorilla::GorillaCompressor;
+        use crate::engine::traits::{CompressedBlock, Compressor};
+        use bytes::Bytes;
+        use tokio::fs;
+        use tokio::io::AsyncReadExt;
+
+        if !self.is_sealed() {
+            return Err(format!("Cannot decompress {:?} chunk", self.state));
+        }
+
+        let path = if let ChunkData::OnDisk(ref path) = self.data {
+            path
+        } else {
+            return Err("Invalid state: Sealed chunk without disk path".to_string());
+        };
+
+        // Open file and skip header (64 bytes)
+        let mut file = fs::File::open(path).await
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+
+        let mut header_bytes = [0u8; 64];
+        file.read_exact(&mut header_bytes).await
+            .map_err(|e| format!("Failed to read header: {}", e))?;
+
+        let header = ChunkHeader::from_bytes(&header_bytes)
+            .map_err(|e| format!("Failed to parse header: {}", e))?;
+
+        // Read compressed data
+        let mut compressed_data = vec![0u8; header.compressed_size as usize];
+        file.read_exact(&mut compressed_data).await
+            .map_err(|e| format!("Failed to read data: {}", e))?;
+
+        // Create CompressedBlock for decompressor
+        let compressed_block = CompressedBlock {
+            algorithm_id: "gorilla".to_string(),
+            original_size: header.uncompressed_size as usize,
+            compressed_size: header.compressed_size as usize,
+            checksum: header.checksum,
+            data: Bytes::from(compressed_data),
+            metadata: crate::engine::traits::BlockMetadata {
+                start_timestamp: header.start_timestamp,
+                end_timestamp: header.end_timestamp,
+                point_count: header.point_count as usize,
+                series_id: header.series_id,
+            },
+        };
+
+        // Decompress
+        let compressor = GorillaCompressor::new();
+        compressor.decompress(&compressed_block).await
+            .map_err(|e| format!("Decompression failed: {}", e))
     }
 
     /// Get current point count
@@ -681,6 +904,11 @@ impl Chunk {
     /// Get current state
     pub fn state(&self) -> ChunkState {
         self.state
+    }
+
+    /// Get series ID
+    pub fn series_id(&self) -> SeriesId {
+        self.metadata.series_id
     }
 }
 
@@ -980,5 +1208,59 @@ mod tests {
         assert_eq!(config.max_points, 10_000);
         assert_eq!(config.max_duration_ms, 3_600_000);  // 1 hour
         assert_eq!(config.max_size_bytes, 1_048_576);    // 1MB
+    }
+
+    #[tokio::test]
+    async fn test_chunk_seal_read_decompress_roundtrip() {
+        use crate::types::DataPoint;
+
+        // Create active chunk with test data
+        let mut chunk = Chunk::new_active(42, 100);
+        let original_points = vec![
+            DataPoint { series_id: 42, timestamp: 1000, value: 10.5 },
+            DataPoint { series_id: 42, timestamp: 2000, value: 20.75 },
+            DataPoint { series_id: 42, timestamp: 3000, value: 30.25 },
+            DataPoint { series_id: 42, timestamp: 4000, value: 40.0 },
+        ];
+
+        // Add points to chunk
+        for point in &original_points {
+            chunk.append(*point).expect("Failed to append point");
+        }
+
+        assert_eq!(chunk.point_count(), 4);
+        assert!(chunk.is_active());
+
+        // Seal to disk
+        let test_path = PathBuf::from("/tmp/test_chunk_roundtrip.gor");
+        chunk.seal(test_path.clone()).await.expect("Failed to seal chunk");
+
+        assert!(chunk.is_sealed());
+        assert_eq!(chunk.metadata.point_count, 4);
+
+        // Read chunk from disk
+        let loaded_chunk = Chunk::read(test_path.clone()).await.expect("Failed to read chunk");
+
+        assert!(loaded_chunk.is_sealed());
+        assert_eq!(loaded_chunk.series_id(), 42);
+        assert_eq!(loaded_chunk.point_count(), 4);
+        assert_eq!(loaded_chunk.metadata.start_timestamp, 1000);
+        assert_eq!(loaded_chunk.metadata.end_timestamp, 4000);
+
+        // Decompress and verify points
+        let decompressed_points = loaded_chunk.decompress().await.expect("Failed to decompress");
+
+        assert_eq!(decompressed_points.len(), 4);
+        assert_eq!(decompressed_points[0].timestamp, 1000);
+        assert_eq!(decompressed_points[0].value, 10.5);
+        assert_eq!(decompressed_points[1].timestamp, 2000);
+        assert_eq!(decompressed_points[1].value, 20.75);
+        assert_eq!(decompressed_points[2].timestamp, 3000);
+        assert_eq!(decompressed_points[2].value, 30.25);
+        assert_eq!(decompressed_points[3].timestamp, 4000);
+        assert_eq!(decompressed_points[3].value, 40.0);
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(test_path).await;
     }
 }
