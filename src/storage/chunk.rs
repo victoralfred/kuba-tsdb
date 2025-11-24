@@ -668,10 +668,16 @@ impl Chunk {
                 .map_err(|e| format!("Failed to create directory: {}", e))?;
         }
 
-        // Compress data with Gorilla
-        let compressor = GorillaCompressor::new();
-        let compressed = compressor.compress(&points).await
-            .map_err(|e| format!("Compression failed: {}", e))?;
+        // P1.2: Compress data with Gorilla on blocking thread pool
+        // This prevents CPU-intensive compression from blocking async runtime
+        let compressed = tokio::task::spawn_blocking(move || {
+            let compressor = GorillaCompressor::new();
+            // Use blocking version to avoid async overhead in blocking context
+            futures::executor::block_on(compressor.compress(&points))
+        })
+        .await
+        .map_err(|e| format!("Compression task panicked: {}", e))?
+        .map_err(|e| format!("Compression failed: {}", e))?;
 
         // Build chunk header
         let mut header = ChunkHeader::new(self.metadata.series_id);
