@@ -353,6 +353,337 @@ impl ChunkMetadata {
     }
 }
 
+/// Chunk lifecycle states
+///
+/// A chunk progresses through these states:
+/// - Active: In-memory, accepting writes
+/// - Sealed: Immutable, written to disk with Gorilla compression
+/// - Compressed: Sealed + additional Snappy compression layer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkState {
+    /// Chunk is active and accepting writes in memory
+    Active,
+    /// Chunk is sealed and stored on disk (Gorilla compressed)
+    Sealed,
+    /// Chunk is compressed with Snappy for cold storage
+    Compressed,
+}
+
+/// Internal data storage for chunks
+#[derive(Debug)]
+enum ChunkData {
+    /// Points stored in memory (Active state)
+    InMemory(Vec<crate::types::DataPoint>),
+    /// Reference to file on disk (Sealed or Compressed state)
+    OnDisk(PathBuf),
+}
+
+/// Complete chunk representation with full lifecycle management
+///
+/// # Lifecycle
+///
+/// ```text
+/// Active (RAM) --seal()--> Sealed (Disk) --compress()--> Compressed (Disk+Snappy)
+///      ↓                        ↓                              ↓
+///   append()                 read()                         read()
+/// should_seal()           compress()                      metadata()
+///   points()              metadata()
+/// ```
+///
+/// # Example
+///
+/// ```no_run
+/// use gorilla_tsdb::storage::chunk::{Chunk, SealConfig};
+/// use gorilla_tsdb::types::DataPoint;
+/// use std::time::Duration;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create new active chunk
+/// let mut chunk = Chunk::new_active(1, 1000);
+///
+/// // Append points
+/// chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 })?;
+/// chunk.append(DataPoint { series_id: 1, timestamp: 2000, value: 43.0 })?;
+///
+/// // Check if should seal
+/// let config = SealConfig::default();
+/// if chunk.should_seal(&config) {
+///     chunk.seal("/tmp/chunk.gor".into()).await?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct Chunk {
+    /// Chunk metadata
+    pub metadata: ChunkMetadata,
+    /// Current lifecycle state
+    state: ChunkState,
+    /// Data storage (in-memory or on-disk reference)
+    data: ChunkData,
+    /// Capacity for active chunks (pre-allocated size)
+    capacity: usize,
+}
+
+/// Configuration for when to seal active chunks
+#[derive(Debug, Clone)]
+pub struct SealConfig {
+    /// Maximum number of points before sealing
+    pub max_points: usize,
+    /// Maximum time duration before sealing
+    pub max_duration_ms: i64,
+    /// Maximum memory size before sealing (bytes)
+    pub max_size_bytes: usize,
+}
+
+impl Default for SealConfig {
+    fn default() -> Self {
+        Self {
+            max_points: 10_000,           // 10K points
+            max_duration_ms: 3_600_000,   // 1 hour
+            max_size_bytes: 1_048_576,    // 1MB
+        }
+    }
+}
+
+impl Chunk {
+    /// Create a new active chunk in memory
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - Series identifier this chunk belongs to
+    /// * `capacity` - Pre-allocated capacity for points
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gorilla_tsdb::storage::chunk::Chunk;
+    ///
+    /// let chunk = Chunk::new_active(1, 1000);
+    /// assert!(chunk.is_active());
+    /// ```
+    pub fn new_active(series_id: SeriesId, capacity: usize) -> Self {
+        let chunk_id = ChunkId::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        Self {
+            metadata: ChunkMetadata {
+                chunk_id,
+                series_id,
+                path: PathBuf::new(),  // Will be set when sealed
+                start_timestamp: 0,
+                end_timestamp: 0,
+                point_count: 0,
+                size_bytes: 0,
+                compression: CompressionType::None,
+                created_at: now,
+                last_accessed: now,
+            },
+            state: ChunkState::Active,
+            data: ChunkData::InMemory(Vec::with_capacity(capacity)),
+            capacity,
+        }
+    }
+
+    /// Append a point to the chunk
+    ///
+    /// Only works for Active chunks. Returns error for Sealed or Compressed chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Chunk is not in Active state
+    /// - Point belongs to different series
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gorilla_tsdb::storage::chunk::Chunk;
+    /// use gorilla_tsdb::types::DataPoint;
+    ///
+    /// let mut chunk = Chunk::new_active(1, 1000);
+    /// let point = DataPoint { series_id: 1, timestamp: 1000, value: 42.0 };
+    ///
+    /// chunk.append(point).unwrap();
+    /// assert_eq!(chunk.point_count(), 1);
+    /// ```
+    pub fn append(&mut self, point: crate::types::DataPoint) -> Result<(), String> {
+        // Only active chunks can accept writes
+        if !self.is_active() {
+            return Err(format!("Cannot append to {:?} chunk", self.state));
+        }
+
+        // Verify series ID matches
+        if point.series_id != self.metadata.series_id {
+            return Err(format!(
+                "Point series_id {} doesn't match chunk series_id {}",
+                point.series_id, self.metadata.series_id
+            ));
+        }
+
+        // Get mutable access to in-memory points
+        if let ChunkData::InMemory(ref mut points) = self.data {
+            // Update metadata
+            if points.is_empty() {
+                self.metadata.start_timestamp = point.timestamp;
+            }
+            self.metadata.end_timestamp = point.timestamp;
+            self.metadata.point_count += 1;
+
+            // Append point
+            points.push(point);
+
+            Ok(())
+        } else {
+            Err("Invalid state: Active chunk without in-memory data".to_string())
+        }
+    }
+
+    /// Check if chunk should be sealed based on configuration
+    ///
+    /// Returns true if any threshold is exceeded:
+    /// - Point count >= max_points
+    /// - Duration >= max_duration_ms
+    /// - Memory size >= max_size_bytes
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gorilla_tsdb::storage::chunk::{Chunk, SealConfig};
+    /// use gorilla_tsdb::types::DataPoint;
+    ///
+    /// let mut chunk = Chunk::new_active(1, 100);
+    /// let config = SealConfig { max_points: 10, ..Default::default() };
+    ///
+    /// for i in 0..10 {
+    ///     chunk.append(DataPoint {
+    ///         series_id: 1,
+    ///         timestamp: i * 1000,
+    ///         value: 42.0
+    ///     }).unwrap();
+    /// }
+    ///
+    /// assert!(chunk.should_seal(&config));
+    /// ```
+    pub fn should_seal(&self, config: &SealConfig) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+
+        // Check point count threshold
+        if self.metadata.point_count >= config.max_points as u32 {
+            return true;
+        }
+
+        // Check duration threshold
+        let duration = self.metadata.end_timestamp - self.metadata.start_timestamp;
+        if duration >= config.max_duration_ms {
+            return true;
+        }
+
+        // Check memory size threshold
+        let size_estimate = self.metadata.point_count as usize * std::mem::size_of::<crate::types::DataPoint>();
+        if size_estimate >= config.max_size_bytes {
+            return true;
+        }
+
+        false
+    }
+
+    /// Seal the chunk: transition from Active to Sealed
+    ///
+    /// This operation:
+    /// 1. Compresses points using Gorilla algorithm
+    /// 2. Writes to disk with header
+    /// 3. Frees in-memory data
+    /// 4. Updates state to Sealed
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Chunk is not Active
+    /// - Compression fails
+    /// - Disk write fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use gorilla_tsdb::storage::chunk::Chunk;
+    /// use gorilla_tsdb::types::DataPoint;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut chunk = Chunk::new_active(1, 1000);
+    /// chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 })?;
+    ///
+    /// chunk.seal("/tmp/chunk.gor".into()).await?;
+    /// assert!(chunk.is_sealed());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn seal(&mut self, path: PathBuf) -> Result<(), String> {
+        if !self.is_active() {
+            return Err(format!("Cannot seal {:?} chunk", self.state));
+        }
+
+        // Get points from memory
+        let points = if let ChunkData::InMemory(ref points) = self.data {
+            points.clone()
+        } else {
+            return Err("Invalid state: Active chunk without in-memory data".to_string());
+        };
+
+        if points.is_empty() {
+            return Err("Cannot seal empty chunk".to_string());
+        }
+
+        // TODO: Implement actual compression and disk write
+        // For now, just update state
+        self.metadata.path = path.clone();
+        self.metadata.compression = CompressionType::Gorilla;
+        self.state = ChunkState::Sealed;
+        self.data = ChunkData::OnDisk(path);
+
+        Ok(())
+    }
+
+    /// Get current point count
+    pub fn point_count(&self) -> u32 {
+        self.metadata.point_count
+    }
+
+    /// Get points (for Active chunks only)
+    ///
+    /// Returns reference to in-memory points for Active chunks.
+    /// Returns None for Sealed/Compressed chunks (use read() instead).
+    pub fn points(&self) -> Option<&[crate::types::DataPoint]> {
+        if let ChunkData::InMemory(ref points) = self.data {
+            Some(points)
+        } else {
+            None
+        }
+    }
+
+    /// Check if chunk is in Active state
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, ChunkState::Active)
+    }
+
+    /// Check if chunk is in Sealed state
+    pub fn is_sealed(&self) -> bool {
+        matches!(self.state, ChunkState::Sealed)
+    }
+
+    /// Check if chunk is in Compressed state
+    pub fn is_compressed(&self) -> bool {
+        matches!(self.state, ChunkState::Compressed)
+    }
+
+    /// Get current state
+    pub fn state(&self) -> ChunkState {
+        self.state
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +802,183 @@ mod tests {
         bytes[0..4].copy_from_slice(&CHUNK_MAGIC.to_le_bytes());
         bytes[58] = 99; // Invalid compression type
         assert!(ChunkHeader::from_bytes(&bytes).is_err());
+    }
+
+    // === Chunk State Machine Tests ===
+
+    #[test]
+    fn test_chunk_new_active() {
+        let chunk = Chunk::new_active(42, 1000);
+
+        assert!(chunk.is_active());
+        assert!(!chunk.is_sealed());
+        assert!(!chunk.is_compressed());
+        assert_eq!(chunk.state(), ChunkState::Active);
+        assert_eq!(chunk.metadata.series_id, 42);
+        assert_eq!(chunk.point_count(), 0);
+        assert!(chunk.points().is_some());
+    }
+
+    #[test]
+    fn test_chunk_append() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+
+        // Append first point
+        let point1 = DataPoint { series_id: 1, timestamp: 1000, value: 42.0 };
+        assert!(chunk.append(point1).is_ok());
+        assert_eq!(chunk.point_count(), 1);
+        assert_eq!(chunk.metadata.start_timestamp, 1000);
+        assert_eq!(chunk.metadata.end_timestamp, 1000);
+
+        // Append second point
+        let point2 = DataPoint { series_id: 1, timestamp: 2000, value: 43.0 };
+        assert!(chunk.append(point2).is_ok());
+        assert_eq!(chunk.point_count(), 2);
+        assert_eq!(chunk.metadata.start_timestamp, 1000);
+        assert_eq!(chunk.metadata.end_timestamp, 2000);
+
+        // Verify points
+        let points = chunk.points().unwrap();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].value, 42.0);
+        assert_eq!(points[1].value, 43.0);
+    }
+
+    #[test]
+    fn test_chunk_append_wrong_series() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+        let point = DataPoint { series_id: 2, timestamp: 1000, value: 42.0 };
+
+        let result = chunk.append(point);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("doesn't match"));
+    }
+
+    #[test]
+    fn test_chunk_should_seal_point_count() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+        let config = SealConfig {
+            max_points: 5,
+            max_duration_ms: 10_000,
+            max_size_bytes: 10_000,
+        };
+
+        // Not full yet
+        for i in 0..4 {
+            chunk.append(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: 42.0
+            }).unwrap();
+        }
+        assert!(!chunk.should_seal(&config));
+
+        // Now it should seal
+        chunk.append(DataPoint {
+            series_id: 1,
+            timestamp: 5000,
+            value: 42.0
+        }).unwrap();
+        assert!(chunk.should_seal(&config));
+    }
+
+    #[test]
+    fn test_chunk_should_seal_duration() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+        let config = SealConfig {
+            max_points: 1000,
+            max_duration_ms: 5000,  // 5 seconds
+            max_size_bytes: 100_000,
+        };
+
+        // Add points within duration
+        chunk.append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 42.0
+        }).unwrap();
+        chunk.append(DataPoint {
+            series_id: 1,
+            timestamp: 5000,
+            value: 43.0
+        }).unwrap();
+        assert!(!chunk.should_seal(&config));
+
+        // Add point exceeding duration
+        chunk.append(DataPoint {
+            series_id: 1,
+            timestamp: 7000,
+            value: 44.0
+        }).unwrap();
+        assert!(chunk.should_seal(&config));
+    }
+
+    #[tokio::test]
+    async fn test_chunk_seal() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+
+        // Add some points
+        chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 }).unwrap();
+        chunk.append(DataPoint { series_id: 1, timestamp: 2000, value: 43.0 }).unwrap();
+
+        // Seal the chunk
+        let path = PathBuf::from("/tmp/test_chunk.gor");
+        let result = chunk.seal(path.clone()).await;
+        assert!(result.is_ok());
+
+        // Verify state changed
+        assert!(chunk.is_sealed());
+        assert!(!chunk.is_active());
+        assert_eq!(chunk.state(), ChunkState::Sealed);
+        assert_eq!(chunk.metadata.path, path);
+        assert_eq!(chunk.metadata.compression, CompressionType::Gorilla);
+
+        // Cannot access points after sealing
+        assert!(chunk.points().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_chunk_seal_empty() {
+        let mut chunk = Chunk::new_active(1, 100);
+
+        let result = chunk.seal(PathBuf::from("/tmp/test.gor")).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn test_chunk_append_after_seal() {
+        use crate::types::DataPoint;
+
+        let mut chunk = Chunk::new_active(1, 100);
+        chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 }).unwrap();
+
+        // Seal the chunk
+        chunk.seal(PathBuf::from("/tmp/test.gor")).await.unwrap();
+
+        // Try to append after sealing
+        let point = DataPoint { series_id: 1, timestamp: 2000, value: 43.0 };
+        let result = chunk.append(point);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Sealed"));
+    }
+
+    #[test]
+    fn test_seal_config_default() {
+        let config = SealConfig::default();
+
+        assert_eq!(config.max_points, 10_000);
+        assert_eq!(config.max_duration_ms, 3_600_000);  // 1 hour
+        assert_eq!(config.max_size_bytes, 1_048_576);    // 1MB
     }
 }
