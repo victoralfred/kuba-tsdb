@@ -562,5 +562,44 @@ fn test_partial_byte_padding_accuracy() {
     assert_eq!(byte >> 4, 0b1011, "high nibble is wrong");
     assert_eq!(byte & 0b1111, 0, "low nibble should be zero padding");
 }
+#[test]
+fn test_reversed_bit_patterns() {
+    let mut writer = BitWriter::new();
+    writer.write_bits(0b11010000, 8); // known MSB pattern
+
+    let buffer = writer.finish();
+    let mut reader = BitReader::new(&buffer);
+
+    assert_eq!(reader.read_bits(1).unwrap(), 1);
+    assert_eq!(reader.read_bits(1).unwrap(), 1);
+    assert_eq!(reader.read_bits(1).unwrap(), 0);
+    assert_eq!(reader.read_bits(1).unwrap(), 1);
+}
+#[test]
+fn fuzzy_random_bit_sequences() {
+    use rand::Rng;
+
+    let mut rng = rand::rng();
+
+    for _ in 0..10_000 {
+        let bit_len: u8 = rng.random_range(1..=64);
+        let value: u64 = rng.random();
+
+        let mut writer = BitWriter::new();
+        writer.write_bits(value, bit_len);
+        let buffer = writer.finish();
+
+        let mut reader = BitReader::new(&buffer);
+        let read_val = reader.read_bits(bit_len).unwrap();
+
+        let mask = if bit_len == 64 {
+            u64::MAX
+        } else {
+            (1u64 << bit_len) - 1
+        };
+
+        assert_eq!(read_val, value & mask);
+    }
+}
 
 }
