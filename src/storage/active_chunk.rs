@@ -11,7 +11,7 @@ use crate::storage::chunk::Chunk;
 use crate::types::{DataPoint, SeriesId};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -64,6 +64,14 @@ pub struct ActiveChunk {
     /// Whether chunk has been sealed
     sealed: AtomicBool,
 
+    /// P0.4: Cached minimum timestamp for lock-free access
+    /// This allows should_seal() to check duration without acquiring read lock
+    min_timestamp: AtomicI64,
+
+    /// P0.4: Cached maximum timestamp for lock-free access
+    /// This allows should_seal() to check duration without acquiring read lock
+    max_timestamp: AtomicI64,
+
     /// Chunk creation time
     created_at: Instant,
 
@@ -103,6 +111,8 @@ impl ActiveChunk {
             points: RwLock::new(BTreeMap::new()),
             point_count: AtomicU32::new(0),
             sealed: AtomicBool::new(false),
+            min_timestamp: AtomicI64::new(i64::MAX),  // Will be updated on first append
+            max_timestamp: AtomicI64::new(i64::MIN),  // Will be updated on first append
             created_at: Instant::now(),
             capacity,
             seal_config,
@@ -180,6 +190,18 @@ impl ActiveChunk {
 
             // Update atomic counter
             self.point_count.store(points.len() as u32, Ordering::Release);
+
+            // P0.4: Update cached min/max timestamps for lock-free access in should_seal()
+            // Use relaxed ordering since these are only hints for optimization
+            let current_min = self.min_timestamp.load(Ordering::Relaxed);
+            if point.timestamp < current_min {
+                self.min_timestamp.store(point.timestamp, Ordering::Relaxed);
+            }
+
+            let current_max = self.max_timestamp.load(Ordering::Relaxed);
+            if point.timestamp > current_max {
+                self.max_timestamp.store(point.timestamp, Ordering::Relaxed);
+            }
         }
 
         Ok(())
@@ -220,35 +242,33 @@ impl ActiveChunk {
     /// assert!(chunk.should_seal());
     /// ```
     pub fn should_seal(&self) -> bool {
-        // Check if already sealed
+        // Check if already sealed (lock-free)
         if self.sealed.load(Ordering::Acquire) {
             return false;
         }
 
         // Check point count (lock-free)
         let count = self.point_count.load(Ordering::Acquire);
+        if count == 0 {
+            return false;
+        }
+
         if count >= self.seal_config.max_points as u32 {
             return true;
         }
 
-        // Check duration and size (requires read lock)
-        let points = self.points.read().unwrap();
-
-        if points.is_empty() {
-            return false;
-        }
-
-        // Get time range
-        let start = *points.keys().next().unwrap();
-        let end = *points.keys().last().unwrap();
-        let duration = end - start;
+        // P0.4: Check duration using cached timestamps (lock-free!)
+        let min_ts = self.min_timestamp.load(Ordering::Relaxed);
+        let max_ts = self.max_timestamp.load(Ordering::Relaxed);
+        let duration = max_ts - min_ts;
 
         if duration >= self.seal_config.max_duration_ms {
             return true;
         }
 
-        // Check memory size estimate
-        let size_estimate = points.len() * std::mem::size_of::<DataPoint>();
+        // P0.4: Check memory size using count (lock-free, approximate for BTreeMap)
+        // BTreeMap has ~64 bytes overhead per entry (node structure + pointers)
+        let size_estimate = count as usize * (std::mem::size_of::<DataPoint>() + 64);
         if size_estimate >= self.seal_config.max_size_bytes {
             return true;
         }
@@ -366,14 +386,14 @@ impl ActiveChunk {
     /// assert_eq!(end, 200);
     /// ```
     pub fn time_range(&self) -> (i64, i64) {
-        let points = self.points.read().unwrap();
-
-        if points.is_empty() {
+        // P0.4: Use cached timestamps for lock-free access
+        let count = self.point_count.load(Ordering::Acquire);
+        if count == 0 {
             return (0, 0);
         }
 
-        let start = *points.keys().next().unwrap();
-        let end = *points.keys().last().unwrap();
+        let start = self.min_timestamp.load(Ordering::Relaxed);
+        let end = self.max_timestamp.load(Ordering::Relaxed);
         (start, end)
     }
 
