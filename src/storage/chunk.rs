@@ -486,6 +486,60 @@ impl Chunk {
         }
     }
 
+    /// Create chunk directly from BTreeMap (zero-copy from ActiveChunk)
+    ///
+    /// This constructor is used internally by ActiveChunk::seal() to avoid
+    /// copying data when transitioning from active to sealed state.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - Series identifier
+    /// * `points` - BTreeMap of points (already sorted by timestamp)
+    ///
+    /// # Returns
+    ///
+    /// Active chunk ready for sealing, or error if points is empty.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut points = BTreeMap::new();
+    /// points.insert(1000, DataPoint { series_id: 1, timestamp: 1000, value: 42.0 });
+    /// let chunk = Chunk::from_btreemap(1, points).unwrap();
+    /// ```
+    pub fn from_btreemap(
+        series_id: SeriesId,
+        points: std::collections::BTreeMap<i64, crate::types::DataPoint>,
+    ) -> Result<Self, String> {
+        if points.is_empty() {
+            return Err("Cannot create chunk from empty data".to_string());
+        }
+
+        let point_count = points.len() as u32;
+        let start_timestamp = *points.keys().next().unwrap();
+        let end_timestamp = *points.keys().next_back().unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+
+        Ok(Self {
+            metadata: ChunkMetadata {
+                chunk_id: ChunkId::new(),
+                series_id,
+                path: PathBuf::new(),
+                start_timestamp,
+                end_timestamp,
+                point_count,
+                size_bytes: 0,
+                compression: CompressionType::None,
+                created_at: now,
+                last_accessed: now,
+            },
+            state: ChunkState::Active,
+            data: ChunkData::InMemory(points),
+            capacity: 0,
+        })
+    }
+
     /// Append a point to the chunk
     ///
     /// Only works for Active chunks. Returns error for Sealed or Compressed chunks.

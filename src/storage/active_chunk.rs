@@ -313,9 +313,9 @@ impl ActiveChunk {
             return Err("Chunk already sealed".to_string());
         }
 
-        // Extract points (acquire write lock to prevent concurrent modifications)
-        let points_vec = {
-            let points = self.points.write().unwrap();
+        // P1.1: ZERO-COPY - Take ownership of BTreeMap without cloning
+        let points_btree = {
+            let mut points = self.points.write().unwrap();
 
             if points.is_empty() {
                 // Restore sealed flag on error
@@ -323,19 +323,20 @@ impl ActiveChunk {
                 return Err("Cannot seal empty chunk".to_string());
             }
 
-            // Extract in sorted order (BTreeMap maintains order)
-            points.values().cloned().collect::<Vec<_>>()
+            // Take ownership, replace with empty BTreeMap (zero-copy move)
+            std::mem::take(&mut *points)
         };
+        // Lock released here
 
-        // Create and seal a Chunk
-        let mut chunk = Chunk::new_active(self.series_id, points_vec.len());
+        // P1.1: Create Chunk directly from BTreeMap (no intermediate Vec, no append loop)
+        let mut chunk = Chunk::from_btreemap(self.series_id, points_btree)
+            .map_err(|e| {
+                // Restore sealed flag on error
+                self.sealed.store(false, Ordering::Release);
+                format!("Failed to create chunk: {}", e)
+            })?;
 
-        // Append all points
-        for point in points_vec {
-            chunk.append(point).map_err(|e| format!("Failed to add point: {}", e))?;
-        }
-
-        // Seal the chunk
+        // Seal the chunk to disk
         chunk.seal(path).await?;
 
         Ok(chunk)
