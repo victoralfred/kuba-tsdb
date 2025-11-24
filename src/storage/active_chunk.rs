@@ -167,8 +167,15 @@ impl ActiveChunk {
         {
             let mut points = self.points.write().unwrap();
 
+            // P0.2: Check for duplicate timestamp BEFORE inserting
+            if points.contains_key(&point.timestamp) {
+                return Err(format!(
+                    "Duplicate timestamp {}: point already exists in chunk",
+                    point.timestamp
+                ));
+            }
+
             // Insert into BTreeMap (handles out-of-order automatically)
-            // Note: If duplicate timestamp exists, this overwrites
             points.insert(point.timestamp, point);
 
             // Update atomic counter

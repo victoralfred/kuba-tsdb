@@ -91,6 +91,7 @@ fn test_bug1_out_of_order_start_timestamp() {
 }
 
 /// Bug #2: Duplicate timestamps in ActiveChunk silently overwrite
+/// FIXED: Now returns error instead of silent overwrite
 #[test]
 fn test_bug2_duplicate_timestamp_silent_overwrite() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
@@ -105,23 +106,24 @@ fn test_bug2_duplicate_timestamp_silent_overwrite() {
     println!("After first append: count={}", chunk.point_count());
 
     // Append duplicate timestamp with different value
-    chunk.append(DataPoint {
+    let result = chunk.append(DataPoint {
         series_id: 1,
         timestamp: 1000,
         value: 20.0,
-    }).unwrap();
+    });
 
-    println!("After duplicate append: count={}", chunk.point_count());
+    println!("After duplicate append attempt: result={:?}", result);
 
-    // BUG: Second append silently overwrites first value
-    // Point count should be 2, but it's 1
-    assert_eq!(chunk.point_count(), 2,
-        "Should have 2 points (or return error), not silently overwrite");
+    // FIXED: Now returns error instead of silent overwrite
+    assert!(result.is_err(), "Should return error for duplicate timestamp");
+    assert!(result.unwrap_err().contains("Duplicate timestamp"));
+    assert_eq!(chunk.point_count(), 1, "Count should still be 1 after rejected duplicate");
 }
 
 /// Bug #2b: Duplicate timestamps in Chunk allows duplicates
+/// FIXED: Now rejects duplicates like ActiveChunk
 #[test]
-fn test_bug2_duplicate_timestamp_chunk_allows() {
+fn test_bug2_duplicate_timestamp_chunk_rejects() {
     let mut chunk = Chunk::new_active(1, 100);
 
     // Append first point
@@ -131,34 +133,23 @@ fn test_bug2_duplicate_timestamp_chunk_allows() {
         value: 10.0,
     }).unwrap();
 
-    // Append duplicate timestamp - this succeeds but creates invalid state
-    chunk.append(DataPoint {
+    // Append duplicate timestamp - should now be rejected
+    let result = chunk.append(DataPoint {
         series_id: 1,
         timestamp: 1000,
         value: 20.0,
-    }).unwrap();
+    });
 
-    assert_eq!(chunk.point_count(), 2, "Chunk allows duplicates");
-
-    let points = chunk.points().unwrap();
-
-    // Both points with same timestamp exist
-    assert_eq!(points[0].timestamp, 1000);
-    assert_eq!(points[1].timestamp, 1000);
-
-    println!("Values for timestamp 1000: {:?}",
-        points.iter()
-            .filter(|p| p.timestamp == 1000)
-            .map(|p| p.value)
-            .collect::<Vec<_>>());
-
-    // This is inconsistent with ActiveChunk behavior!
-    // ActiveChunk would only have 1 point, Chunk has 2
+    // FIXED: Now returns error
+    assert!(result.is_err(), "Chunk should reject duplicates");
+    assert!(result.unwrap_err().contains("Duplicate timestamp"));
+    assert_eq!(chunk.point_count(), 1, "Should still have 1 point");
 }
 
 /// Bug #2c: Inconsistency between Chunk and ActiveChunk
+/// FIXED: Both now reject duplicates consistently
 #[tokio::test]
-async fn test_bug2_inconsistency_chunk_vs_active() {
+async fn test_bug2_consistency_chunk_vs_active() {
     // Create points with duplicate timestamp
     let points = vec![
         DataPoint { series_id: 1, timestamp: 1000, value: 10.0 },
@@ -168,26 +159,35 @@ async fn test_bug2_inconsistency_chunk_vs_active() {
 
     // Test with Chunk
     let mut chunk = Chunk::new_active(1, 10);
+    let mut chunk_successful = 0;
     for p in &points {
-        chunk.append(*p).unwrap();
+        if chunk.append(*p).is_ok() {
+            chunk_successful += 1;
+        }
     }
-    assert_eq!(chunk.point_count(), 3, "Chunk keeps all 3 points");
+    assert_eq!(chunk_successful, 2, "Chunk accepts 2 (rejects duplicate)");
+    assert_eq!(chunk.point_count(), 2);
 
     // Test with ActiveChunk
     let active = ActiveChunk::new(1, 10, SealConfig::default());
+    let mut active_successful = 0;
     for p in &points {
-        active.append(*p).unwrap();
+        if active.append(*p).is_ok() {
+            active_successful += 1;
+        }
     }
-    assert_eq!(active.point_count(), 2, "ActiveChunk overwrites, keeps only 2 unique timestamps");
+    assert_eq!(active_successful, 2, "ActiveChunk accepts 2 (rejects duplicate)");
+    assert_eq!(active.point_count(), 2);
 
-    // BUG: Different behavior for same input!
-    println!("Chunk count: {}, ActiveChunk count: {}",
+    // FIXED: Consistent behavior!
+    assert_eq!(chunk.point_count(), active.point_count(), "Both should have same count");
+    println!("Chunk count: {}, ActiveChunk count: {} - CONSISTENT!",
         chunk.point_count(), active.point_count());
 }
 
 /// Test demonstrating the expected sorted behavior after fixing Bug #1
+/// FIXED: This now passes!
 #[test]
-#[ignore = "This test shows the EXPECTED behavior after fix"]
 fn test_expected_sorted_insertion_after_fix() {
     let mut chunk = Chunk::new_active(1, 100);
 

@@ -372,8 +372,9 @@ pub enum ChunkState {
 /// Internal data storage for chunks
 #[derive(Debug)]
 enum ChunkData {
-    /// Points stored in memory (Active state)
-    InMemory(Vec<crate::types::DataPoint>),
+    /// Points stored in memory (Active state), sorted by timestamp
+    /// Uses BTreeMap for automatic ordering and efficient out-of-order inserts
+    InMemory(std::collections::BTreeMap<i64, crate::types::DataPoint>),
     /// Reference to file on disk (Sealed or Compressed state)
     OnDisk(PathBuf),
 }
@@ -471,8 +472,8 @@ impl Chunk {
                 chunk_id,
                 series_id,
                 path: PathBuf::new(),  // Will be set when sealed
-                start_timestamp: 0,
-                end_timestamp: 0,
+                start_timestamp: i64::MAX,  // Will be updated to min on first append
+                end_timestamp: i64::MIN,    // Will be updated to max on first append
                 point_count: 0,
                 size_bytes: 0,
                 compression: CompressionType::None,
@@ -480,7 +481,7 @@ impl Chunk {
                 last_accessed: now,
             },
             state: ChunkState::Active,
-            data: ChunkData::InMemory(Vec::with_capacity(capacity)),
+            data: ChunkData::InMemory(std::collections::BTreeMap::new()),
             capacity,
         }
     }
@@ -523,15 +524,30 @@ impl Chunk {
 
         // Get mutable access to in-memory points
         if let ChunkData::InMemory(ref mut points) = self.data {
-            // Update metadata
-            if points.is_empty() {
-                self.metadata.start_timestamp = point.timestamp;
+            // P0.2: Check for duplicate timestamp BEFORE inserting
+            if points.contains_key(&point.timestamp) {
+                return Err(format!(
+                    "Duplicate timestamp {}: refusing to overwrite. \
+                     Existing value: {}, new value: {}",
+                    point.timestamp,
+                    points.get(&point.timestamp).unwrap().value,
+                    point.value
+                ));
             }
-            self.metadata.end_timestamp = point.timestamp;
-            self.metadata.point_count += 1;
 
-            // Append point
-            points.push(point);
+            // P0.1: Insert into BTreeMap (automatically maintains sort order)
+            points.insert(point.timestamp, point);
+
+            // P0.1: Update metadata with correct min/max (handles out-of-order correctly)
+            self.metadata.point_count = points.len() as u32;
+
+            // BTreeMap keeps keys sorted, so first/last are min/max
+            if let Some((&min_ts, _)) = points.iter().next() {
+                self.metadata.start_timestamp = min_ts;
+            }
+            if let Some((&max_ts, _)) = points.iter().next_back() {
+                self.metadata.end_timestamp = max_ts;
+            }
 
             Ok(())
         } else {
@@ -631,16 +647,20 @@ impl Chunk {
             return Err(format!("Cannot seal {:?} chunk", self.state));
         }
 
-        // Get points from memory
-        let points = if let ChunkData::InMemory(ref points) = self.data {
-            points.clone()
+        // P0.3: ZERO-COPY - Take ownership without cloning
+        let points = if let ChunkData::InMemory(ref mut points_map) = self.data {
+            // Take ownership of BTreeMap, replace with empty
+            let map = std::mem::take(points_map);
+
+            if map.is_empty() {
+                return Err("Cannot seal empty chunk".to_string());
+            }
+
+            // Convert BTreeMap to Vec (already sorted by timestamp)
+            map.into_iter().map(|(_, v)| v).collect::<Vec<_>>()
         } else {
             return Err("Invalid state: Active chunk without in-memory data".to_string());
         };
-
-        if points.is_empty() {
-            return Err("Cannot seal empty chunk".to_string());
-        }
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
@@ -876,11 +896,15 @@ impl Chunk {
 
     /// Get points (for Active chunks only)
     ///
-    /// Returns reference to in-memory points for Active chunks.
-    /// Returns None for Sealed/Compressed chunks (use read() instead).
-    pub fn points(&self) -> Option<&[crate::types::DataPoint]> {
+    /// Returns Vec of points in sorted order for Active chunks.
+    /// Returns None for Sealed/Compressed chunks (use decompress() instead).
+    ///
+    /// Note: This creates a Vec from the BTreeMap, which involves a copy.
+    /// For large chunks, consider sealing and using decompress() instead.
+    pub fn points(&self) -> Option<Vec<crate::types::DataPoint>> {
         if let ChunkData::InMemory(ref points) = self.data {
-            Some(points)
+            // BTreeMap is already sorted by timestamp, collect values
+            Some(points.values().cloned().collect())
         } else {
             None
         }
