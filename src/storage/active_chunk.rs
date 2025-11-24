@@ -173,9 +173,10 @@ impl ActiveChunk {
             ));
         }
 
-        // Acquire write lock and insert
+        // P1.3: Acquire write lock with proper error handling
         {
-            let mut points = self.points.write().unwrap();
+            let mut points = self.points.write()
+                .map_err(|_| "Lock poisoned: cannot append to corrupted chunk".to_string())?;
 
             // P0.2: Check for duplicate timestamp BEFORE inserting
             if points.contains_key(&point.timestamp) {
@@ -314,8 +315,14 @@ impl ActiveChunk {
         }
 
         // P1.1: ZERO-COPY - Take ownership of BTreeMap without cloning
+        // P1.3: Proper lock error handling
         let points_btree = {
-            let mut points = self.points.write().unwrap();
+            let mut points = self.points.write()
+                .map_err(|_| {
+                    // Restore sealed flag on error
+                    self.sealed.store(false, Ordering::Release);
+                    "Lock poisoned: cannot seal corrupted chunk".to_string()
+                })?;
 
             if points.is_empty() {
                 // Restore sealed flag on error
