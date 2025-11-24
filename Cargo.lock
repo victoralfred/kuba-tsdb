@@ -499,6 +499,7 @@ dependencies = [
  "memmap2",
  "parking_lot",
  "proptest",
+ "rand",
  "redis",
  "serde",
  "serde_json",
