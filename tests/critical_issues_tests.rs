@@ -415,7 +415,7 @@ async fn test_se4_checksum_mismatch_detection() {
 /// file path for debugging.
 #[tokio::test]
 async fn test_se5_io_errors_have_context() {
-    let temp_dir = TempDir::new().unwrap();
+    let _temp_dir = TempDir::new().unwrap();
     let mut chunk = Chunk::new_active(1, 100);
 
     chunk.append(DataPoint {

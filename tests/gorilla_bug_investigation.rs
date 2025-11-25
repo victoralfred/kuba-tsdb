@@ -11,10 +11,12 @@ async fn test_range_boundary_values() {
     let compressor = GorillaCompressor::new();
 
     // Test exact boundary values for each encoding range
+    // Note: Timestamps must be monotonic, so we test negative dod by using
+    // a decreasing delta (timestamps still increasing)
     let test_cases = vec![
         (vec![0, 10, 73], "dod = 63 (7-bit boundary)"),
         (vec![0, 10, 74], "dod = 64 (claimed missing)"),
-        (vec![0, 10, -53], "dod = -63 (7-bit boundary)"),
+        (vec![0, 100, 137], "dod = -63 (7-bit boundary, delta decreases from 100 to 37)"),
         (vec![0, 10, 265], "dod = 255 (9-bit boundary)"),
         (vec![0, 10, 266], "dod = 256 (claimed missing)"),
         (vec![0, 10, 2057], "dod = 2047 (12-bit boundary)"),
