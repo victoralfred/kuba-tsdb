@@ -432,15 +432,17 @@ fn test_seal_multiple_thresholds() {
         max_size_bytes: 100,
     });
 
-    // Add points that exceed all thresholds
-    for i in 0..10 {
+    // Add points up to the max_points threshold
+    // The timestamps also exceed max_duration_ms (5 points * 500ms = 2500ms > 1000ms)
+    for i in 0..5 {
         chunk.append(DataPoint {
             series_id: 1,
-            timestamp: i * 500, // 5 seconds total
+            timestamp: i * 500, // Timestamps: 0, 500, 1000, 1500, 2000 ms
             value: i as f64,
         }).unwrap();
     }
 
+    // Should need sealing because max_points reached AND max_duration exceeded
     assert!(chunk.should_seal());
 }
 

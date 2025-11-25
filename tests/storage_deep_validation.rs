@@ -500,12 +500,17 @@ fn test_performance_lock_contention() {
     use std::thread;
     use std::time::Instant;
 
-    let chunk = Arc::new(ActiveChunk::new(1, 100000, SealConfig::default()));
+    let seal_config = SealConfig {
+        max_points: 50000, // Allow all 40K points
+        max_duration_ms: i64::MAX,
+        max_size_bytes: usize::MAX,
+    };
+    let chunk = Arc::new(ActiveChunk::new(1, 100000, seal_config));
     let mut handles = vec![];
 
     let start = Instant::now();
 
-    // Spawn 4 threads, each appending 10K points
+    // Spawn 4 threads, each appending 10K points (40K total)
     for thread_id in 0..4 {
         let chunk = Arc::clone(&chunk);
         let handle = thread::spawn(move || {

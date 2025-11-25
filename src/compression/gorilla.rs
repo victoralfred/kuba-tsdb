@@ -663,6 +663,18 @@ impl Compressor for GorillaCompressor {
             ));
         }
 
+        // Validate no reserved timestamp values
+        for (i, point) in points.iter().enumerate() {
+            if point.timestamp == i64::MIN || point.timestamp == i64::MAX {
+                return Err(CompressionError::InvalidData(
+                    format!(
+                        "Reserved timestamp value at point {}: {} (i64::MIN and i64::MAX are reserved)",
+                        i, point.timestamp
+                    ),
+                ));
+            }
+        }
+
         // Validate timestamps are monotonically increasing and no duplicates
         for i in 1..points.len() {
             if points[i].timestamp <= points[i - 1].timestamp {
