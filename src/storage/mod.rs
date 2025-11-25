@@ -54,8 +54,108 @@ pub mod writer;
 
 pub use active_chunk::ActiveChunk;
 pub use chunk::*;
-pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock};
+pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
 pub use local_disk::LocalDiskEngine;
 pub use mmap::MmapChunk;
 pub use reader::{ChunkReader, QueryOptions};
 pub use writer::{ChunkWriter, ChunkWriterConfig, WriteStats};
+
+/// Security utilities for path validation
+pub mod security {
+    use std::path::Path;
+
+    /// Validate that a path doesn't contain traversal attempts
+    ///
+    /// Checks for:
+    /// - ".." components (parent directory traversal)
+    /// - Absolute paths outside expected directory
+    /// - Null bytes
+    /// - Symlinks (optional check)
+    pub fn validate_path_no_traversal(path: &Path, base_dir: &Path) -> Result<(), String> {
+        // Check for null bytes in path string
+        if let Some(path_str) = path.to_str() {
+            if path_str.contains('\0') {
+                return Err("Path contains null bytes".to_string());
+            }
+        }
+
+        // Normalize and check that path is within base_dir
+        let canonical_base = base_dir
+            .canonicalize()
+            .map_err(|e| format!("Failed to canonicalize base dir: {}", e))?;
+
+        // If path doesn't exist yet, check its parent
+        let path_to_check = if path.exists() {
+            path.canonicalize()
+                .map_err(|e| format!("Failed to canonicalize path: {}", e))?
+        } else {
+            // For non-existent paths, validate parent and filename separately
+            if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    let canonical_parent = parent
+                        .canonicalize()
+                        .map_err(|e| format!("Failed to canonicalize parent: {}", e))?;
+
+                    // Verify parent is within base
+                    if !canonical_parent.starts_with(&canonical_base) {
+                        return Err(format!(
+                            "Path parent traverses outside base directory: {:?} not in {:?}",
+                            canonical_parent, canonical_base
+                        ));
+                    }
+
+                    // Check filename for traversal patterns
+                    if let Some(filename) = path.file_name() {
+                        let filename_str = filename.to_string_lossy();
+                        if filename_str.contains("..") {
+                            return Err("Filename contains '..' pattern".to_string());
+                        }
+                    }
+
+                    return Ok(());
+                }
+            }
+
+            // Parent doesn't exist or path has no parent - check components
+            for component in path.components() {
+                use std::path::Component;
+                match component {
+                    Component::ParentDir => {
+                        return Err("Path contains '..' component".to_string());
+                    }
+                    Component::RootDir if !canonical_base.starts_with("/") => {
+                        return Err("Absolute path on non-Unix system".to_string());
+                    }
+                    _ => {}
+                }
+            }
+
+            return Ok(());
+        };
+
+        // Verify resolved path is within base directory
+        if !path_to_check.starts_with(&canonical_base) {
+            return Err(format!(
+                "Path traverses outside base directory: {:?} not in {:?}",
+                path_to_check, canonical_base
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Check if a path is a symlink
+    #[cfg(unix)]
+    pub fn is_symlink(path: &Path) -> bool {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    pub fn is_symlink(path: &Path) -> bool {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+}

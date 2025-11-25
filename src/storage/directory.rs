@@ -8,7 +8,7 @@ use crate::types::SeriesId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt};
 
 /// Series metadata stored in metadata.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,84 +97,74 @@ impl SeriesMetadata {
     }
 }
 
+/// Configuration for write lock behavior
+#[derive(Debug, Clone)]
+pub struct WriteLockConfig {
+    /// Timeout in milliseconds before considering a lock stale
+    pub stale_timeout_ms: i64,
+}
+
+impl Default for WriteLockConfig {
+    fn default() -> Self {
+        Self {
+            // 5 minutes default, configurable via environment variable
+            stale_timeout_ms: std::env::var("TSDB_LOCK_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300_000),
+        }
+    }
+}
+
 /// Write lock for preventing concurrent writes to a series
+///
+/// Uses atomic file creation (O_EXCL) to prevent TOCTOU race conditions.
+/// On Unix systems, also performs process liveness checks for stale lock detection.
 pub struct WriteLock {
     path: PathBuf,
     held: bool,
+    config: WriteLockConfig,
+    #[cfg(unix)]
+    lock_file: Option<std::fs::File>,
 }
 
 impl WriteLock {
-    /// Create a new write lock (doesn't acquire it yet)
+    /// Create a new write lock with default configuration
     pub fn new(series_path: &Path) -> Self {
+        Self::with_config(series_path, WriteLockConfig::default())
+    }
+
+    /// Create a new write lock with custom configuration
+    pub fn with_config(series_path: &Path, config: WriteLockConfig) -> Self {
         Self {
             path: series_path.join(".write.lock"),
             held: false,
+            config,
+            #[cfg(unix)]
+            lock_file: None,
         }
     }
 
-    /// Try to acquire the write lock
+    /// Try to acquire the write lock atomically
     ///
-    /// Returns error if lock is already held by another process
+    /// Uses O_CREAT | O_EXCL for atomic lock acquisition, preventing TOCTOU races.
+    /// Returns error if lock is already held by another process.
     pub async fn try_acquire(&mut self) -> Result<(), StorageError> {
+        use std::time::Instant;
+
+        let start = Instant::now();
+
         if self.held {
             return Ok(()); // Already held
         }
 
-        // Check if lock file exists
-        if self.path.exists() {
-            // Try to read lock file to see if it's stale
-            if let Ok(contents) = fs::read_to_string(&self.path).await {
-                // Lock file contains PID and timestamp
-                if let Some((pid_str, timestamp_str)) = contents.split_once(':') {
-                    if let (Ok(pid), Ok(timestamp)) = (
-                        pid_str.parse::<u32>(),
-                        timestamp_str.parse::<i64>(),
-                    ) {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as i64;
-
-                        // If lock is older than 5 minutes, consider it stale
-                        if now - timestamp > 300_000 {
-                            // Stale lock, remove it
-                            let _ = fs::remove_file(&self.path).await;
-                        } else {
-                            // Check if process is still alive (Unix only)
-                            #[cfg(unix)]
-                            {
-                                use std::process::Command;
-                                if Command::new("ps")
-                                    .arg("-p")
-                                    .arg(pid.to_string())
-                                    .output()
-                                    .map(|o| o.status.success())
-                                    .unwrap_or(false)
-                                {
-                                    return Err(StorageError::Io(std::io::Error::new(
-                                        std::io::ErrorKind::WouldBlock,
-                                        format!("Write lock held by process {}", pid),
-                                    )));
-                                } else {
-                                    // Process doesn't exist, remove stale lock
-                                    let _ = fs::remove_file(&self.path).await;
-                                }
-                            }
-
-                            #[cfg(not(unix))]
-                            {
-                                return Err(StorageError::Io(std::io::Error::new(
-                                    std::io::ErrorKind::WouldBlock,
-                                    format!("Write lock held by process {}", pid),
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
+        // First, check for stale locks and clean them up
+        if let Err(e) = self.cleanup_stale_lock().await {
+            // Log but don't fail on cleanup errors
+            eprintln!("Warning: Failed to check for stale locks: {}", e);
         }
 
-        // Acquire lock by writing PID and timestamp
+        // Try to create lock file atomically using O_EXCL
         let pid = std::process::id();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -182,9 +172,139 @@ impl WriteLock {
             .as_millis() as i64;
 
         let lock_content = format!("{}:{}", pid, now);
-        fs::write(&self.path, lock_content).await?;
 
-        self.held = true;
+        let acquire_start = Instant::now();
+
+        // Use std::fs for synchronous O_EXCL operation (more reliable than tokio)
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true) // O_CREAT | O_EXCL - atomic!
+                .mode(0o644)
+                .open(&self.path)
+            {
+                Ok(mut file) => {
+                    // Successfully created lock file atomically
+                    use std::io::Write;
+                    file.write_all(lock_content.as_bytes())
+                        .map_err(|e| StorageError::Io(e))?;
+                    file.sync_all().map_err(|e| StorageError::Io(e))?;
+
+                    self.lock_file = Some(file);
+                    self.held = true;
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Lock already held - record contention
+                    crate::metrics::LOCK_WAIT_DURATION
+                        .with_label_values(&["write_lock_contention"])
+                        .observe(acquire_start.elapsed().as_secs_f64());
+
+                    Err(StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Write lock is already held by another process",
+                    )))
+                }
+                Err(e) => Err(StorageError::Io(e)),
+            }
+        };
+
+        #[cfg(not(unix))]
+        let result = {
+            // Non-Unix systems: use create_new (still atomic)
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true) // Atomic on most platforms
+                .open(&self.path)
+                .await
+            {
+                Ok(mut file) => {
+                    file.write_all(lock_content.as_bytes()).await?;
+                    file.sync_all().await?;
+                    self.held = true;
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Lock already held - record contention
+                    crate::metrics::LOCK_WAIT_DURATION
+                        .with_label_values(&["write_lock_contention"])
+                        .observe(acquire_start.elapsed().as_secs_f64());
+
+                    Err(StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "Write lock is already held by another process",
+                    )))
+                }
+                Err(e) => Err(StorageError::Io(e)),
+            }
+        };
+
+        // Record total acquisition time
+        if result.is_ok() {
+            crate::metrics::LOCK_WAIT_DURATION
+                .with_label_values(&["write_lock_acquired"])
+                .observe(start.elapsed().as_secs_f64());
+        }
+
+        result
+    }
+
+    /// Check for and clean up stale locks
+    async fn cleanup_stale_lock(&self) -> Result<(), StorageError> {
+        // Check if lock file exists
+        if !self.path.exists() {
+            return Ok(());
+        }
+
+        // Try to read lock file
+        let contents = match fs::read_to_string(&self.path).await {
+            Ok(c) => c,
+            Err(_) => return Ok(()), // Can't read, leave it alone
+        };
+
+        // Parse PID and timestamp
+        let (pid_str, timestamp_str) = match contents.split_once(':') {
+            Some(parts) => parts,
+            None => return Ok(()), // Malformed, can't validate
+        };
+
+        let (pid, timestamp) = match (pid_str.parse::<u32>(), timestamp_str.parse::<i64>()) {
+            (Ok(p), Ok(t)) => (p, t),
+            _ => return Ok(()), // Can't parse, leave it alone
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Check if lock is stale (configurable timeout)
+        if now - timestamp > self.config.stale_timeout_ms {
+            // Stale lock, remove it
+            let _ = fs::remove_file(&self.path).await;
+            return Ok(());
+        }
+
+        // On Unix, check if process is still alive
+        #[cfg(unix)]
+        {
+            use std::process::Command;
+            let is_alive = Command::new("ps")
+                .arg("-p")
+                .arg(pid.to_string())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if !is_alive {
+                // Process is dead, remove stale lock
+                let _ = fs::remove_file(&self.path).await;
+            }
+        }
+
         Ok(())
     }
 
@@ -192,6 +312,12 @@ impl WriteLock {
     pub async fn release(&mut self) -> Result<(), StorageError> {
         if !self.held {
             return Ok(());
+        }
+
+        #[cfg(unix)]
+        {
+            // Close file handle first
+            self.lock_file = None;
         }
 
         fs::remove_file(&self.path).await?;
@@ -203,11 +329,22 @@ impl WriteLock {
     pub fn is_held(&self) -> bool {
         self.held
     }
+
+    /// Get lock configuration
+    pub fn config(&self) -> &WriteLockConfig {
+        &self.config
+    }
 }
 
 impl Drop for WriteLock {
     fn drop(&mut self) {
         if self.held {
+            #[cfg(unix)]
+            {
+                // Close file handle
+                self.lock_file = None;
+            }
+
             // Best effort cleanup
             let _ = std::fs::remove_file(&self.path);
         }
