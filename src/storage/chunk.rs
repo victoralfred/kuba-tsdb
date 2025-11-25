@@ -813,15 +813,24 @@ impl Chunk {
 
         // Write to disk: header + compressed data
         let mut file = fs::File::create(&path).await
-            .map_err(|e| format!("Failed to create file: {}", e))?;
+            .map_err(|e| format!(
+                "Failed to create chunk file for series {}, path {:?}: {}",
+                self.metadata.series_id, path, e
+            ))?;
 
         // Write 64-byte header
         file.write_all(&header.to_bytes()).await
-            .map_err(|e| format!("Failed to write header: {}", e))?;
+            .map_err(|e| format!(
+                "Failed to write header for series {}, chunk {:?}: {}",
+                self.metadata.series_id, path, e
+            ))?;
 
         // Write compressed data
         file.write_all(&compressed.data).await
-            .map_err(|e| format!("Failed to write data: {}", e))?;
+            .map_err(|e| format!(
+                "Failed to write data for series {}, chunk {:?}: {}",
+                self.metadata.series_id, path, e
+            ))?;
 
         // CRITICAL: Sync to disk before marking sealed
         // flush() only writes to OS buffers, sync_all() ensures disk persistence
