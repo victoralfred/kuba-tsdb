@@ -604,6 +604,15 @@ impl Chunk {
 
         // Get mutable access to in-memory points
         if let ChunkData::InMemory(ref mut points) = self.data {
+            // Check configured capacity limit first
+            if points.len() >= self.capacity {
+                return Err(format!(
+                    "Chunk has reached capacity of {} points. \
+                     Call should_seal() and seal before appending more data.",
+                    self.capacity
+                ));
+            }
+
             // CRITICAL: Hard limit to prevent unbounded memory growth
             const MAX_CHUNK_POINTS: usize = 10_000_000;  // 10 million points
             if points.len() >= MAX_CHUNK_POINTS {
@@ -783,7 +792,10 @@ impl Chunk {
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+                .map_err(|e| format!(
+                    "Failed to create directory for series {}, chunk path {:?}: {}",
+                    self.metadata.series_id, path, e
+                ))?;
         }
 
         // P1.2: Compress data with Gorilla on blocking thread pool

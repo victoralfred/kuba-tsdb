@@ -217,18 +217,9 @@ impl ActiveChunk {
                 ));
             }
 
-            // Validate monotonicity if we have existing points
-            if let Some((&last_ts, _)) = points.last_key_value() {
-                if point.timestamp <= last_ts {
-                    crate::metrics::record_error("non_monotonic", "append");
-                    return Err(format!(
-                        "Non-monotonic timestamp: {} <= last timestamp {}",
-                        point.timestamp, last_ts
-                    ));
-                }
-            }
-
-            // Insert into BTreeMap (handles out-of-order automatically)
+            // BTreeMap handles ordering automatically - no need to check monotonicity here
+            // Compression layer will validate monotonic order when sealing
+            // This allows concurrent appends with different timestamps to work correctly
             points.insert(point.timestamp, point);
 
             // Update atomic counter
