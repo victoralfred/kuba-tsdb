@@ -165,16 +165,6 @@ impl ActiveChunk {
         use std::time::Instant;
         let start = Instant::now();
 
-        // Check if sealed (lock-free check)
-        if self.sealed.load(Ordering::Acquire) {
-            crate::metrics::record_error("sealed_chunk", "append");
-            return Err(format!(
-                "Cannot append to sealed chunk. Series ID: {}, timestamp: {}. \
-                 Sealed chunks are immutable - create a new chunk for additional data.",
-                self.series_id, point.timestamp
-            ));
-        }
-
         // Validate series ID
         if point.series_id != self.series_id {
             crate::metrics::record_error("series_mismatch", "append");
@@ -198,6 +188,16 @@ impl ActiveChunk {
                 .with_label_values(&["write"])
                 .observe(lock_duration);
 
+            // Check if sealed AFTER acquiring lock to prevent TOCTOU race
+            if self.sealed.load(Ordering::Acquire) {
+                crate::metrics::record_error("sealed_chunk", "append");
+                return Err(format!(
+                    "Cannot append to sealed chunk. Series ID: {}, timestamp: {}. \
+                     Sealed chunks are immutable - create a new chunk for additional data.",
+                    self.series_id, point.timestamp
+                ));
+            }
+
             // P0.2: Check for duplicate timestamp BEFORE inserting
             if points.contains_key(&point.timestamp) {
                 crate::metrics::record_duplicate_timestamp(self.series_id);
@@ -205,6 +205,27 @@ impl ActiveChunk {
                     "Duplicate timestamp {}: point already exists in chunk",
                     point.timestamp
                 ));
+            }
+
+            // Check max_points limit before inserting
+            let current_count = points.len();
+            if current_count >= self.seal_config.max_points {
+                crate::metrics::record_error("max_points_exceeded", "append");
+                return Err(format!(
+                    "Chunk full: {} points (max: {}). Chunk should be sealed.",
+                    current_count, self.seal_config.max_points
+                ));
+            }
+
+            // Validate monotonicity if we have existing points
+            if let Some((&last_ts, _)) = points.last_key_value() {
+                if point.timestamp <= last_ts {
+                    crate::metrics::record_error("non_monotonic", "append");
+                    return Err(format!(
+                        "Non-monotonic timestamp: {} <= last timestamp {}",
+                        point.timestamp, last_ts
+                    ));
+                }
             }
 
             // Insert into BTreeMap (handles out-of-order automatically)
@@ -317,7 +338,9 @@ impl ActiveChunk {
         // P0.4: Check duration using cached timestamps (lock-free!)
         let min_ts = self.min_timestamp.load(Ordering::Relaxed);
         let max_ts = self.max_timestamp.load(Ordering::Relaxed);
-        let duration = max_ts - min_ts;
+
+        // Use saturating_sub to prevent overflow with extreme timestamp values
+        let duration = max_ts.saturating_sub(min_ts);
 
         if duration >= self.seal_config.max_duration_ms {
             return true;

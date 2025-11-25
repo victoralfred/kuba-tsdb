@@ -663,6 +663,33 @@ impl Compressor for GorillaCompressor {
             ));
         }
 
+        // Validate timestamps are monotonically increasing and no duplicates
+        for i in 1..points.len() {
+            if points[i].timestamp <= points[i - 1].timestamp {
+                return Err(CompressionError::InvalidData(
+                    format!(
+                        "Timestamps must be strictly increasing: point {} has timestamp {} <= previous {}",
+                        i, points[i].timestamp, points[i - 1].timestamp
+                    ),
+                ));
+            }
+        }
+
+        // Validate timestamp deltas won't overflow
+        if points.len() > 1 {
+            for i in 1..points.len() {
+                let delta = points[i].timestamp.checked_sub(points[i - 1].timestamp);
+                if delta.is_none() {
+                    return Err(CompressionError::InvalidData(
+                        format!(
+                            "Timestamp overflow detected at point {}: {} - {} would overflow",
+                            i, points[i].timestamp, points[i - 1].timestamp
+                        ),
+                    ));
+                }
+            }
+        }
+
         let start = std::time::Instant::now();
         let mut writer = BitWriter::new();
 
@@ -717,6 +744,11 @@ impl Compressor for GorillaCompressor {
 
     async fn decompress(&self, block: &CompressedBlock) -> Result<Vec<DataPoint>, CompressionError> {
         let start = std::time::Instant::now();
+
+        // Handle empty blocks early
+        if block.data.is_empty() || block.metadata.point_count == 0 {
+            return Ok(Vec::new());
+        }
 
         // Verify checksum if enabled
         if self.config.enable_checksum && block.checksum != 0 {
