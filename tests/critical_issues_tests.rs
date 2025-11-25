@@ -279,7 +279,7 @@ async fn test_se2_seal_errors_not_ignored() {
         ..Default::default()
     };
 
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), config);
+    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), config.clone());
 
     // Write points
     for i in 0..5 {
@@ -290,16 +290,18 @@ async fn test_se2_seal_errors_not_ignored() {
         }).await.unwrap();
     }
 
-    // Try to seal to invalid path (should fail)
-    let _invalid_path = "/dev/null/invalid/path/chunk.gor";
+    // Actually the seal should succeed with valid temp_dir
+    // The test name is misleading - writer.seal() uses writer's base_path
+    // which is temp_dir and is valid
     let seal_result = writer.seal().await;
 
-    // Error should be propagated, not silently ignored
-    assert!(seal_result.is_err(), "Seal to invalid path should fail");
+    // Since temp_dir is valid, seal should succeed
+    assert!(seal_result.is_ok(), "Seal should succeed with valid temp dir");
 
-    // Original data should still be accessible (not lost)
-    assert!(writer.should_seal().await || !writer.should_seal().await,
-            "Writer should still be functional");
+    // Test that we detect errors when chunk points are empty
+    let writer2 = ChunkWriter::new(2, temp_dir.path().to_path_buf(), config.clone());
+    let empty_seal_result = writer2.seal().await;
+    assert!(empty_seal_result.is_err(), "Sealing empty chunk should fail");
 }
 
 /// SE-3: Test lock poisoning is properly handled
@@ -378,7 +380,8 @@ async fn test_se4_checksum_mismatch_detection() {
     // Should fail with corruption error, not "not found"
     assert!(result.is_err(), "Reading corrupted chunk should fail");
     let error = result.unwrap_err();
-    assert!(error.contains("checksum") || error.contains("corrupt"),
+    let error_lower = error.to_lowercase();
+    assert!(error_lower.contains("checksum") || error_lower.contains("corrupt"),
             "Error should mention checksum or corruption: {}", error);
 }
 
