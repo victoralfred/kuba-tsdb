@@ -28,7 +28,7 @@ async fn test_write_errors_recorded() {
     let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
 
     // Get initial error count
-    let initial_metrics = metrics::gather_metrics();
+    let initial_metrics = metrics::gather_metrics().unwrap();
     let initial_errors = count_metric(&initial_metrics, "tsdb_errors_total");
 
     // Attempt invalid write (wrong series ID)
@@ -41,7 +41,7 @@ async fn test_write_errors_recorded() {
     assert!(result.is_err(), "Write with wrong series should fail");
 
     // Check that error was recorded
-    let final_metrics = metrics::gather_metrics();
+    let final_metrics = metrics::gather_metrics().unwrap();
     let final_errors = count_metric(&final_metrics, "tsdb_errors_total");
 
     assert!(final_errors > initial_errors,
@@ -66,7 +66,7 @@ async fn test_write_latency_recorded() {
     }
 
     // Check that write duration metric exists
-    let metrics_text = metrics::gather_metrics();
+    let metrics_text = metrics::gather_metrics().unwrap();
     assert!(metrics_text.contains("tsdb_write_duration"),
             "Write duration metric should be recorded");
     assert!(metrics_text.contains("tsdb_writes_total"),
@@ -102,7 +102,7 @@ fn test_lock_contention_measured() {
     }
 
     // Check that lock wait duration was recorded
-    let metrics_text = metrics::gather_metrics();
+    let metrics_text = metrics::gather_metrics().unwrap();
     assert!(metrics_text.contains("tsdb_lock_wait_duration") ||
             metrics_text.contains("lock"),
             "Lock contention should be measured");
@@ -132,7 +132,7 @@ async fn test_checksum_failures_tracked() {
     chunk.seal(chunk_path.clone()).await.unwrap();
 
     // Get initial checksum failure count
-    let initial_metrics = metrics::gather_metrics();
+    let initial_metrics = metrics::gather_metrics().unwrap();
     let initial_failures = count_metric(&initial_metrics, "tsdb_checksum_failures_total");
 
     // Corrupt the file
@@ -148,7 +148,7 @@ async fn test_checksum_failures_tracked() {
     let _ = Chunk::read(chunk_path).await;
 
     // Check that failure was tracked
-    let final_metrics = metrics::gather_metrics();
+    let final_metrics = metrics::gather_metrics().unwrap();
     let final_failures = count_metric(&final_metrics, "tsdb_checksum_failures_total");
 
     // Note: This test may fail if checksum validation doesn't record metrics yet
@@ -181,7 +181,7 @@ async fn test_seal_failures_recorded() {
     }
 
     // Get initial metrics
-    let initial_metrics = metrics::gather_metrics();
+    let initial_metrics = metrics::gather_metrics().unwrap();
     let initial_errors = count_metric(&initial_metrics, "tsdb_errors_total");
 
     // Try to seal - should fail because base path is invalid
@@ -191,7 +191,7 @@ async fn test_seal_failures_recorded() {
     assert!(result.is_err(), "Seal to invalid path should fail");
 
     // Error should be recorded in metrics
-    let final_metrics = metrics::gather_metrics();
+    let final_metrics = metrics::gather_metrics().unwrap();
     let final_errors = count_metric(&final_metrics, "tsdb_errors_total");
 
     // Note: Seal errors may not be recorded yet - this test verifies the behavior
@@ -382,7 +382,7 @@ async fn test_performance_issues_logged() {
     }
 
     // Check that performance metrics exist
-    let metrics_text = metrics::gather_metrics();
+    let metrics_text = metrics::gather_metrics().unwrap();
 
     // Should have latency histograms
     assert!(metrics_text.contains("duration") || metrics_text.contains("latency"),
@@ -575,7 +575,7 @@ async fn test_end_to_end_observability() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Gather metrics
-    let metrics_text = metrics::gather_metrics();
+    let metrics_text = metrics::gather_metrics().unwrap();
 
     // Verify key metrics exist
     assert!(metrics_text.contains("tsdb_writes_total"),

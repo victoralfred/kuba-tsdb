@@ -194,16 +194,20 @@ pub fn init() {
 }
 
 /// Get metrics in Prometheus text format
-pub fn gather_metrics() -> String {
+///
+/// # Returns
+///
+/// Result containing the formatted metrics string, or an error if encoding fails
+pub fn gather_metrics() -> Result<String, String> {
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
     let mut buffer = vec![];
 
     encoder.encode(&metric_families, &mut buffer)
-        .expect("Failed to encode metrics");
+        .map_err(|e| format!("Failed to encode metrics: {}", e))?;
 
     String::from_utf8(buffer)
-        .expect("Metrics contain invalid UTF-8")
+        .map_err(|e| format!("Metrics contain invalid UTF-8: {}", e))
 }
 
 /// Record a write operation
@@ -289,14 +293,14 @@ mod tests {
     #[test]
     fn test_record_write() {
         record_write(1, 0.001, true);
-        let metrics = gather_metrics();
+        let metrics = gather_metrics().expect("Failed to gather metrics");
         assert!(metrics.contains("tsdb_writes_total"));
     }
 
     #[test]
     fn test_gather_metrics() {
         init(); // Initialize metrics first
-        let metrics = gather_metrics();
+        let metrics = gather_metrics().expect("Failed to gather metrics");
         assert!(metrics.contains("tsdb_health_status"));
         assert!(metrics.contains("tsdb_uptime_seconds"));
     }

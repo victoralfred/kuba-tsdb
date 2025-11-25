@@ -745,9 +745,13 @@ impl Compressor for GorillaCompressor {
             data: Bytes::from(compressed_data),
             metadata: BlockMetadata {
                 start_timestamp: points.first()
-                    .expect("points already validated non-empty").timestamp,
+                    .ok_or_else(|| CompressionError::InvalidData(
+                        "Cannot compress empty points array".into()
+                    ))?.timestamp,
                 end_timestamp: points.last()
-                    .expect("points already validated non-empty").timestamp,
+                    .ok_or_else(|| CompressionError::InvalidData(
+                        "Cannot compress empty points array".into()
+                    ))?.timestamp,
                 point_count: points.len(),
                 series_id: points[0].series_id,
             },

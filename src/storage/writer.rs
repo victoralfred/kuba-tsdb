@@ -416,12 +416,21 @@ impl ChunkWriter {
         };
 
         if let Some(active_arc) = chunk_to_seal {
-            // Try to unwrap Arc to get ownership, or clone if there are other references
-            let active = Arc::try_unwrap(active_arc).unwrap_or_else(|_arc| {
-                // If Arc has other references, we need to create a new chunk from data
-                // For now, just panic as this shouldn't happen in normal operation
-                panic!("Active chunk has multiple references during seal")
-            });
+            // Try to unwrap Arc to get ownership
+            let active = match Arc::try_unwrap(active_arc) {
+                Ok(chunk) => chunk,
+                Err(arc) => {
+                    // Arc has other references - put it back and return error
+                    // This can happen in rare race conditions
+                    let ref_count = Arc::strong_count(&arc);
+                    let mut active_guard = self.active_chunk.write().await;
+                    *active_guard = Some(arc);
+                    return Err(format!(
+                        "Cannot seal: chunk has {} active references (concurrent access detected)",
+                        ref_count
+                    ));
+                }
+            };
 
             let path = self.generate_chunk_path();
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
