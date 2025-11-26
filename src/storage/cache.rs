@@ -56,6 +56,7 @@
 //! ```
 
 use crate::types::SeriesId;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -253,6 +254,89 @@ impl MemoryTracker {
     }
 }
 
+/// LRU (Least Recently Used) list using VecDeque
+///
+/// Maintains access order:
+/// - Most recent at back (push_back)
+/// - Least recent at front (pop_front for eviction)
+/// - Access moves key to back
+///
+/// Note: For production, consider using a proper LRU crate like `lru` or `quick-cache`.
+/// This implementation trades some performance for simplicity and safety.
+pub struct LruList {
+    queue: VecDeque<CacheKey>,
+}
+
+impl LruList {
+    /// Create a new empty LRU list
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+        }
+    }
+
+    /// Get current size
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Add key to back (most recently used)
+    pub fn push_back(&mut self, key: CacheKey) {
+        self.queue.push_back(key);
+    }
+
+    /// Remove and return front key (least recently used)
+    pub fn pop_front(&mut self) -> Option<CacheKey> {
+        self.queue.pop_front()
+    }
+
+    /// Move key to back (mark as recently used)
+    /// Returns true if key was found and moved
+    pub fn touch(&mut self, key: &CacheKey) -> bool {
+        // Find and remove the key
+        if let Some(pos) = self.queue.iter().position(|k| k == key) {
+            let key = self.queue.remove(pos).unwrap();
+            // Re-add to back
+            self.queue.push_back(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a specific key
+    /// Returns true if key was found and removed
+    pub fn remove(&mut self, key: &CacheKey) -> bool {
+        if let Some(pos) = self.queue.iter().position(|k| k == key) {
+            self.queue.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear the list
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+
+    /// Get iterator over keys (front to back, LRU to MRU)
+    pub fn iter(&self) -> impl Iterator<Item = &CacheKey> {
+        self.queue.iter()
+    }
+}
+
+impl Default for LruList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +446,90 @@ mod tests {
 
         tracker.on_evict(0, 500);
         assert_eq!(tracker.usage_ratio(), 0.25);
+    }
+
+    #[test]
+    fn test_lru_list_push_pop() {
+        let mut lru = LruList::new();
+
+        assert!(lru.is_empty());
+        assert_eq!(lru.len(), 0);
+
+        let key1 = CacheKey::new(1, 100);
+        let key2 = CacheKey::new(1, 200);
+        let key3 = CacheKey::new(1, 300);
+
+        lru.push_back(key1.clone());
+        lru.push_back(key2.clone());
+        lru.push_back(key3.clone());
+
+        assert_eq!(lru.len(), 3);
+
+        // Pop should return in FIFO order (LRU at front)
+        assert_eq!(lru.pop_front(), Some(key1));
+        assert_eq!(lru.pop_front(), Some(key2));
+        assert_eq!(lru.len(), 1);
+    }
+
+    #[test]
+    fn test_lru_list_touch() {
+        let mut lru = LruList::new();
+
+        let key1 = CacheKey::new(1, 100);
+        let key2 = CacheKey::new(1, 200);
+        let key3 = CacheKey::new(1, 300);
+
+        lru.push_back(key1.clone());
+        lru.push_back(key2.clone());
+        lru.push_back(key3.clone());
+
+        // Touch key1 (move to back)
+        assert!(lru.touch(&key1));
+
+        // Now order should be: key2, key3, key1
+        assert_eq!(lru.pop_front(), Some(key2));
+        assert_eq!(lru.pop_front(), Some(key3));
+        assert_eq!(lru.pop_front(), Some(key1));
+    }
+
+    #[test]
+    fn test_lru_list_remove() {
+        let mut lru = LruList::new();
+
+        let key1 = CacheKey::new(1, 100);
+        let key2 = CacheKey::new(1, 200);
+        let key3 = CacheKey::new(1, 300);
+
+        lru.push_back(key1.clone());
+        lru.push_back(key2.clone());
+        lru.push_back(key3.clone());
+
+        // Remove middle element
+        assert!(lru.remove(&key2));
+        assert_eq!(lru.len(), 2);
+
+        // Try to remove non-existent key
+        let key4 = CacheKey::new(1, 400);
+        assert!(!lru.remove(&key4));
+
+        // Verify remaining order
+        assert_eq!(lru.pop_front(), Some(key1));
+        assert_eq!(lru.pop_front(), Some(key3));
+    }
+
+    #[test]
+    fn test_lru_list_clear() {
+        let mut lru = LruList::new();
+
+        lru.push_back(CacheKey::new(1, 100));
+        lru.push_back(CacheKey::new(1, 200));
+
+        assert_eq!(lru.len(), 2);
+
+        lru.clear();
+
+        assert!(lru.is_empty());
+        assert_eq!(lru.len(), 0);
+        assert_eq!(lru.pop_front(), None);
     }
 }

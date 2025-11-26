@@ -30,7 +30,7 @@ memmap2 = "0.9"
 snap = "1.0"
 
 # Index
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -59,17 +59,17 @@ libc = "0.2"
 num_cpus = "1.16"
 
 # Metrics and monitoring
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.14.0", features = ["process"] }
 lazy_static = "1.4"
 
 # Performance
 rayon = "1.8"
 
 # Security
-governor = "0.6"
+governor = "0.10.2"
 
 # Configuration
-toml = "0.8"
+toml = "0.9.8"
 
 [dev-dependencies]
 criterion = "0.7.0"
