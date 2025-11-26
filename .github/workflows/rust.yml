@@ -22,7 +22,9 @@ jobs:
       - name: Install cargo-audit and cargo-tarpaulin
         run: |
           cargo install cargo-audit
-          cargo install cargo-tarpaulin --locked --features "xml"
+          cargo install cargo-tarpaulin --locked
+          cargo tarpaulin --out Xml
+          
 
       - name: 🔍 Security Audit (vulnerability check)
         run: cargo audit
