@@ -627,7 +627,10 @@ impl CacheConfig {
     /// Set watermarks for memory pressure handling
     pub fn with_watermarks(mut self, low: f64, high: f64, critical: f64) -> Self {
         assert!(low > 0.0 && low < 1.0, "low_watermark must be 0.0-1.0");
-        assert!(high > low && high < 1.0, "high_watermark must be > low and < 1.0");
+        assert!(
+            high > low && high < 1.0,
+            "high_watermark must be > low and < 1.0"
+        );
         assert!(
             critical > high && critical < 1.0,
             "critical_watermark must be > high and < 1.0"
@@ -724,8 +727,7 @@ impl CacheStats {
     pub fn record_eviction(&self, size_bytes: usize) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
         self.entry_count.fetch_sub(1, Ordering::Relaxed);
-        self.current_bytes
-            .fetch_sub(size_bytes, Ordering::Relaxed);
+        self.current_bytes.fetch_sub(size_bytes, Ordering::Relaxed);
         self.bytes_evicted
             .fetch_add(size_bytes as u64, Ordering::Relaxed);
     }
@@ -865,7 +867,13 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
     /// Insert an entry into the cache
     ///
     /// Returns true if inserted, false if eviction needed but failed
-    pub fn insert(&self, key: CacheKey, data: T, size_bytes: usize, chunk_age_seconds: u64) -> bool {
+    pub fn insert(
+        &self,
+        key: CacheKey,
+        data: T,
+        size_bytes: usize,
+        chunk_age_seconds: u64,
+    ) -> bool {
         // Check if we need to evict first
         if !self.memory.can_insert(size_bytes) {
             // Try to evict to make space
@@ -1018,8 +1026,9 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
         let num_shards = self.shards.len();
 
         let handle = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(tokio::time::Duration::from_secs(config.eviction_interval_secs));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                config.eviction_interval_secs,
+            ));
 
             loop {
                 tokio::select! {
