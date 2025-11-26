@@ -41,6 +41,8 @@
 pub mod active_chunk;
 /// Core chunk storage with lifecycle management
 pub mod chunk;
+/// Background compression service for sealed chunks
+pub mod compressor;
 /// Directory management utilities (metadata, locks, cleanup)
 pub mod directory;
 /// Local disk storage engine implementation
@@ -54,6 +56,7 @@ pub mod writer;
 
 pub use active_chunk::ActiveChunk;
 pub use chunk::*;
+pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
 pub use local_disk::LocalDiskEngine;
 pub use mmap::MmapChunk;
