@@ -132,8 +132,8 @@ impl QueryCache {
     /// * `default_ttl_secs` - Default time-to-live for cache entries in seconds
     fn new(max_entries: usize, default_ttl_secs: u64) -> Self {
         // NonZeroUsize ensures cache capacity is at least 1
-        let capacity = NonZeroUsize::new(max_entries.max(1))
-            .expect("Cache capacity must be non-zero");
+        let capacity =
+            NonZeroUsize::new(max_entries.max(1)).expect("Cache capacity must be non-zero");
 
         Self {
             entries: LruCache::new(capacity),
@@ -330,10 +330,7 @@ impl QueryPlanner {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         // Execute query against Redis
-        let chunks = self
-            .index
-            .query_chunks(series_id, time_range)
-            .await?;
+        let chunks = self.index.query_chunks(series_id, time_range).await?;
 
         // Cache the result if applicable (async-safe)
         if plan.use_cache {
