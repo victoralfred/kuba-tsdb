@@ -57,6 +57,10 @@ pub mod reader;
 pub mod writer;
 
 pub use active_chunk::ActiveChunk;
+pub use cache::{
+    CacheConfig, CacheEntry, CacheKey, CacheManager, CacheShard, CacheStats, EntryMetadata,
+    LruList, MemoryTracker,
+};
 pub use chunk::*;
 pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
