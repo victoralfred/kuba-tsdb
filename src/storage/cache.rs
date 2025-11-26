@@ -724,10 +724,24 @@ impl CacheStats {
     }
 
     /// Record an eviction
+    ///
+    /// Uses saturating subtraction to prevent underflow.
     pub fn record_eviction(&self, size_bytes: usize) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
-        self.entry_count.fetch_sub(1, Ordering::Relaxed);
-        self.current_bytes.fetch_sub(size_bytes, Ordering::Relaxed);
+
+        // Fix P0-4: Use fetch_update with saturating_sub to prevent underflow
+        self.entry_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(1))
+            })
+            .ok();
+
+        self.current_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(size_bytes))
+            })
+            .ok();
+
         self.bytes_evicted
             .fetch_add(size_bytes as u64, Ordering::Relaxed);
     }
@@ -794,8 +808,8 @@ pub struct CacheManager<T: Clone + Send + Sync> {
     /// Configuration
     config: CacheConfig,
 
-    /// Cache shards for concurrent access
-    shards: Vec<CacheShard<T>>,
+    /// Cache shards for concurrent access (Arc for safe sharing with background task)
+    shards: Arc<Vec<CacheShard<T>>>,
 
     /// Memory tracker
     memory: Arc<MemoryTracker>,
@@ -835,7 +849,7 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
 
         Self {
             config,
-            shards,
+            shards: Arc::new(shards),
             memory,
             stats,
             eviction_handle: parking_lot::RwLock::new(None),
@@ -998,11 +1012,24 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
     }
 
     /// Clear all entries from the cache
+    ///
+    /// Properly updates memory tracking and statistics.
     pub fn clear(&self) {
-        for shard in &self.shards {
-            shard.clear();
+        for (shard_id, shard) in self.shards.iter().enumerate() {
+            // Collect entries to properly track eviction
+            let keys: Vec<CacheKey> = shard.keys();
+
+            for key in keys {
+                if let Some(entry) = shard.remove(&key) {
+                    let size = entry.metadata.size_bytes;
+                    self.memory.on_evict(shard_id, size);
+
+                    if let Some(ref stats) = self.stats {
+                        stats.record_eviction(size);
+                    }
+                }
+            }
         }
-        // Memory tracker will be reset through evictions
     }
 
     /// Get the number of entries in the cache
@@ -1022,8 +1049,8 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
         let config = self.config.clone();
         let memory = self.memory.clone();
         let stats = self.stats.clone();
-        let shards_ptr = self.shards.as_ptr() as usize;
-        let num_shards = self.shards.len();
+        let shards = self.shards.clone(); // Safe Arc clone instead of raw pointer
+        let num_shards = shards.len();
 
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
@@ -1044,12 +1071,6 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
                             if current > target {
                                 let to_free = current - target;
                                 let mut freed = 0;
-
-                                // Reconstruct shards reference (unsafe but controlled)
-                                // SAFETY: CacheManager owns shards and is not dropped while background task runs
-                                let shards = unsafe {
-                                    std::slice::from_raw_parts(shards_ptr as *const CacheShard<T>, num_shards)
-                                };
 
                                 // Evict from each shard
                                 for shard_id in 0..num_shards {
@@ -1081,8 +1102,14 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
             }
         });
 
-        *self.eviction_handle.write() = Some(handle);
-        *self.shutdown_tx.write() = Some(shutdown_tx);
+        // Fix P0-2: Drop lock before await point
+        let mut handle_guard = self.eviction_handle.write();
+        *handle_guard = Some(handle);
+        drop(handle_guard); // Explicitly drop before next await
+
+        let mut tx_guard = self.shutdown_tx.write();
+        *tx_guard = Some(shutdown_tx);
+        drop(tx_guard);
 
         Ok(())
     }
