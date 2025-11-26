@@ -1,7 +1,7 @@
-///! Metrics and telemetry for Gorilla TSDB
-///!
-///! This module provides Prometheus metrics for monitoring system performance,
-///! resource usage, errors, and data integrity.
+//! Metrics and telemetry for Gorilla TSDB
+//!
+//! This module provides Prometheus metrics for monitoring system performance,
+//! resource usage, errors, and data integrity.
 use lazy_static::lazy_static;
 use prometheus::{
     register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,

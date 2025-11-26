@@ -1,35 +1,35 @@
-///! Chunk Reader for efficient time-series data querying
-///!
-///! The `ChunkReader` provides a high-level interface for reading and querying
-///! chunk data with support for:
-///! - Time range filtering
-///! - Memory-mapped zero-copy reads
-///! - Parallel chunk loading
-///! - Streaming decompression
-///! - Result pagination
-///!
-///! # Example
-///!
-///! ```no_run
-///! use gorilla_tsdb::storage::reader::{ChunkReader, QueryOptions};
-///! use gorilla_tsdb::types::DataPoint;
-///!
-///! # async fn example() -> Result<(), String> {
-///! let reader = ChunkReader::new();
-///!
-///! // Query with time range filter
-///! let options = QueryOptions {
-///!     start_time: Some(1000),
-///!     end_time: Some(5000),
-///!     limit: Some(1000),
-///!     use_mmap: true,
-///! };
-///!
-///! let points = reader.read_chunk("/data/chunk_001.gor", options).await?;
-///! println!("Read {} points", points.len());
-///! # Ok(())
-///! # }
-///! ```
+//! Chunk Reader for efficient time-series data querying
+//!
+//! The `ChunkReader` provides a high-level interface for reading and querying
+//! chunk data with support for:
+//! - Time range filtering
+//! - Memory-mapped zero-copy reads
+//! - Parallel chunk loading
+//! - Streaming decompression
+//! - Result pagination
+//!
+//! # Example
+//!
+//! ```no_run
+//! use gorilla_tsdb::storage::reader::{ChunkReader, QueryOptions};
+//! use gorilla_tsdb::types::DataPoint;
+//!
+//! # async fn example() -> Result<(), String> {
+//! let reader = ChunkReader::new();
+//!
+//! // Query with time range filter
+//! let options = QueryOptions {
+//!     start_time: Some(1000),
+//!     end_time: Some(5000),
+//!     limit: Some(1000),
+//!     use_mmap: true,
+//! };
+//!
+//! let points = reader.read_chunk("/data/chunk_001.gor", options).await?;
+//! println!("Read {} points", points.len());
+//! # Ok(())
+//! # }
+//! ```
 use crate::compression::gorilla::GorillaCompressor;
 use crate::engine::traits::Compressor;
 use crate::storage::chunk::Chunk;
@@ -273,8 +273,8 @@ impl ChunkReader {
             points.retain(|p| {
                 let after_start = options
                     .start_time
-                    .map_or(true, |start| p.timestamp >= start);
-                let before_end = options.end_time.map_or(true, |end| p.timestamp <= end);
+                    .is_none_or(|start| p.timestamp >= start);
+                let before_end = options.end_time.is_none_or(|end| p.timestamp <= end);
                 after_start && before_end
             });
         }

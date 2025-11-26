@@ -421,7 +421,7 @@ impl RedisPool {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| IndexError::ConnectionError(e))?;
+            .map_err(IndexError::ConnectionError)?;
 
         // Create Redis client (using sanitized URL in error messages to prevent credential leakage)
         let client = Client::open(config.url.as_str()).map_err(|e| {
