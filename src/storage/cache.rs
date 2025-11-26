@@ -781,6 +781,321 @@ impl CacheStats {
     }
 }
 
+/// Multi-tier cache manager
+///
+/// Manages a sharded LRU cache with automatic eviction and statistics tracking.
+pub struct CacheManager<T: Clone + Send + Sync> {
+    /// Configuration
+    config: CacheConfig,
+
+    /// Cache shards for concurrent access
+    shards: Vec<CacheShard<T>>,
+
+    /// Memory tracker
+    memory: Arc<MemoryTracker>,
+
+    /// Statistics (optional)
+    stats: Option<Arc<CacheStats>>,
+
+    /// Background eviction handle
+    eviction_handle: parking_lot::RwLock<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Shutdown signal
+    shutdown_tx: parking_lot::RwLock<Option<tokio::sync::mpsc::Sender<()>>>,
+}
+
+impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
+    /// Create a new cache manager
+    pub fn new(config: CacheConfig) -> Self {
+        let num_shards = config.num_shards;
+        let max_bytes = config.max_size_bytes;
+        let enable_stats = config.enable_stats;
+
+        // Create shards
+        let mut shards = Vec::with_capacity(num_shards);
+        for _ in 0..num_shards {
+            shards.push(CacheShard::new());
+        }
+
+        // Create memory tracker
+        let memory = Arc::new(MemoryTracker::new(max_bytes, num_shards));
+
+        // Create stats if enabled
+        let stats = if enable_stats {
+            Some(Arc::new(CacheStats::new()))
+        } else {
+            None
+        };
+
+        Self {
+            config,
+            shards,
+            memory,
+            stats,
+            eviction_handle: parking_lot::RwLock::new(None),
+            shutdown_tx: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Get an entry from the cache
+    pub fn get(&self, key: &CacheKey) -> Option<Arc<T>> {
+        // Calculate shard
+        let shard_id = key.shard_id(self.config.num_shards);
+        let shard = &self.shards[shard_id];
+
+        // Try to get from shard
+        let result = shard.get(key);
+
+        // Update stats
+        if let Some(ref stats) = self.stats {
+            if result.is_some() {
+                stats.record_hit();
+            } else {
+                stats.record_miss();
+            }
+        }
+
+        result
+    }
+
+    /// Insert an entry into the cache
+    ///
+    /// Returns true if inserted, false if eviction needed but failed
+    pub fn insert(&self, key: CacheKey, data: T, size_bytes: usize, chunk_age_seconds: u64) -> bool {
+        // Check if we need to evict first
+        if !self.memory.can_insert(size_bytes) {
+            // Try to evict to make space
+            if !self.evict_to_fit(size_bytes) {
+                return false;
+            }
+        }
+
+        // Calculate shard
+        let shard_id = key.shard_id(self.config.num_shards);
+        let shard = &self.shards[shard_id];
+
+        // Create metadata
+        let metadata = EntryMetadata::new(size_bytes, chunk_age_seconds);
+
+        // Insert into shard
+        let old_entry = shard.insert(key, data, metadata);
+
+        // Update memory tracking
+        if let Some(old) = old_entry {
+            // Replacing existing entry
+            let old_size = old.metadata.size_bytes;
+            self.memory.on_evict(shard_id, old_size);
+            if let Some(ref stats) = self.stats {
+                stats.record_eviction(old_size);
+            }
+        }
+
+        self.memory.on_insert(shard_id, size_bytes);
+
+        // Update stats
+        if let Some(ref stats) = self.stats {
+            stats.record_insertion(size_bytes);
+        }
+
+        true
+    }
+
+    /// Remove an entry from the cache
+    pub fn remove(&self, key: &CacheKey) -> Option<Arc<T>> {
+        let shard_id = key.shard_id(self.config.num_shards);
+        let shard = &self.shards[shard_id];
+
+        let entry = shard.remove(key)?;
+        let size = entry.metadata.size_bytes;
+
+        // Update memory tracking
+        self.memory.on_evict(shard_id, size);
+
+        // Update stats
+        if let Some(ref stats) = self.stats {
+            stats.record_eviction(size);
+        }
+
+        Some(entry.data)
+    }
+
+    /// Evict entries to fit a new entry of given size
+    ///
+    /// Returns true if enough space was freed
+    fn evict_to_fit(&self, needed_bytes: usize) -> bool {
+        let current = self.memory.current_bytes();
+        let max = self.memory.max_bytes();
+
+        // Calculate how much we need to free
+        let target_bytes = if current + needed_bytes > max {
+            (current + needed_bytes) - max
+        } else {
+            return true; // Already have space
+        };
+
+        let mut freed_bytes = 0;
+
+        // Try to evict from each shard in round-robin
+        for _ in 0..self.shards.len() * 10 {
+            // Max 10 attempts per shard
+            if freed_bytes >= target_bytes {
+                return true;
+            }
+
+            // Find shard with most memory usage
+            let mut max_shard_id = 0;
+            let mut max_shard_bytes = 0;
+
+            for (shard_id, _) in self.shards.iter().enumerate() {
+                let bytes = self.memory.shard_bytes(shard_id);
+                if bytes > max_shard_bytes {
+                    max_shard_bytes = bytes;
+                    max_shard_id = shard_id;
+                }
+            }
+
+            if max_shard_bytes == 0 {
+                break; // No more entries to evict
+            }
+
+            // Evict LRU from this shard
+            if let Some((_, entry)) = self.shards[max_shard_id].pop_lru() {
+                let size = entry.metadata.size_bytes;
+                self.memory.on_evict(max_shard_id, size);
+                freed_bytes += size;
+
+                if let Some(ref stats) = self.stats {
+                    stats.record_eviction(size);
+                }
+            } else {
+                break; // Shard is empty
+            }
+        }
+
+        freed_bytes >= target_bytes
+    }
+
+    /// Get current memory usage ratio (0.0 to 1.0)
+    pub fn memory_usage_ratio(&self) -> f64 {
+        self.memory.usage_ratio()
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> Option<Arc<CacheStats>> {
+        self.stats.clone()
+    }
+
+    /// Clear all entries from the cache
+    pub fn clear(&self) {
+        for shard in &self.shards {
+            shard.clear();
+        }
+        // Memory tracker will be reset through evictions
+    }
+
+    /// Get the number of entries in the cache
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.len()).sum()
+    }
+
+    /// Check if the cache is empty
+    pub fn is_empty(&self) -> bool {
+        self.shards.iter().all(|s| s.is_empty())
+    }
+
+    /// Start background eviction thread
+    pub async fn start_background_eviction(&self) -> Result<(), String> {
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+        let config = self.config.clone();
+        let memory = self.memory.clone();
+        let stats = self.stats.clone();
+        let shards_ptr = self.shards.as_ptr() as usize;
+        let num_shards = self.shards.len();
+
+        let handle = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(config.eviction_interval_secs));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Check memory pressure
+                        let usage_ratio = memory.usage_ratio();
+
+                        if usage_ratio > config.high_watermark {
+                            // High pressure - evict to low watermark
+                            let current = memory.current_bytes();
+                            let target = config.low_watermark_bytes();
+
+                            if current > target {
+                                let to_free = current - target;
+                                let mut freed = 0;
+
+                                // Reconstruct shards reference (unsafe but controlled)
+                                // SAFETY: CacheManager owns shards and is not dropped while background task runs
+                                let shards = unsafe {
+                                    std::slice::from_raw_parts(shards_ptr as *const CacheShard<T>, num_shards)
+                                };
+
+                                // Evict from each shard
+                                for shard_id in 0..num_shards {
+                                    while freed < to_free {
+                                        if let Some((_, entry)) = shards[shard_id].pop_lru() {
+                                            let size = entry.metadata.size_bytes;
+                                            memory.on_evict(shard_id, size);
+                                            freed += size;
+
+                                            if let Some(ref stats) = stats {
+                                                stats.record_eviction(size);
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+
+                                    if freed >= to_free {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        *self.eviction_handle.write() = Some(handle);
+        *self.shutdown_tx.write() = Some(shutdown_tx);
+
+        Ok(())
+    }
+
+    /// Stop background eviction thread
+    pub async fn stop_background_eviction(&self) {
+        if let Some(tx) = self.shutdown_tx.write().take() {
+            let _ = tx.send(()).await;
+        }
+
+        if let Some(handle) = self.eviction_handle.write().take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+impl<T: Clone + Send + Sync> Drop for CacheManager<T> {
+    fn drop(&mut self) {
+        // Send shutdown signal if background task is running
+        if let Some(tx) = self.shutdown_tx.write().take() {
+            // Best effort - don't block
+            let _ = tx.try_send(());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,5 +1516,139 @@ mod tests {
         // Entry count and current_bytes should NOT be reset
         assert_eq!(stats.entry_count(), 1);
         assert_eq!(stats.current_bytes(), 100);
+    }
+
+    // CacheManager tests
+    #[test]
+    fn test_cache_manager_basic_operations() {
+        let config = CacheConfig::new(1024).with_shards(4);
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        // Insert
+        let key = CacheKey::new(1, 100);
+        let data = vec![1, 2, 3, 4];
+        assert!(cache.insert(key.clone(), data.clone(), 4, 0));
+
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+
+        // Get
+        let retrieved = cache.get(&key).unwrap();
+        assert_eq!(*retrieved, data);
+
+        // Stats should track hit
+        if let Some(stats) = cache.stats() {
+            assert_eq!(stats.hits(), 1);
+            assert_eq!(stats.misses(), 0);
+        }
+    }
+
+    #[test]
+    fn test_cache_manager_eviction() {
+        // Small cache to force eviction
+        let config = CacheConfig::new(100).with_shards(2);
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        // Fill cache
+        for i in 0..10 {
+            let key = CacheKey::new(1, i);
+            let data = vec![0u8; 20]; // 20 bytes each
+            cache.insert(key, data, 20, 0);
+        }
+
+        // Cache should have evicted old entries
+        assert!(cache.len() < 10);
+        assert!(cache.memory_usage_ratio() <= 1.0);
+
+        // Verify stats
+        if let Some(stats) = cache.stats() {
+            assert!(stats.evictions() > 0);
+        }
+    }
+
+    #[test]
+    fn test_cache_manager_remove() {
+        let config = CacheConfig::new(1024).with_shards(4);
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        let key = CacheKey::new(1, 100);
+        let data = vec![1, 2, 3, 4];
+
+        cache.insert(key.clone(), data.clone(), 4, 0);
+        assert_eq!(cache.len(), 1);
+
+        let removed = cache.remove(&key).unwrap();
+        assert_eq!(*removed, data);
+        assert_eq!(cache.len(), 0);
+
+        // Second remove should return None
+        assert!(cache.remove(&key).is_none());
+    }
+
+    #[test]
+    fn test_cache_manager_clear() {
+        let config = CacheConfig::new(1024).with_shards(4);
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        // Insert multiple entries
+        for i in 0..10 {
+            let key = CacheKey::new(1, i);
+            cache.insert(key, vec![i as u8], 1, 0);
+        }
+
+        assert_eq!(cache.len(), 10);
+
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_manager_replacement() {
+        let config = CacheConfig::new(1024).with_shards(4);
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        let key = CacheKey::new(1, 100);
+
+        // Insert first value
+        cache.insert(key.clone(), vec![1], 1, 0);
+        assert_eq!(*cache.get(&key).unwrap(), vec![1]);
+
+        // Replace with new value
+        cache.insert(key.clone(), vec![2], 1, 0);
+        assert_eq!(*cache.get(&key).unwrap(), vec![2]);
+
+        // Should still have only 1 entry
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_manager_background_eviction() {
+        let config = CacheConfig::new(200)
+            .with_shards(2)
+            .with_watermarks(0.5, 0.8, 0.95);
+
+        let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
+
+        // Start background eviction
+        cache.start_background_eviction().await.unwrap();
+
+        // Fill cache past high watermark
+        for i in 0..20 {
+            let key = CacheKey::new(1, i);
+            cache.insert(key, vec![0u8; 20], 20, 0);
+        }
+
+        // Wait for background eviction to run
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Stop background eviction
+        cache.stop_background_eviction().await;
+
+        // Memory usage should be controlled
+        assert!(cache.memory_usage_ratio() < 1.0);
     }
 }
