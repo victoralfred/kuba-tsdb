@@ -1,0 +1,88 @@
+name: Rust CI/CD
+
+on:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "main" ]
+  # Allow manual runs for debugging
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 1. Check Standard Quality & Security
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit and cargo-tarpaulin
+        run: |
+          cargo install cargo-audit
+          cargo install cargo-tarpaulin --locked --features "xml"
+
+      - name: 🔍 Security Audit (vulnerability check)
+        run: cargo audit
+
+      - name: 🎨 Check Formatting
+        # Check that code is formatted correctly (read-only check)
+        run: cargo fmt --check
+
+      - name: 🧹 Linting (warnings as errors)
+        # Use clippy to catch common mistakes; -- -Dwarnings treats all warnings as errors
+        run: cargo clippy -- -D warnings
+
+  # 2. Build and Test Matrix
+  build-and-test:
+    needs: [lint-and-format]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Run checks concurrently, but don't fail the whole job if one combo fails (optional)
+      fail-fast: false
+      matrix:
+        # Cover major OS environments
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Test against different Rust versions for compatibility
+        rust: [stable, beta]
+        # Test debug (default) and release builds for edge cases
+        config:  [ debug, release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }} toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Build (${{ matrix.config }} mode)
+        run: cargo build ${{ matrix.config == 'release' && '--release' || '' }} --verbose
+
+      - name: Run Tests (${{ matrix.config }} mode)
+        # Add --locked to prevent accidental dependency changes during CI
+        run: cargo test ${{ matrix.config == 'release' && '--release' || '' }} --verbose --locked
+
+  # 3. Code Coverage (often done only on 'stable' for main branch)
+  coverage:
+    needs: [build-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked --features "xml"
+
+      - name: 🧪 Run Coverage
+        # Run tarpaulin and output an LCOV/XML report
+        run: cargo tarpaulin --verbose --workspace --out Xml
+
+      - name: Upload Coverage Report to CodeCov/Coveralls (Example)
+        # Replace with your actual service action (e.g., codecov/codecov-action@v4)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: cobertura.xml
