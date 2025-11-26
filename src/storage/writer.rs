@@ -6,7 +6,6 @@
 ///! - Automatic chunk rotation based on configurable thresholds
 ///! - Async write pipeline with backpressure handling
 ///! - Automatic sealing when thresholds are exceeded
-
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
 use crate::storage::chunk::Chunk;
 use crate::types::{DataPoint, SeriesId};
@@ -113,7 +112,7 @@ impl Default for ChunkWriterConfig {
         Self {
             max_points: 10_000,
             max_duration: Duration::from_secs(3600), // 1 hour
-            max_size_bytes: 1024 * 1024,  // 1 MB
+            max_size_bytes: 1024 * 1024,             // 1 MB
             initial_capacity: 1_000,
             auto_seal: true,
             write_buffer_size: 1_000,
@@ -236,7 +235,10 @@ impl ChunkWriter {
         }
 
         // Apply rate limiting if enabled
-        if crate::config::Config::default().security.enable_rate_limiting {
+        if crate::config::Config::default()
+            .security
+            .enable_rate_limiting
+        {
             if !crate::security::check_write_rate_limit() {
                 crate::metrics::record_error("rate_limit", "write");
                 return Err("Write rate limit exceeded".to_string());
@@ -433,10 +435,8 @@ impl ChunkWriter {
                 // Don't set active_chunk_points to 0 - new chunk may already have points
                 // Read from actual active chunk instead
                 let active_guard = self.active_chunk.read().await;
-                stats.active_chunk_points = active_guard
-                    .as_ref()
-                    .map(|c| c.point_count())
-                    .unwrap_or(0);
+                stats.active_chunk_points =
+                    active_guard.as_ref().map(|c| c.point_count()).unwrap_or(0);
             }
 
             Ok(sealed)
@@ -478,11 +478,13 @@ impl ChunkWriter {
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
 
             // Send seal request to background worker
-            self.seal_tx.send(SealRequest {
-                chunk: active,
-                path,
-                response_tx,
-            }).map_err(|e| format!("Failed to send seal request: {}", e))?;
+            self.seal_tx
+                .send(SealRequest {
+                    chunk: active,
+                    path,
+                    response_tx,
+                })
+                .map_err(|e| format!("Failed to send seal request: {}", e))?;
 
             // Don't wait for response, continue immediately
             // Background worker will handle the seal
@@ -523,10 +525,7 @@ impl ChunkWriter {
         // Always read active_chunk_points from live chunk for accuracy
         // This ensures stats reflect concurrent writes during seal
         let active_guard = self.active_chunk.read().await;
-        stats.active_chunk_points = active_guard
-            .as_ref()
-            .map(|c| c.point_count())
-            .unwrap_or(0);
+        stats.active_chunk_points = active_guard.as_ref().map(|c| c.point_count()).unwrap_or(0);
 
         stats
     }
@@ -615,9 +614,21 @@ mod tests {
         );
 
         let points = vec![
-            DataPoint { series_id: 1, timestamp: 1000, value: 1.0 },
-            DataPoint { series_id: 1, timestamp: 2000, value: 2.0 },
-            DataPoint { series_id: 1, timestamp: 3000, value: 3.0 },
+            DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 1.0,
+            },
+            DataPoint {
+                series_id: 1,
+                timestamp: 2000,
+                value: 2.0,
+            },
+            DataPoint {
+                series_id: 1,
+                timestamp: 3000,
+                value: 3.0,
+            },
         ];
 
         let count = writer.write_batch(points).await.unwrap();
@@ -659,11 +670,14 @@ mod tests {
 
         // Write some points
         for i in 0..10 {
-            writer.write(DataPoint {
-                series_id: 1,
-                timestamp: i * 1000,
-                value: i as f64,
-            }).await.unwrap();
+            writer
+                .write(DataPoint {
+                    series_id: 1,
+                    timestamp: i * 1000,
+                    value: i as f64,
+                })
+                .await
+                .unwrap();
         }
 
         // Manual seal
@@ -688,11 +702,14 @@ mod tests {
 
         // Write enough points to trigger auto-seal
         for i in 0..10 {
-            writer.write(DataPoint {
-                series_id: 1,
-                timestamp: i * 1000,
-                value: i as f64,
-            }).await.unwrap();
+            writer
+                .write(DataPoint {
+                    series_id: 1,
+                    timestamp: i * 1000,
+                    value: i as f64,
+                })
+                .await
+                .unwrap();
         }
 
         // Give background seal time to complete
@@ -718,11 +735,14 @@ mod tests {
 
         // Write points up to threshold
         for i in 0..5 {
-            writer.write(DataPoint {
-                series_id: 1,
-                timestamp: i * 1000,
-                value: i as f64,
-            }).await.unwrap();
+            writer
+                .write(DataPoint {
+                    series_id: 1,
+                    timestamp: i * 1000,
+                    value: i as f64,
+                })
+                .await
+                .unwrap();
         }
 
         // Should now need sealing
@@ -739,11 +759,14 @@ mod tests {
         );
 
         // Write points
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: 1000,
-            value: 42.0,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .await
+            .unwrap();
 
         // Flush
         let chunk = writer.flush().await.unwrap();

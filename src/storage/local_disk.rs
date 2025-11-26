@@ -95,7 +95,12 @@ impl LocalDiskEngine {
     }
 
     /// Get the file path for a chunk
-    fn chunk_path(&self, series_id: SeriesId, chunk_id: &ChunkId, compression: CompressionType) -> PathBuf {
+    fn chunk_path(
+        &self,
+        series_id: SeriesId,
+        chunk_id: &ChunkId,
+        compression: CompressionType,
+    ) -> PathBuf {
         let extension = match compression {
             CompressionType::None => "raw",
             CompressionType::Gorilla => "gor",
@@ -146,7 +151,10 @@ impl LocalDiskEngine {
     }
 
     /// Load all chunks for a series
-    async fn load_series_chunks(&self, series_id: SeriesId) -> Result<Vec<ChunkMetadata>, StorageError> {
+    async fn load_series_chunks(
+        &self,
+        series_id: SeriesId,
+    ) -> Result<Vec<ChunkMetadata>, StorageError> {
         use crate::storage::chunk::ChunkHeader;
         use tokio::io::AsyncReadExt;
 
@@ -223,7 +231,10 @@ impl StorageEngine for LocalDiskEngine {
         "local-disk-v1"
     }
 
-    async fn initialize(&self, _config: crate::engine::traits::StorageConfig) -> Result<(), StorageError> {
+    async fn initialize(
+        &self,
+        _config: crate::engine::traits::StorageConfig,
+    ) -> Result<(), StorageError> {
         // Load existing chunk index from disk
         self.load_index().await
     }
@@ -256,9 +267,9 @@ impl StorageEngine for LocalDiskEngine {
         header.flags = crate::storage::chunk::ChunkFlags::sealed();
 
         // Validate header before writing
-        header.validate().map_err(|e| {
-            StorageError::ChunkNotFound(format!("Invalid chunk header: {}", e))
-        })?;
+        header
+            .validate()
+            .map_err(|e| StorageError::ChunkNotFound(format!("Invalid chunk header: {}", e)))?;
 
         // Serialize header to bytes
         let header_bytes = header.to_bytes();
@@ -317,7 +328,10 @@ impl StorageEngine for LocalDiskEngine {
         })
     }
 
-    async fn read_chunk(&self, location: &crate::engine::traits::ChunkLocation) -> Result<crate::engine::traits::CompressedBlock, StorageError> {
+    async fn read_chunk(
+        &self,
+        location: &crate::engine::traits::ChunkLocation,
+    ) -> Result<crate::engine::traits::CompressedBlock, StorageError> {
         use crate::storage::chunk::ChunkHeader;
         use tokio::io::AsyncReadExt;
 
@@ -350,16 +364,18 @@ impl StorageEngine for LocalDiskEngine {
         })?;
 
         // Validate header
-        header.validate().map_err(|e| {
-            StorageError::ChunkNotFound(format!("Invalid chunk header: {}", e))
-        })?;
+        header
+            .validate()
+            .map_err(|e| StorageError::ChunkNotFound(format!("Invalid chunk header: {}", e)))?;
 
         // Read compressed data
         let mut compressed_data = vec![0u8; header.compressed_size as usize];
         file.read_exact(&mut compressed_data).await?;
 
         // Verify checksum
-        if header.checksum != crate::compression::gorilla::GorillaCompressor::calculate_checksum(&compressed_data) {
+        if header.checksum
+            != crate::compression::gorilla::GorillaCompressor::calculate_checksum(&compressed_data)
+        {
             return Err(StorageError::ChunkNotFound(
                 "Chunk checksum verification failed".to_string(),
             ));
@@ -397,7 +413,10 @@ impl StorageEngine for LocalDiskEngine {
         })
     }
 
-    async fn delete_chunk(&self, location: &crate::engine::traits::ChunkLocation) -> Result<(), StorageError> {
+    async fn delete_chunk(
+        &self,
+        location: &crate::engine::traits::ChunkLocation,
+    ) -> Result<(), StorageError> {
         // Verify engine ID matches
         if location.engine_id != self.engine_id() {
             return Err(StorageError::ChunkNotFound(format!(
@@ -427,9 +446,10 @@ impl StorageEngine for LocalDiskEngine {
         file.read_exact(&mut header_bytes).await?;
         drop(file); // Close file before deletion
 
-        let header = crate::storage::chunk::ChunkHeader::from_bytes(&header_bytes).map_err(|e| {
-            StorageError::ChunkNotFound(format!("Failed to parse chunk header: {}", e))
-        })?;
+        let header =
+            crate::storage::chunk::ChunkHeader::from_bytes(&header_bytes).map_err(|e| {
+                StorageError::ChunkNotFound(format!("Failed to parse chunk header: {}", e))
+            })?;
 
         // Delete the file
         fs::remove_file(&path).await?;
@@ -483,7 +503,10 @@ impl StorageEngine for LocalDiskEngine {
                         offset: Some(0),
                         size: Some(c.size_bytes as usize),
                     },
-                    time_range: crate::types::TimeRange::new_unchecked(c.start_timestamp, c.end_timestamp),
+                    time_range: crate::types::TimeRange::new_unchecked(
+                        c.start_timestamp,
+                        c.end_timestamp,
+                    ),
                     size_bytes: c.size_bytes as usize,
                     point_count: c.point_count as usize,
                     created_at: c.created_at,
@@ -499,7 +522,12 @@ impl StorageEngine for LocalDiskEngine {
         &self,
         _series_id: SeriesId,
         _time_range: crate::types::TimeRange,
-    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<crate::engine::traits::CompressedBlock, StorageError>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures::Stream<Item = Result<crate::engine::traits::CompressedBlock, StorageError>>
+                + Send,
+        >,
+    > {
         // TODO: Implement streaming
         Box::pin(futures::stream::empty())
     }
@@ -563,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_empty() {
-        use crate::engine::traits::{StorageEngine, StorageConfig};
+        use crate::engine::traits::{StorageConfig, StorageEngine};
 
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
@@ -589,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_chunks_with_time_filter() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use crate::types::TimeRange;
         use bytes::Bytes;
 
@@ -599,7 +627,8 @@ mod tests {
         // Write chunks with different time ranges
         for i in 0..5 {
             let test_data = vec![i as u8; 10];
-            let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+            let checksum =
+                crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
             let block = CompressedBlock {
                 algorithm_id: "gorilla".to_string(),
@@ -648,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_and_read_chunk() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use bytes::Bytes;
 
         let temp_dir = TempDir::new().unwrap();
@@ -656,7 +685,8 @@ mod tests {
 
         // Create test data
         let test_data = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+        let checksum =
+            crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
         let block = CompressedBlock {
             algorithm_id: "gorilla".to_string(),
@@ -675,7 +705,10 @@ mod tests {
         let chunk_id = ChunkId::new();
 
         // Write chunk
-        let location = engine.write_chunk(1, chunk_id.clone(), &block).await.unwrap();
+        let location = engine
+            .write_chunk(1, chunk_id.clone(), &block)
+            .await
+            .unwrap();
 
         // Verify location
         assert_eq!(location.engine_id, "local-disk-v1");
@@ -710,7 +743,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_chunk() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use bytes::Bytes;
 
         let temp_dir = TempDir::new().unwrap();
@@ -718,7 +751,8 @@ mod tests {
 
         // Create and write test chunk
         let test_data = vec![1u8; 100];
-        let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+        let checksum =
+            crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
         let block = CompressedBlock {
             algorithm_id: "gorilla".to_string(),
@@ -759,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_series() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use bytes::Bytes;
 
         let temp_dir = TempDir::new().unwrap();
@@ -768,7 +802,8 @@ mod tests {
         // Write chunks for multiple series
         for series_id in 1..=3 {
             let test_data = vec![series_id as u8; 50];
-            let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+            let checksum =
+                crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
             let block = CompressedBlock {
                 algorithm_id: "gorilla".to_string(),
@@ -784,7 +819,10 @@ mod tests {
                 },
             };
 
-            engine.write_chunk(series_id, ChunkId::new(), &block).await.unwrap();
+            engine
+                .write_chunk(series_id, ChunkId::new(), &block)
+                .await
+                .unwrap();
         }
 
         // Verify all series have chunks
@@ -841,16 +879,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_checksum_verification() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use bytes::Bytes;
-        use tokio::io::{AsyncWriteExt, AsyncSeekExt};
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
 
         // Write a valid chunk
         let test_data = vec![1u8; 100];
-        let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+        let checksum =
+            crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
         let block = CompressedBlock {
             algorithm_id: "gorilla".to_string(),
@@ -889,7 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_index_on_restart() {
-        use crate::engine::traits::{CompressedBlock, BlockMetadata, StorageEngine};
+        use crate::engine::traits::{BlockMetadata, CompressedBlock, StorageEngine};
         use bytes::Bytes;
 
         let temp_dir = TempDir::new().unwrap();
@@ -899,7 +938,8 @@ mod tests {
             let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
 
             let test_data = vec![42u8; 50];
-            let checksum = crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+            let checksum =
+                crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
 
             let block = CompressedBlock {
                 algorithm_id: "gorilla".to_string(),
@@ -915,7 +955,10 @@ mod tests {
                 },
             };
 
-            engine.write_chunk(42, ChunkId::new(), &block).await.unwrap();
+            engine
+                .write_chunk(42, ChunkId::new(), &block)
+                .await
+                .unwrap();
 
             // Verify stats before restart
             let stats = engine.stats();
@@ -927,7 +970,10 @@ mod tests {
         let engine2 = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
 
         // Initialize (load index from disk)
-        engine2.initialize(crate::engine::traits::StorageConfig::default()).await.unwrap();
+        engine2
+            .initialize(crate::engine::traits::StorageConfig::default())
+            .await
+            .unwrap();
 
         // Verify chunks were loaded
         let chunks = engine2.list_chunks(42, None).await.unwrap();

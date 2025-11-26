@@ -96,7 +96,7 @@ pub enum MmapError {
         /// Expected magic number
         expected: u32,
         /// Actual magic number found
-        actual: u32
+        actual: u32,
     },
 
     /// Unsupported chunk version
@@ -109,7 +109,7 @@ pub enum MmapError {
         /// Expected file size
         expected: u64,
         /// Actual file size
-        actual: u64
+        actual: u64,
     },
 
     /// Checksum verification failed
@@ -118,7 +118,7 @@ pub enum MmapError {
         /// Expected checksum
         expected: u64,
         /// Actual checksum
-        actual: u64
+        actual: u64,
     },
 
     /// Access outside file bounds
@@ -138,7 +138,7 @@ pub enum MmapError {
         /// Actual chunk size
         size: u64,
         /// Maximum allowed size
-        max: u64
+        max: u64,
     },
 
     /// Empty chunk file
@@ -151,7 +151,7 @@ pub enum MmapError {
         /// Start timestamp
         start: i64,
         /// End timestamp
-        end: i64
+        end: i64,
     },
 
     /// Invalid point count
@@ -232,14 +232,15 @@ impl MmapChunk {
         }
 
         // Memory-map the file (read-only)
-        let mmap = unsafe { memmap2::MmapOptions::new().len(file_size as usize).map(&file)? };
+        let mmap = unsafe {
+            memmap2::MmapOptions::new()
+                .len(file_size as usize)
+                .map(&file)?
+        };
 
         // Parse header (first 64 bytes)
-        let header_bytes: &[u8; 64] = &mmap[0..64]
-            .try_into()
-            .expect("slice is exactly 64 bytes");
-        let header =
-            ChunkHeader::from_bytes(header_bytes).map_err(MmapError::HeaderParse)?;
+        let header_bytes: &[u8; 64] = &mmap[0..64].try_into().expect("slice is exactly 64 bytes");
+        let header = ChunkHeader::from_bytes(header_bytes).map_err(MmapError::HeaderParse)?;
 
         // Validate header fields
         Self::validate_header(&header, file_size)?;
@@ -356,11 +357,7 @@ impl MmapChunk {
         };
 
         unsafe {
-            let result = libc::madvise(
-                mmap.as_ptr() as *mut libc::c_void,
-                mmap.len(),
-                advice,
-            );
+            let result = libc::madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), advice);
 
             if result != 0 {
                 return Err(MmapError::Io(Error::last_os_error()));

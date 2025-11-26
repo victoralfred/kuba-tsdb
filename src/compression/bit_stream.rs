@@ -108,8 +108,8 @@ impl BitWriter {
         // If we've filled a complete byte (8 bits), flush it to buffer
         if self.bit_position >= 8 {
             self.buffer.push(self.current_byte);
-            self.current_byte = 0;       // Reset for next byte
-            self.bit_position = 0;       // Reset position counter
+            self.current_byte = 0; // Reset for next byte
+            self.bit_position = 0; // Reset position counter
         }
     }
 
@@ -308,8 +308,8 @@ impl<'a> BitReader<'a> {
 
         // If we've read all 8 bits of current byte, move to next byte
         if self.bit_position >= 8 {
-            self.byte_position += 1;  // Move to next byte
-            self.bit_position = 0;    // Reset to first bit of new byte
+            self.byte_position += 1; // Move to next byte
+            self.bit_position = 0; // Reset to first bit of new byte
         }
 
         Ok(bit)
@@ -343,9 +343,10 @@ impl<'a> BitReader<'a> {
     pub fn read_bits(&mut self, num_bits: u8) -> Result<u64, CompressionError> {
         // Validate input: can't read more than 64 bits into a u64
         if num_bits > 64 {
-            return Err(CompressionError::InvalidData(
-                format!("Cannot read more than 64 bits (requested: {})", num_bits)
-            ));
+            return Err(CompressionError::InvalidData(format!(
+                "Cannot read more than 64 bits (requested: {})",
+                num_bits
+            )));
         }
 
         let mut value: u64 = 0;
@@ -499,107 +500,109 @@ mod tests {
         assert!(reader.read_bit().is_err());
     }
     #[test]
-fn test_write_read_64_bits_boundary_patterns() {
-    let patterns = [
-        0xFFFFFFFFFFFFFFFFu64,
-        0x0000000000000000u64,
-        0xAAAAAAAAAAAAAAAAu64, // 1010...
-        0x5555555555555555u64, // 0101...
-        0x8000000000000001u64, // MSB + LSB
-    ];
+    fn test_write_read_64_bits_boundary_patterns() {
+        let patterns = [
+            0xFFFFFFFFFFFFFFFFu64,
+            0x0000000000000000u64,
+            0xAAAAAAAAAAAAAAAAu64, // 1010...
+            0x5555555555555555u64, // 0101...
+            0x8000000000000001u64, // MSB + LSB
+        ];
 
-    for &value in &patterns {
+        for &value in &patterns {
+            let mut writer = BitWriter::new();
+            writer.write_bits(value, 64);
+
+            let buffer = writer.finish();
+            let mut reader = BitReader::new(&buffer);
+
+            assert_eq!(reader.read_bits(64).unwrap(), value);
+        }
+    }
+    #[test]
+    fn test_cross_byte_boundaries() {
         let mut writer = BitWriter::new();
-        writer.write_bits(value, 64);
+
+        writer.write_bits(0b1, 1); // uses bit 0
+        writer.write_bits(0b1010101, 7); // fills byte exactly
+        writer.write_bits(0b11, 2); // crosses into next byte
 
         let buffer = writer.finish();
         let mut reader = BitReader::new(&buffer);
 
-        assert_eq!(reader.read_bits(64).unwrap(), value);
+        assert_eq!(reader.read_bits(1).unwrap(), 0b1);
+        assert_eq!(reader.read_bits(7).unwrap(), 0b1010101);
+        assert_eq!(reader.read_bits(2).unwrap(), 0b11);
     }
-}
-#[test]
-fn test_cross_byte_boundaries() {
-    let mut writer = BitWriter::new();
-
-    writer.write_bits(0b1, 1);         // uses bit 0
-    writer.write_bits(0b1010101, 7);   // fills byte exactly
-    writer.write_bits(0b11, 2);        // crosses into next byte
-
-    let buffer = writer.finish();
-    let mut reader = BitReader::new(&buffer);
-
-    assert_eq!(reader.read_bits(1).unwrap(), 0b1);
-    assert_eq!(reader.read_bits(7).unwrap(), 0b1010101);
-    assert_eq!(reader.read_bits(2).unwrap(), 0b11);
-}
-#[test]
-fn test_is_at_end_bit_precision() {
-    let mut writer = BitWriter::new();
-    writer.write_bits(0b10110000, 8);
-    let buffer = writer.finish();
-
-    let mut reader = BitReader::new(&buffer);
-    assert!(!reader.is_at_end());
-
-    // read 4 bits (still in the same byte)
-    reader.read_bits(4).unwrap();
-    assert!(!reader.is_at_end(), "reader incorrectly reports end when bits remain");
-
-    // read remaining bits
-    reader.read_bits(4).unwrap();
-    assert!(reader.is_at_end());
-}
-#[test]
-fn test_partial_byte_padding_accuracy() {
-    let mut writer = BitWriter::new();
-    writer.write_bits(0b1011, 4); // expect top 4 bits = 1011
-
-    let buffer = writer.finish();
-    assert_eq!(buffer.len(), 1);
-
-    let byte = buffer[0];
-    assert_eq!(byte >> 4, 0b1011, "high nibble is wrong");
-    assert_eq!(byte & 0b1111, 0, "low nibble should be zero padding");
-}
-#[test]
-fn test_reversed_bit_patterns() {
-    let mut writer = BitWriter::new();
-    writer.write_bits(0b11010000, 8); // known MSB pattern
-
-    let buffer = writer.finish();
-    let mut reader = BitReader::new(&buffer);
-
-    assert_eq!(reader.read_bits(1).unwrap(), 1);
-    assert_eq!(reader.read_bits(1).unwrap(), 1);
-    assert_eq!(reader.read_bits(1).unwrap(), 0);
-    assert_eq!(reader.read_bits(1).unwrap(), 1);
-}
-#[test]
-fn fuzzy_random_bit_sequences() {
-    use rand::Rng;
-
-    let mut rng = rand::rng();
-
-    for _ in 0..10_000 {
-        let bit_len: u8 = rng.random_range(1..=64);
-        let value: u64 = rng.random();
-
+    #[test]
+    fn test_is_at_end_bit_precision() {
         let mut writer = BitWriter::new();
-        writer.write_bits(value, bit_len);
+        writer.write_bits(0b10110000, 8);
         let buffer = writer.finish();
 
         let mut reader = BitReader::new(&buffer);
-        let read_val = reader.read_bits(bit_len).unwrap();
+        assert!(!reader.is_at_end());
 
-        let mask = if bit_len == 64 {
-            u64::MAX
-        } else {
-            (1u64 << bit_len) - 1
-        };
+        // read 4 bits (still in the same byte)
+        reader.read_bits(4).unwrap();
+        assert!(
+            !reader.is_at_end(),
+            "reader incorrectly reports end when bits remain"
+        );
 
-        assert_eq!(read_val, value & mask);
+        // read remaining bits
+        reader.read_bits(4).unwrap();
+        assert!(reader.is_at_end());
     }
-}
+    #[test]
+    fn test_partial_byte_padding_accuracy() {
+        let mut writer = BitWriter::new();
+        writer.write_bits(0b1011, 4); // expect top 4 bits = 1011
 
+        let buffer = writer.finish();
+        assert_eq!(buffer.len(), 1);
+
+        let byte = buffer[0];
+        assert_eq!(byte >> 4, 0b1011, "high nibble is wrong");
+        assert_eq!(byte & 0b1111, 0, "low nibble should be zero padding");
+    }
+    #[test]
+    fn test_reversed_bit_patterns() {
+        let mut writer = BitWriter::new();
+        writer.write_bits(0b11010000, 8); // known MSB pattern
+
+        let buffer = writer.finish();
+        let mut reader = BitReader::new(&buffer);
+
+        assert_eq!(reader.read_bits(1).unwrap(), 1);
+        assert_eq!(reader.read_bits(1).unwrap(), 1);
+        assert_eq!(reader.read_bits(1).unwrap(), 0);
+        assert_eq!(reader.read_bits(1).unwrap(), 1);
+    }
+    #[test]
+    fn fuzzy_random_bit_sequences() {
+        use rand::Rng;
+
+        let mut rng = rand::rng();
+
+        for _ in 0..10_000 {
+            let bit_len: u8 = rng.random_range(1..=64);
+            let value: u64 = rng.random();
+
+            let mut writer = BitWriter::new();
+            writer.write_bits(value, bit_len);
+            let buffer = writer.finish();
+
+            let mut reader = BitReader::new(&buffer);
+            let read_val = reader.read_bits(bit_len).unwrap();
+
+            let mask = if bit_len == 64 {
+                u64::MAX
+            } else {
+                (1u64 << bit_len) - 1
+            };
+
+            assert_eq!(read_val, value & mask);
+        }
+    }
 }

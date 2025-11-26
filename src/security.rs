@@ -2,8 +2,11 @@
 ///!
 ///! This module provides security features including path validation,
 ///! rate limiting, and input sanitization.
-
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::{InMemoryState, NotKeyed}};
+use governor::{
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter,
+};
 use lazy_static::lazy_static;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -62,7 +65,10 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     }
 
     // Check for Unicode look-alike characters (homograph attacks)
-    if path_str.contains('\u{2024}') || path_str.contains('\u{2025}') || path_str.contains('\u{2026}') {
+    if path_str.contains('\u{2024}')
+        || path_str.contains('\u{2025}')
+        || path_str.contains('\u{2026}')
+    {
         return Err("Path contains suspicious Unicode characters".to_string());
     }
 
@@ -70,10 +76,7 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     if let Some(filename) = path.file_name() {
         let name = filename.to_string_lossy();
         if name.contains('\0') || name.contains("..") {
-            return Err(format!(
-                "Suspicious filename detected: {:?}",
-                filename
-            ));
+            return Err(format!("Suspicious filename detected: {:?}", filename));
         }
 
         // Ensure .gor extension
@@ -108,17 +111,19 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
         }
 
         // Canonicalize to resolve any symlinks in the path
-        let canonical = check_path.canonicalize()
+        let canonical = check_path
+            .canonicalize()
             .map_err(|e| format!("Failed to canonicalize path {:?}: {}", check_path, e))?;
 
         // Get data directory from environment or use default
-        let data_dir = std::env::var("TSDB_DATA_DIR")
-            .unwrap_or_else(|_| "/data/gorilla-tsdb".to_string());
+        let data_dir =
+            std::env::var("TSDB_DATA_DIR").unwrap_or_else(|_| "/data/gorilla-tsdb".to_string());
         let data_dir = PathBuf::from(data_dir);
 
         // If data directory exists, canonicalize and check containment
         if data_dir.exists() {
-            let canonical_data = data_dir.canonicalize()
+            let canonical_data = data_dir
+                .canonicalize()
                 .map_err(|e| format!("Failed to canonicalize data dir {:?}: {}", data_dir, e))?;
 
             if !canonical.starts_with(&canonical_data) {

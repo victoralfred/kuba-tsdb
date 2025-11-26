@@ -2,13 +2,12 @@
 ///!
 ///! Provides utilities for managing series directories, metadata files,
 ///! write locks, and cleanup operations.
-
 use crate::error::StorageError;
 use crate::types::SeriesId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::{AsyncReadExt};
+use tokio::io::AsyncReadExt;
 
 /// Series metadata stored in metadata.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,20 +64,22 @@ impl SeriesMetadata {
     /// Load metadata from file
     pub async fn load(path: &Path) -> Result<Self, StorageError> {
         let contents = fs::read_to_string(path).await?;
-        serde_json::from_str(&contents)
-            .map_err(|e| StorageError::Io(std::io::Error::new(
+        serde_json::from_str(&contents).map_err(|e| {
+            StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Failed to parse metadata: {}", e),
-            )))
+            ))
+        })
     }
 
     /// Save metadata to file (atomic write)
     pub async fn save(&self, path: &Path) -> Result<(), StorageError> {
-        let contents = serde_json::to_string_pretty(self)
-            .map_err(|e| StorageError::Io(std::io::Error::new(
+        let contents = serde_json::to_string_pretty(self).map_err(|e| {
+            StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Failed to serialize metadata: {}", e),
-            )))?;
+            ))
+        })?;
 
         // Atomic write: write to temp file, then rename
         let temp_path = path.with_extension("tmp");
@@ -411,14 +412,15 @@ impl DirectoryMaintenance {
     /// Validate directory structure
     ///
     /// Checks for corrupted files, orphaned files, and missing metadata
-    pub async fn validate_directory(
-        series_path: &Path,
-    ) -> Result<Vec<String>, StorageError> {
+    pub async fn validate_directory(series_path: &Path) -> Result<Vec<String>, StorageError> {
         let mut issues = Vec::new();
 
         // Check if directory exists
         if !series_path.exists() {
-            issues.push(format!("Series directory does not exist: {:?}", series_path));
+            issues.push(format!(
+                "Series directory does not exist: {:?}",
+                series_path
+            ));
             return Ok(issues);
         }
 
@@ -456,9 +458,7 @@ impl DirectoryMaintenance {
     }
 
     /// Remove empty series directories
-    pub async fn cleanup_empty_directories(
-        base_path: &Path,
-    ) -> Result<usize, StorageError> {
+    pub async fn cleanup_empty_directories(base_path: &Path) -> Result<usize, StorageError> {
         let mut removed_count = 0;
         let mut entries = fs::read_dir(base_path).await?;
 
@@ -579,9 +579,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Create some chunk files
-        fs::write(temp_dir.path().join("chunk_old.gor"), b"old").await.unwrap();
+        fs::write(temp_dir.path().join("chunk_old.gor"), b"old")
+            .await
+            .unwrap();
         sleep(Duration::from_millis(10)).await;
-        fs::write(temp_dir.path().join("chunk_new.gor"), b"new").await.unwrap();
+        fs::write(temp_dir.path().join("chunk_new.gor"), b"new")
+            .await
+            .unwrap();
 
         // Create metadata with 0 retention (should not delete anything)
         let metadata = SeriesMetadata::new(1);
@@ -607,7 +611,10 @@ mod tests {
 
         // Add metadata
         let metadata = SeriesMetadata::new(1);
-        metadata.save(&temp_dir.path().join("metadata.json")).await.unwrap();
+        metadata
+            .save(&temp_dir.path().join("metadata.json"))
+            .await
+            .unwrap();
 
         // Still should have issues (no chunks)
         let issues = DirectoryMaintenance::validate_directory(temp_dir.path())

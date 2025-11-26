@@ -1,6 +1,5 @@
 /// Comprehensive tests to investigate the 9 claimed issues in test.result
 /// Each test targets a specific claim to determine if it's a real bug.
-
 use gorilla_tsdb::compression::bit_stream::{BitReader, BitWriter};
 
 /// ISSUE #1: Bit Ordering (MSB vs LSB) Is Inconsistent
@@ -18,7 +17,10 @@ fn test_issue1_bit_ordering_consistency() {
 
     let mut reader = BitReader::new(&buffer);
     let read_value = reader.read_bits(8).unwrap();
-    assert_eq!(read_value, 0b10101100, "Read value should match written value");
+    assert_eq!(
+        read_value, 0b10101100,
+        "Read value should match written value"
+    );
 
     // Test 2: Multi-byte pattern (16 bits)
     let mut writer = BitWriter::new();
@@ -42,8 +44,14 @@ fn test_issue1_bit_ordering_consistency() {
     for i in (0..8).rev() {
         let expected_bit = (pattern >> i) & 1 == 1;
         let read_bit = reader.read_bit().unwrap();
-        assert_eq!(read_bit, expected_bit, "Bit {} mismatch: expected {}, got {}",
-                   7-i, expected_bit, read_bit);
+        assert_eq!(
+            read_bit,
+            expected_bit,
+            "Bit {} mismatch: expected {}, got {}",
+            7 - i,
+            expected_bit,
+            read_bit
+        );
     }
 }
 
@@ -52,13 +60,13 @@ fn test_issue1_bit_ordering_consistency() {
 #[test]
 fn test_issue2_64bit_boundary() {
     let test_cases = vec![
-        0xFFFFFFFFFFFFFFFF,  // All 1s
-        0x0000000000000000,  // All 0s
-        0x8000000000000000,  // Only MSB set
-        0x0000000000000001,  // Only LSB set
-        0x8000000000000001,  // MSB and LSB set
-        0xAAAAAAAAAAAAAAAA,  // Alternating 1010...
-        0x5555555555555555,  // Alternating 0101...
+        0xFFFFFFFFFFFFFFFF, // All 1s
+        0x0000000000000000, // All 0s
+        0x8000000000000000, // Only MSB set
+        0x0000000000000001, // Only LSB set
+        0x8000000000000001, // MSB and LSB set
+        0xAAAAAAAAAAAAAAAA, // Alternating 1010...
+        0x5555555555555555, // Alternating 0101...
     ];
 
     for &value in &test_cases {
@@ -69,9 +77,11 @@ fn test_issue2_64bit_boundary() {
         let mut reader = BitReader::new(&buffer);
         let read_value = reader.read_bits(64).unwrap();
 
-        assert_eq!(read_value, value,
-                   "64-bit value mismatch: written 0x{:016X}, read 0x{:016X}",
-                   value, read_value);
+        assert_eq!(
+            read_value, value,
+            "64-bit value mismatch: written 0x{:016X}, read 0x{:016X}",
+            value, read_value
+        );
     }
 }
 
@@ -81,9 +91,9 @@ fn test_issue2_64bit_boundary() {
 fn test_issue3_cross_byte_boundaries() {
     // Write sequence: 1 bit, 7 bits, 2 bits (crosses byte boundaries)
     let mut writer = BitWriter::new();
-    writer.write_bits(0b1, 1);         // 1 bit: 1
-    writer.write_bits(0b0101010, 7);   // 7 bits: 0101010
-    writer.write_bits(0b11, 2);        // 2 bits: 11
+    writer.write_bits(0b1, 1); // 1 bit: 1
+    writer.write_bits(0b0101010, 7); // 7 bits: 0101010
+    writer.write_bits(0b11, 2); // 2 bits: 11
 
     let buffer = writer.finish();
     println!("Cross-byte buffer: {:08b} {:08b}", buffer[0], buffer[1]);
@@ -97,7 +107,11 @@ fn test_issue3_cross_byte_boundaries() {
     // Verify by reading back
     let mut reader = BitReader::new(&buffer);
     assert_eq!(reader.read_bits(1).unwrap(), 0b1, "First bit mismatch");
-    assert_eq!(reader.read_bits(7).unwrap(), 0b0101010, "Next 7 bits mismatch");
+    assert_eq!(
+        reader.read_bits(7).unwrap(),
+        0b0101010,
+        "Next 7 bits mismatch"
+    );
     assert_eq!(reader.read_bits(2).unwrap(), 0b11, "Last 2 bits mismatch");
 }
 
@@ -105,7 +119,7 @@ fn test_issue3_cross_byte_boundaries() {
 /// Claim: "returns true even though data remains" when bits remain in final byte
 #[test]
 fn test_issue4_is_at_end_semantics() {
-    let data = vec![0xFF];  // One byte
+    let data = vec![0xFF]; // One byte
     let mut reader = BitReader::new(&data);
 
     // Initially not at end
@@ -114,7 +128,10 @@ fn test_issue4_is_at_end_semantics() {
     // Read 5 bits (still in first byte)
     reader.read_bits(5).unwrap();
     let at_end_after_5_bits = reader.is_at_end();
-    println!("is_at_end() after reading 5 of 8 bits: {}", at_end_after_5_bits);
+    println!(
+        "is_at_end() after reading 5 of 8 bits: {}",
+        at_end_after_5_bits
+    );
     println!("Position after 5 bits: {:?}", reader.position());
 
     // The document claims this should return false (data remains)
@@ -125,7 +142,10 @@ fn test_issue4_is_at_end_semantics() {
     println!("Position after all 8 bits: {:?}", reader.position());
 
     // Now should definitely be at end
-    assert!(reader.is_at_end(), "Should be at end after reading all bits");
+    assert!(
+        reader.is_at_end(),
+        "Should be at end after reading all bits"
+    );
 
     // Try to read more - should fail
     assert!(reader.read_bit().is_err(), "Reading past end should error");
@@ -184,12 +204,15 @@ fn test_issue6_value_masking() {
 
     // Test with another value
     let mut writer = BitWriter::new();
-    writer.write_bits(0xFF, 4);  // All bits set, but only write 4
+    writer.write_bits(0xFF, 4); // All bits set, but only write 4
     let buffer = writer.finish();
 
     let mut reader = BitReader::new(&buffer);
     let read_value = reader.read_bits(4).unwrap();
-    println!("Writing 0xFF with num_bits=4, read back: 0b{:04b}", read_value);
+    println!(
+        "Writing 0xFF with num_bits=4, read back: 0b{:04b}",
+        read_value
+    );
 
     // Should be 0b1111 (lower 4 bits of 0xFF)
     assert_eq!(read_value, 0b1111, "Should read lower 4 bits");
@@ -199,7 +222,7 @@ fn test_issue6_value_masking() {
 /// Claim: "garbage data being returned" when reading beyond buffer
 #[test]
 fn test_issue7_over_reading_protection() {
-    let data = vec![0xFF];  // One byte = 8 bits
+    let data = vec![0xFF]; // One byte = 8 bits
     let mut reader = BitReader::new(&data);
 
     // Read all 8 bits - should succeed
@@ -220,7 +243,10 @@ fn test_issue7_over_reading_protection() {
     let mut reader = BitReader::new(&data);
     let result = reader.read_bits(10);
     println!("Reading 10 bits from 8-bit buffer: {:?}", result);
-    assert!(result.is_err(), "Reading more bits than available should error");
+    assert!(
+        result.is_err(),
+        "Reading more bits than available should error"
+    );
 }
 
 /// ISSUE #8: Cursor Synchronization Errors (Writer vs Reader)
@@ -303,7 +329,7 @@ fn test_issue9_fuzz_verification() {
         if read_value != expected {
             failures.push((iteration, num_bits, value, expected, read_value));
             if failures.len() >= 10 {
-                break;  // Stop after finding 10 failures
+                break; // Stop after finding 10 failures
             }
         }
     }
@@ -311,8 +337,10 @@ fn test_issue9_fuzz_verification() {
     if !failures.is_empty() {
         println!("\nFound {} failures in fuzz testing:", failures.len());
         for (iter, bits, val, exp, got) in &failures {
-            println!("  Iteration {}: {} bits, value=0x{:016X}, expected=0x{:016X}, got=0x{:016X}",
-                     iter, bits, val, exp, got);
+            println!(
+                "  Iteration {}: {} bits, value=0x{:016X}, expected=0x{:016X}, got=0x{:016X}",
+                iter, bits, val, exp, got
+            );
         }
         panic!("Fuzz test found {} failures", failures.len());
     }

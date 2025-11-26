@@ -4,10 +4,10 @@
 //! the performance claims in the implementation.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
 use gorilla_tsdb::storage::chunk::Chunk;
 use gorilla_tsdb::storage::mmap::MmapChunk;
 use gorilla_tsdb::types::DataPoint;
+use std::hint::black_box;
 use std::path::PathBuf;
 use tempfile::TempDir;
 

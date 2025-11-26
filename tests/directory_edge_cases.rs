@@ -208,10 +208,7 @@ async fn test_cleanup_permission_denied() {
     fs::set_permissions(&chunk_path, perms).await.unwrap();
 
     // Make directory read-only to prevent deletion
-    let mut dir_perms = fs::metadata(temp_dir.path())
-        .await
-        .unwrap()
-        .permissions();
+    let mut dir_perms = fs::metadata(temp_dir.path()).await.unwrap().permissions();
     dir_perms.set_mode(0o555); // Read + execute only
     fs::set_permissions(temp_dir.path(), dir_perms)
         .await
@@ -223,10 +220,7 @@ async fn test_cleanup_permission_denied() {
     let result = DirectoryMaintenance::cleanup_old_chunks(temp_dir.path(), &metadata).await;
 
     // Restore permissions for cleanup
-    let mut restore_perms = fs::metadata(temp_dir.path())
-        .await
-        .unwrap()
-        .permissions();
+    let mut restore_perms = fs::metadata(temp_dir.path()).await.unwrap().permissions();
     restore_perms.set_mode(0o755);
     fs::set_permissions(temp_dir.path(), restore_perms)
         .await
@@ -521,7 +515,7 @@ async fn test_no_resource_leaks_concurrent() {
         for i in 0..50 {
             let dir = temp_dir.path().to_path_buf();
             let handle = tokio::spawn(async move {
-                let  metadata = SeriesMetadata::new((round * 50 + i) as u128);
+                let metadata = SeriesMetadata::new((round * 50 + i) as u128);
                 let path = dir.join(format!("meta_{}_{}.json", round, i));
 
                 metadata.save(&path).await.unwrap();

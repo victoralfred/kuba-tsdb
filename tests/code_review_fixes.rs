@@ -5,7 +5,6 @@
 ///! - Security validation
 ///! - Compression edge cases
 ///! - Concurrent operations
-
 use gorilla_tsdb::compression::gorilla::GorillaCompressor;
 use gorilla_tsdb::engine::traits::Compressor;
 use gorilla_tsdb::security::{validate_chunk_path, validate_series_id, validate_timestamp};
@@ -154,11 +153,7 @@ fn test_invalid_extension_blocked() {
 
     for path in invalid_extensions {
         let result = validate_chunk_path(path);
-        assert!(
-            result.is_err(),
-            "Invalid extension not blocked: {}",
-            path
-        );
+        assert!(result.is_err(), "Invalid extension not blocked: {}", path);
     }
 }
 

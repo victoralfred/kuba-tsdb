@@ -5,7 +5,6 @@
 ///! addressed and cannot be exploited.
 ///!
 ///! Run with: cargo test --test security_vulnerabilities_tests
-
 use gorilla_tsdb::compression::gorilla::GorillaCompressor;
 use gorilla_tsdb::engine::traits::{BlockMetadata, CompressedBlock, Compressor};
 use gorilla_tsdb::security;
@@ -23,12 +22,17 @@ fn test_sv1_1_path_traversal_basic() {
     let result = security::validate_chunk_path("../../../etc/passwd");
     assert!(result.is_err(), "Should reject ../ traversal");
     let error_msg = result.unwrap_err();
-    assert!(error_msg.contains("traversal") || error_msg.contains(".."),
-            "Error should mention path traversal");
+    assert!(
+        error_msg.contains("traversal") || error_msg.contains(".."),
+        "Error should mention path traversal"
+    );
 
     // Absolute path attempt
     let result = security::validate_chunk_path("/etc/passwd");
-    assert!(result.is_err(), "Should reject absolute paths outside data dir");
+    assert!(
+        result.is_err(),
+        "Should reject absolute paths outside data dir"
+    );
 }
 
 /// SV-1.2: Test URL-encoded traversal bypass attempt
@@ -53,8 +57,10 @@ fn test_sv1_3_path_traversal_unicode() {
 fn test_sv1_4_null_byte_injection() {
     let result = security::validate_chunk_path("valid_path\0/etc/passwd");
     assert!(result.is_err(), "Should reject paths with null bytes");
-    assert!(result.unwrap_err().contains("null"),
-            "Error should mention null byte");
+    assert!(
+        result.unwrap_err().contains("null"),
+        "Error should mention null byte"
+    );
 }
 
 /// SV-1.5: Test symlink attacks
@@ -83,8 +89,11 @@ fn test_sv1_5_symlink_attack() {
     // 2. Canonicalize and reject path outside data dir
     if let Ok(validated) = result {
         // If accepted, must be within data_dir after canonicalization
-        assert!(validated.starts_with(&data_dir),
-                "Validated path must be within data dir, got: {:?}", validated);
+        assert!(
+            validated.starts_with(&data_dir),
+            "Validated path must be within data dir, got: {:?}",
+            validated
+        );
     } else {
         // Rejection is also acceptable
         assert!(result.is_err());
@@ -154,10 +163,13 @@ async fn test_sv2_1_timestamp_overflow_compression() {
     // 1. Reject due to validation, or
     // 2. Use checked arithmetic and fail gracefully
     if let Err(e) = result {
-        assert!(e.to_string().contains("overflow") ||
-                e.to_string().contains("invalid") ||
-                e.to_string().contains("timestamp"),
-                "Error should mention overflow or invalid timestamp: {}", e);
+        assert!(
+            e.to_string().contains("overflow")
+                || e.to_string().contains("invalid")
+                || e.to_string().contains("timestamp"),
+            "Error should mention overflow or invalid timestamp: {}",
+            e
+        );
     } else {
         // If compression succeeded, decompression must produce correct values
         let block = result.unwrap();
@@ -194,8 +206,11 @@ async fn test_sv2_2_non_monotonic_timestamps() {
     // Should reject non-monotonic timestamps
     assert!(result.is_err(), "Should reject non-monotonic timestamps");
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("increasing") || error.contains("monotonic") || error.contains("order"),
-            "Error should mention ordering: {}", error);
+    assert!(
+        error.contains("increasing") || error.contains("monotonic") || error.contains("order"),
+        "Error should mention ordering: {}",
+        error
+    );
 }
 
 /// SV-2.3: Test reserved timestamp values
@@ -204,22 +219,28 @@ async fn test_sv2_3_reserved_timestamp_values() {
     let compressor = GorillaCompressor::new();
 
     // Test i64::MIN
-    let result1 = compressor.compress(&[DataPoint {
-        series_id: 1,
-        timestamp: i64::MIN,
-        value: 1.0,
-    }]).await;
+    let result1 = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: i64::MIN,
+            value: 1.0,
+        }])
+        .await;
 
     // Test i64::MAX
-    let result2 = compressor.compress(&[DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX,
-        value: 2.0,
-    }]).await;
+    let result2 = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX,
+            value: 2.0,
+        }])
+        .await;
 
     // Both should be rejected as reserved values
-    assert!(result1.is_err() || result2.is_err(),
-            "Reserved timestamp values should be rejected");
+    assert!(
+        result1.is_err() || result2.is_err(),
+        "Reserved timestamp values should be rejected"
+    );
 }
 
 /// SV-2.4: Test delta-of-delta overflow
@@ -266,8 +287,10 @@ async fn test_sv2_4_delta_of_delta_overflow() {
 
             // Either preserved exactly OR precision loss is documented
             if diff > 0 {
-                eprintln!("Note: Large timestamp delta caused precision loss: {} != {}, diff: {}",
-                          expected, actual, diff);
+                eprintln!(
+                    "Note: Large timestamp delta caused precision loss: {} != {}, diff: {}",
+                    expected, actual, diff
+                );
             }
         }
         Err(_) => {
@@ -287,15 +310,19 @@ fn test_sv3_1_reserved_series_ids() {
     let result = security::validate_series_id(0);
     assert!(result.is_err(), "Series ID 0 should be rejected");
     let error_msg = result.unwrap_err();
-    assert!(error_msg.contains("reserved") || error_msg.contains("0"),
-            "Error should mention reserved or 0");
+    assert!(
+        error_msg.contains("reserved") || error_msg.contains("0"),
+        "Error should mention reserved or 0"
+    );
 
     // Series ID u128::MAX should be reserved
     let result = security::validate_series_id(u128::MAX);
     assert!(result.is_err(), "Series ID u128::MAX should be rejected");
     let error_msg = result.unwrap_err();
-    assert!(error_msg.contains("reserved") || error_msg.contains("MAX"),
-            "Error should mention reserved or MAX");
+    assert!(
+        error_msg.contains("reserved") || error_msg.contains("MAX"),
+        "Error should mention reserved or MAX"
+    );
 }
 
 /// SV-3.2: Test valid series IDs are accepted
@@ -349,7 +376,10 @@ fn test_sv4_2_read_rate_limiting() {
 
     // Should have blocked some requests
     assert!(blocked > 0, "Rate limiter should block read requests");
-    println!("Read rate limiter: allowed={}, blocked={}", allowed, blocked);
+    println!(
+        "Read rate limiter: allowed={}, blocked={}",
+        allowed, blocked
+    );
 }
 
 /// SV-4.3: Test rate limiting recovers over time
@@ -413,8 +443,11 @@ fn test_sv5_2_file_ownership_validation() {
 
     // File should be owned by current user
     use std::os::unix::fs::MetadataExt;
-    assert_eq!(metadata.uid(), current_uid,
-               "Test file should be owned by current user");
+    assert_eq!(
+        metadata.uid(),
+        current_uid,
+        "Test file should be owned by current user"
+    );
 }
 
 // ============================================================================
@@ -427,25 +460,31 @@ async fn test_compression_malicious_inputs() {
     let compressor = GorillaCompressor::new();
 
     // Extremely large value
-    let result1 = compressor.compress(&[DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: f64::MAX,
-    }]).await;
+    let result1 = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: f64::MAX,
+        }])
+        .await;
 
     // NaN value
-    let result2 = compressor.compress(&[DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: f64::NAN,
-    }]).await;
+    let result2 = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: f64::NAN,
+        }])
+        .await;
 
     // Infinity
-    let result3 = compressor.compress(&[DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: f64::INFINITY,
-    }]).await;
+    let result3 = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: f64::INFINITY,
+        }])
+        .await;
 
     // All should either succeed or fail gracefully (no panic)
     assert!(result1.is_ok() || result1.is_err());
@@ -485,23 +524,53 @@ async fn test_timestamp_validation_comprehensive() {
     let compressor = GorillaCompressor::new();
 
     // Test case 1: Duplicate timestamps
-    let dup_result = compressor.compress(&[
-        DataPoint { series_id: 1, timestamp: 1000, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 1000, value: 2.0 },
-    ]).await;
-    assert!(dup_result.is_err(), "Duplicate timestamps should be rejected");
+    let dup_result = compressor
+        .compress(&[
+            DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 1.0,
+            },
+            DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 2.0,
+            },
+        ])
+        .await;
+    assert!(
+        dup_result.is_err(),
+        "Duplicate timestamps should be rejected"
+    );
 
     // Test case 2: Backwards timestamp
-    let back_result = compressor.compress(&[
-        DataPoint { series_id: 1, timestamp: 2000, value: 2.0 },
-        DataPoint { series_id: 1, timestamp: 1000, value: 1.0 },
-    ]).await;
-    assert!(back_result.is_err(), "Backwards timestamps should be rejected");
+    let back_result = compressor
+        .compress(&[
+            DataPoint {
+                series_id: 1,
+                timestamp: 2000,
+                value: 2.0,
+            },
+            DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 1.0,
+            },
+        ])
+        .await;
+    assert!(
+        back_result.is_err(),
+        "Backwards timestamps should be rejected"
+    );
 
     // Test case 3: Zero timestamp allowed
-    let zero_result = compressor.compress(&[
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-    ]).await;
+    let zero_result = compressor
+        .compress(&[DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        }])
+        .await;
     assert!(zero_result.is_ok(), "Zero timestamp should be allowed");
 }
 
@@ -527,15 +596,20 @@ async fn test_resource_exhaustion_prevention() {
     match result {
         Ok(block) => {
             // If successful, compressed size should be reasonable
-            assert!(block.data.len() < 1024 * 1024 * 1024,
-                    "Compressed data should not exceed 1GB");
+            assert!(
+                block.data.len() < 1024 * 1024 * 1024,
+                "Compressed data should not exceed 1GB"
+            );
         }
         Err(e) => {
             // Rejection is also acceptable
-            assert!(e.to_string().contains("limit") ||
-                    e.to_string().contains("too large") ||
-                    e.to_string().contains("size"),
-                    "Error should mention size limit: {}", e);
+            assert!(
+                e.to_string().contains("limit")
+                    || e.to_string().contains("too large")
+                    || e.to_string().contains("size"),
+                "Error should mention size limit: {}",
+                e
+            );
         }
     }
 }

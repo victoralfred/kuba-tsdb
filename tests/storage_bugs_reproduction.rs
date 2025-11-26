@@ -236,10 +236,7 @@ async fn bug_lock_race_process_check() {
     let result = lock.try_acquire().await;
 
     // Should fail because our process is still alive
-    assert!(
-        result.is_err(),
-        "Should detect lock held by alive process"
-    );
+    assert!(result.is_err(), "Should detect lock held by alive process");
 }
 
 /// Bug: Metadata modification during save could cause corruption

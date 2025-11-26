@@ -79,9 +79,9 @@ pub struct CompressionConfig {
 impl Default for CompressionConfig {
     fn default() -> Self {
         Self {
-            min_age_seconds: 3600, // 1 hour
+            min_age_seconds: 3600,                // 1 hour
             worker_count: num_cpus::get().min(4), // Up to 4 workers
-            scan_interval_seconds: 300, // 5 minutes
+            scan_interval_seconds: 300,           // 5 minutes
             max_chunks_per_scan: 100,
             enabled: true,
             compression_level: 0,
@@ -238,18 +238,12 @@ impl CompressionService {
             workers.push(worker);
         }
 
-        println!(
-            "Started {} compression workers",
-            self.config.worker_count
-        );
+        println!("Started {} compression workers", self.config.worker_count);
         Ok(())
     }
 
     /// Start the scanner task
-    async fn start_scanner(
-        &self,
-        shutdown_rx: mpsc::Receiver<()>,
-    ) -> Result<(), StorageError> {
+    async fn start_scanner(&self, shutdown_rx: mpsc::Receiver<()>) -> Result<(), StorageError> {
         let base_path = self.base_path.clone();
         let config = self.config.clone();
         let task_tx = self.task_tx.clone();
@@ -411,7 +405,10 @@ impl CompressionService {
             };
 
             // Extract series ID
-            let series_id = match dir_name.strip_prefix("series_").and_then(|s| s.parse().ok()) {
+            let series_id = match dir_name
+                .strip_prefix("series_")
+                .and_then(|s| s.parse().ok())
+            {
                 Some(id) => id,
                 None => continue,
             };
@@ -478,14 +475,12 @@ impl CompressionService {
         let data = fs::read(&task.chunk_path).await?;
 
         // Compress using Snappy
-        let compressed = snap::raw::Encoder::new()
-            .compress_vec(&data)
-            .map_err(|e| {
-                StorageError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Snappy compression failed: {}", e),
-                ))
-            })?;
+        let compressed = snap::raw::Encoder::new().compress_vec(&data).map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Snappy compression failed: {}", e),
+            ))
+        })?;
 
         // Write compressed data to .snappy file
         let snappy_path = task.chunk_path.with_extension("snappy");
@@ -610,7 +605,9 @@ mod tests {
             created_at: SystemTime::now(),
         };
 
-        let compressed_size = CompressionService::compress_chunk(&task, false).await.unwrap();
+        let compressed_size = CompressionService::compress_chunk(&task, false)
+            .await
+            .unwrap();
 
         // Verify compressed file exists
         let snappy_path = chunk_path.with_extension("snappy");

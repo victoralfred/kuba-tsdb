@@ -2,7 +2,6 @@
 ///!
 ///! This module provides configuration file support with TOML format,
 ///! environment variable overrides, and sensible defaults.
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -127,20 +126,48 @@ pub struct SecurityConfig {
 }
 
 // Default value functions
-fn default_host() -> String { "0.0.0.0".to_string() }
-fn default_port() -> u16 { 8080 }
-fn default_workers() -> usize { num_cpus::get() }
-fn default_data_dir() -> PathBuf { PathBuf::from("/data/gorilla-tsdb") }
-fn default_max_chunk_points() -> u32 { 10_000_000 }
-fn default_seal_duration_ms() -> i64 { 3_600_000 }
-fn default_seal_size_bytes() -> usize { 104_857_600 }
-fn default_write_buffer_size() -> usize { 10_000 }
-fn default_seal_parallelism() -> usize { 4 }
-fn default_mmap_cache_size() -> usize { 1000 }
-fn default_metrics_port() -> u16 { 9090 }
-fn default_log_level() -> String { "info".to_string() }
-fn default_rate_limit() -> u32 { 100_000 }
-fn default_true() -> bool { true }
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_port() -> u16 {
+    8080
+}
+fn default_workers() -> usize {
+    num_cpus::get()
+}
+fn default_data_dir() -> PathBuf {
+    PathBuf::from("/data/gorilla-tsdb")
+}
+fn default_max_chunk_points() -> u32 {
+    10_000_000
+}
+fn default_seal_duration_ms() -> i64 {
+    3_600_000
+}
+fn default_seal_size_bytes() -> usize {
+    104_857_600
+}
+fn default_write_buffer_size() -> usize {
+    10_000
+}
+fn default_seal_parallelism() -> usize {
+    4
+}
+fn default_mmap_cache_size() -> usize {
+    1000
+}
+fn default_metrics_port() -> u16 {
+    9090
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_rate_limit() -> u32 {
+    100_000
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
