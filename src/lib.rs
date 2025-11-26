@@ -26,6 +26,10 @@ pub mod config;
 /// Security hardening (path validation, rate limiting)
 pub mod security;
 
+/// Redis integration for time-series indexing
+/// Provides Redis-based indexing using Sorted Sets for ultra-fast time-based lookups
+pub mod redis;
+
 // Re-export main types
 pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};
