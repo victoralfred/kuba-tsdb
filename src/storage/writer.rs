@@ -380,13 +380,49 @@ impl ChunkWriter {
     /// - `Ok(Chunk)` - The sealed chunk
     /// - `Err(String)` - If sealing failed or no active chunk exists
     pub async fn seal(&self) -> Result<Chunk, String> {
-        // Take ownership of active chunk
-        let chunk = {
+        // Atomically swap active chunk for a new one
+        // This ensures writes during seal go to the new chunk
+        let chunk_to_seal = {
             let mut active = self.active_chunk.write().await;
-            active.take()
+            let old = active.take();
+
+            // Only install new chunk if old chunk had points
+            // Otherwise, put the empty chunk back
+            if let Some(ref chunk) = old {
+                if chunk.point_count() > 0 {
+                    *active = Some(Arc::new(self.create_chunk()));
+                } else {
+                    // Put empty chunk back, don't seal it
+                    *active = old.clone();
+                    return Err("No active chunk to seal (empty)".to_string());
+                }
+            }
+            old
         };
 
-        if let Some(active) = chunk {
+        if let Some(active_arc) = chunk_to_seal {
+            // Try to unwrap Arc to get ownership
+            let active = match Arc::try_unwrap(active_arc) {
+                Ok(chunk) => chunk,
+                Err(arc) => {
+                    // Arc has other references - this means a write grabbed it
+                    // before we could seal. Wait a tiny bit for writes to complete
+                    tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
+
+                    // Try unwrap again
+                    match Arc::try_unwrap(arc) {
+                        Ok(chunk) => chunk,
+                        Err(arc) => {
+                            return Err(format!(
+                                "Cannot seal: chunk has {} active references (concurrent access)",
+                                Arc::strong_count(&arc)
+                            ));
+                        }
+                    }
+                }
+            };
+
+            // Now seal the old chunk (new chunk is already active)
             let path = self.generate_chunk_path();
             let sealed = active.seal(path).await?;
 
@@ -394,7 +430,13 @@ impl ChunkWriter {
             {
                 let mut stats = self.stats.write().await;
                 stats.chunks_sealed += 1;
-                stats.active_chunk_points = 0;
+                // Don't set active_chunk_points to 0 - new chunk may already have points
+                // Read from actual active chunk instead
+                let active_guard = self.active_chunk.read().await;
+                stats.active_chunk_points = active_guard
+                    .as_ref()
+                    .map(|c| c.point_count())
+                    .unwrap_or(0);
             }
 
             Ok(sealed)
@@ -476,19 +518,29 @@ impl ChunkWriter {
 
     /// Get current write statistics
     pub async fn stats(&self) -> WriteStats {
-        self.stats.read().await.clone()
+        let mut stats = self.stats.read().await.clone();
+
+        // Always read active_chunk_points from live chunk for accuracy
+        // This ensures stats reflect concurrent writes during seal
+        let active_guard = self.active_chunk.read().await;
+        stats.active_chunk_points = active_guard
+            .as_ref()
+            .map(|c| c.point_count())
+            .unwrap_or(0);
+
+        stats
     }
 
     /// Flush all pending writes and seal the active chunk
     ///
     /// This ensures all data is persisted to disk.
     pub async fn flush(&self) -> Result<Option<Chunk>, String> {
-        let has_active = {
+        let has_points = {
             let active = self.active_chunk.read().await;
-            active.is_some()
+            active.as_ref().map(|c| c.point_count()).unwrap_or(0) > 0
         };
 
-        if has_active {
+        if has_points {
             Ok(Some(self.seal().await?))
         } else {
             Ok(None)
