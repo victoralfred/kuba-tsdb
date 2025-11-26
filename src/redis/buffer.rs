@@ -74,7 +74,7 @@ impl Default for BufferConfig {
     fn default() -> Self {
         Self {
             max_buffer_size: 100,
-            max_buffer_age_ms: 60_000, // 1 minute
+            max_buffer_age_ms: 60_000,     // 1 minute
             auto_flush_interval_ms: 5_000, // 5 seconds
             max_batch_size: 1000,
             auto_flush_enabled: true,
@@ -559,10 +559,7 @@ mod tests {
 
     #[test]
     fn test_buffer_key_generation() {
-        assert_eq!(
-            WriteBuffer::buffer_key(123),
-            "ts:series:123:buffer"
-        );
+        assert_eq!(WriteBuffer::buffer_key(123), "ts:series:123:buffer");
     }
 
     #[test]

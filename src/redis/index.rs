@@ -290,7 +290,10 @@ impl RedisTimeIndex {
     }
 
     /// Get chunk metadata from Redis
-    async fn get_chunk_metadata(&self, chunk_id: &ChunkId) -> Result<Option<RedisChunkMetadata>, IndexError> {
+    async fn get_chunk_metadata(
+        &self,
+        chunk_id: &ChunkId,
+    ) -> Result<Option<RedisChunkMetadata>, IndexError> {
         let chunk_key = Self::chunk_key(chunk_id);
 
         let result: Option<String> = self
@@ -523,9 +526,9 @@ impl TimeIndex for RedisTimeIndex {
         let mut matching = Vec::new();
 
         for series_id_str in all_series {
-            let series_id: SeriesId = series_id_str
-                .parse()
-                .map_err(|_| IndexError::ParseError(format!("Invalid series ID: {}", series_id_str)))?;
+            let series_id: SeriesId = series_id_str.parse().map_err(|_| {
+                IndexError::ParseError(format!("Invalid series ID: {}", series_id_str))
+            })?;
 
             let meta_key = Self::series_meta_key(series_id);
 
@@ -549,7 +552,8 @@ impl TimeIndex for RedisTimeIndex {
 
             // Check tag filter
             if let Some(tags_json) = meta.get("tags") {
-                let tags: HashMap<String, String> = serde_json::from_str(tags_json).unwrap_or_default();
+                let tags: HashMap<String, String> =
+                    serde_json::from_str(tags_json).unwrap_or_default();
 
                 let matches = match tag_filter {
                     // All: match all series regardless of tags
@@ -675,14 +679,8 @@ mod tests {
 
     #[test]
     fn test_key_generation() {
-        assert_eq!(
-            RedisTimeIndex::series_index_key(123),
-            "ts:series:123:index"
-        );
-        assert_eq!(
-            RedisTimeIndex::series_meta_key(456),
-            "ts:series:456:meta"
-        );
+        assert_eq!(RedisTimeIndex::series_index_key(123), "ts:series:123:index");
+        assert_eq!(RedisTimeIndex::series_meta_key(456), "ts:series:456:meta");
         assert_eq!(
             RedisTimeIndex::chunk_key(&ChunkId::from_string("abc-123")),
             "ts:chunks:abc-123"

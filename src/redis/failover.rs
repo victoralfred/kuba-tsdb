@@ -198,7 +198,11 @@ impl LocalIndexCache {
     }
 
     /// Get cached chunks for a query
-    fn get_chunks(&mut self, series_id: SeriesId, range: &TimeRange) -> Option<Vec<ChunkReference>> {
+    fn get_chunks(
+        &mut self,
+        series_id: SeriesId,
+        range: &TimeRange,
+    ) -> Option<Vec<ChunkReference>> {
         let key = LocalCacheKey::new(series_id, range);
 
         if let Some(entry) = self.chunks.get_mut(&key) {
@@ -268,7 +272,11 @@ impl LocalIndexCache {
 
     /// Get cache statistics
     fn stats(&self) -> LocalCacheStats {
-        let expired_count = self.chunks.values().filter(|e| e.is_expired(self.ttl)).count();
+        let expired_count = self
+            .chunks
+            .values()
+            .filter(|e| e.is_expired(self.ttl))
+            .count();
 
         LocalCacheStats {
             entries: self.chunks.len(),
@@ -429,7 +437,8 @@ impl FailoverManager {
         let current_state = self.state();
 
         // Check if we should recover
-        if current_state != FailoverState::Primary && successes >= self.config.recovery_threshold as u64
+        if current_state != FailoverState::Primary
+            && successes >= self.config.recovery_threshold as u64
         {
             self.recover().await;
         }
@@ -443,7 +452,8 @@ impl FailoverManager {
         let current_state = self.state();
 
         // Check if we should fail over
-        if current_state == FailoverState::Primary && failures >= self.config.failure_threshold as u64
+        if current_state == FailoverState::Primary
+            && failures >= self.config.failure_threshold as u64
         {
             if self.config.auto_failover_enabled {
                 self.failover().await;

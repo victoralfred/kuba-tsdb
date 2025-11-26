@@ -180,8 +180,8 @@ impl Default for RetryPolicy {
 impl RetryPolicy {
     /// Calculate delay for a given attempt number (0-indexed)
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
-        let base_delay = self.initial_delay.as_millis() as f64
-            * self.multiplier.powi(attempt as i32);
+        let base_delay =
+            self.initial_delay.as_millis() as f64 * self.multiplier.powi(attempt as i32);
 
         let delay_ms = base_delay.min(self.max_delay.as_millis() as f64);
 
@@ -361,8 +361,9 @@ impl RedisPool {
             .map_err(|e| IndexError::ConnectionError(e))?;
 
         // Create Redis client
-        let client = Client::open(config.url.as_str())
-            .map_err(|e| IndexError::ConnectionError(format!("Failed to create Redis client: {}", e)))?;
+        let client = Client::open(config.url.as_str()).map_err(|e| {
+            IndexError::ConnectionError(format!("Failed to create Redis client: {}", e))
+        })?;
 
         let metrics = Arc::new(PoolMetrics::default());
         let semaphore = Arc::new(Semaphore::new(config.pool_size as usize));
@@ -439,9 +440,9 @@ impl RedisPool {
                 // Try to reconnect
                 self.connect().await?;
                 let guard = self.connection.read();
-                guard
-                    .clone()
-                    .ok_or_else(|| IndexError::ConnectionError("No connection available".to_string()))?
+                guard.clone().ok_or_else(|| {
+                    IndexError::ConnectionError("No connection available".to_string())
+                })?
             }
         };
 
@@ -473,11 +474,8 @@ impl RedisPool {
             let start = Instant::now();
 
             // Execute with timeout
-            let result = tokio::time::timeout(
-                self.config.command_timeout,
-                f(conn.conn.clone()),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(self.config.command_timeout, f(conn.conn.clone())).await;
 
             match result {
                 Ok(Ok(value)) => {
@@ -542,11 +540,9 @@ impl RedisPool {
         let start = Instant::now();
 
         let result = self
-            .execute(|mut conn| async move {
-                redis::cmd("PING")
-                    .query_async::<String>(&mut conn)
-                    .await
-            })
+            .execute(
+                |mut conn| async move { redis::cmd("PING").query_async::<String>(&mut conn).await },
+            )
             .await;
 
         let status = match result {

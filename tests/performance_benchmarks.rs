@@ -168,10 +168,16 @@ async fn benchmark_sustained_write_throughput() {
     let elapsed = start.elapsed();
     let throughput = points_written as f64 / elapsed.as_secs_f64();
 
-    println!("Sustained Write Performance ({:.1}s):", elapsed.as_secs_f64());
+    println!(
+        "Sustained Write Performance ({:.1}s):",
+        elapsed.as_secs_f64()
+    );
     println!("  Total points: {}", points_written);
     println!("  Throughput:   {:.0} points/sec", throughput);
-    println!("  Memory:       ~{} MB", (points_written * 24) / (1024 * 1024));
+    println!(
+        "  Memory:       ~{} MB",
+        (points_written * 24) / (1024 * 1024)
+    );
     println!("\nTarget: > 1M points/sec sustained");
 
     assert!(
@@ -288,7 +294,8 @@ async fn benchmark_mmap_read_performance() {
     let decompress_elapsed = start.elapsed();
 
     let decompress_latency = decompress_elapsed / decompress_iterations as u32;
-    let points_per_sec = (100_000 * decompress_iterations) as f64 / decompress_elapsed.as_secs_f64();
+    let points_per_sec =
+        (100_000 * decompress_iterations) as f64 / decompress_elapsed.as_secs_f64();
 
     println!("Decompress latency (100k points): {:?}", decompress_latency);
     println!("Decompress throughput: {:.0} points/sec", points_per_sec);

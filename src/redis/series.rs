@@ -230,7 +230,10 @@ impl SeriesManager {
     }
 
     /// List series with filter
-    pub async fn list_with_filter(&self, filter: SeriesFilter) -> Result<Vec<SeriesId>, IndexError> {
+    pub async fn list_with_filter(
+        &self,
+        filter: SeriesFilter,
+    ) -> Result<Vec<SeriesId>, IndexError> {
         // Use find_series with a broad filter
         let tag_filter = match &filter.tags {
             Some(tags) if !tags.is_empty() => TagFilter::Exact(tags.clone()),
@@ -294,7 +297,10 @@ impl SeriesManager {
     }
 
     /// Delete multiple series
-    pub async fn delete_series_batch(&self, series_ids: Vec<SeriesId>) -> Result<usize, IndexError> {
+    pub async fn delete_series_batch(
+        &self,
+        series_ids: Vec<SeriesId>,
+    ) -> Result<usize, IndexError> {
         let mut deleted = 0;
 
         for series_id in series_ids {
@@ -382,7 +388,10 @@ mod tests {
             .with_offset(10);
 
         assert_eq!(filter.metric_prefix, Some("cpu".to_string()));
-        assert_eq!(filter.tags.as_ref().unwrap().get("host"), Some(&"server1".to_string()));
+        assert_eq!(
+            filter.tags.as_ref().unwrap().get("host"),
+            Some(&"server1".to_string())
+        );
         assert_eq!(filter.limit, Some(100));
         assert_eq!(filter.offset, Some(10));
     }

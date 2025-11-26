@@ -321,10 +321,7 @@ impl QueryPlanner {
 
             if let Some(chunks) = cached {
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
-                debug!(
-                    "Cache hit for series {} range {:?}",
-                    series_id, time_range
-                );
+                debug!("Cache hit for series {} range {:?}", series_id, time_range);
                 return Ok(chunks);
             }
         }
@@ -332,7 +329,10 @@ impl QueryPlanner {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         // Execute query against Redis
-        let chunks = self.index.query_chunks(series_id, time_range.clone()).await?;
+        let chunks = self
+            .index
+            .query_chunks(series_id, time_range.clone())
+            .await?;
 
         // Cache the result if applicable
         if plan.use_cache {
@@ -565,8 +565,14 @@ mod tests {
         let mut cache = QueryCache::new(2, 60);
 
         let range1 = TimeRange { start: 0, end: 100 };
-        let range2 = TimeRange { start: 100, end: 200 };
-        let range3 = TimeRange { start: 200, end: 300 };
+        let range2 = TimeRange {
+            start: 100,
+            end: 200,
+        };
+        let range3 = TimeRange {
+            start: 200,
+            end: 300,
+        };
 
         let key1 = CacheKey::new(1, &range1);
         let key2 = CacheKey::new(2, &range2);

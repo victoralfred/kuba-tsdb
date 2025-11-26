@@ -48,8 +48,8 @@ pub mod scripts;
 pub mod series;
 
 // Optimization modules
-pub mod query;
 pub mod buffer;
+pub mod query;
 
 // High availability modules
 pub mod failover;
@@ -58,11 +58,11 @@ pub mod failover;
 pub mod metrics;
 
 // Re-export main types
+pub use buffer::{BufferConfig, WriteBuffer};
 pub use connection::{RedisConfig, RedisPool, RetryPolicy};
+pub use failover::{FailoverConfig, FailoverManager};
 pub use index::RedisTimeIndex;
+pub use metrics::{MetricsConfig, RedisMetrics};
+pub use query::{QueryConfig, QueryPlanner};
 pub use scripts::LuaScripts;
 pub use series::SeriesManager;
-pub use query::{QueryPlanner, QueryConfig};
-pub use buffer::{WriteBuffer, BufferConfig};
-pub use failover::{FailoverManager, FailoverConfig};
-pub use metrics::{RedisMetrics, MetricsConfig};

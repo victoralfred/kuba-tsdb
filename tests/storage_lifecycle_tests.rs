@@ -11,7 +11,9 @@
 
 use gorilla_tsdb::engine::traits::StorageEngine;
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
-use gorilla_tsdb::storage::chunk::{Chunk, ChunkHeader, CompressionType, CHUNK_MAGIC, CHUNK_VERSION};
+use gorilla_tsdb::storage::chunk::{
+    Chunk, ChunkHeader, CompressionType, CHUNK_MAGIC, CHUNK_VERSION,
+};
 use gorilla_tsdb::storage::local_disk::LocalDiskEngine;
 use gorilla_tsdb::storage::mmap::MmapChunk;
 use gorilla_tsdb::storage::reader::{ChunkReader, QueryOptions};
@@ -84,7 +86,12 @@ async fn test_chunk_full_lifecycle() {
 
     // Verify each point
     for (i, point) in decompressed_points.iter().enumerate() {
-        assert_eq!(point.timestamp, (i * 1000) as i64, "Timestamp mismatch at {}", i);
+        assert_eq!(
+            point.timestamp,
+            (i * 1000) as i64,
+            "Timestamp mismatch at {}",
+            i
+        );
         assert!(
             (point.value - (i as f64) * 1.5).abs() < 1e-10,
             "Value mismatch at {}",
@@ -502,8 +509,14 @@ async fn test_concurrent_writes_active_chunk() {
     let total_success = success_count.load(Ordering::Relaxed);
     let point_count = chunk.point_count() as u64;
 
-    assert_eq!(total_success, point_count, "Success count should match point count");
-    assert_eq!(point_count, 10_000, "Should have exactly 10,000 unique points");
+    assert_eq!(
+        total_success, point_count,
+        "Success count should match point count"
+    );
+    assert_eq!(
+        point_count, 10_000,
+        "Should have exactly 10,000 unique points"
+    );
 }
 
 /// Test concurrent reads from sealed chunk
@@ -753,7 +766,9 @@ async fn test_chunk_reader_query_options() {
     let points = reader.read_chunk(&chunk_path, options).await.unwrap();
 
     // Should include timestamps 2000, 2100, ..., 5000
-    assert!(points.iter().all(|p| p.timestamp >= 2000 && p.timestamp <= 5000));
+    assert!(points
+        .iter()
+        .all(|p| p.timestamp >= 2000 && p.timestamp <= 5000));
     assert_eq!(points.len(), 31); // 2000 to 5000 inclusive with step 100
 
     // Test 3: Limit filter
@@ -787,7 +802,9 @@ async fn test_chunk_reader_parallel() {
     let mut paths = vec![];
 
     for chunk_id in 0..5 {
-        let chunk_path = temp_dir.path().join(format!("parallel_read_{}.gor", chunk_id));
+        let chunk_path = temp_dir
+            .path()
+            .join(format!("parallel_read_{}.gor", chunk_id));
 
         let mut chunk = Chunk::new_active(1, 100);
 
@@ -858,7 +875,10 @@ async fn test_chunk_writer_auto_seal() {
 
     // Check stats
     let stats = writer.stats().await;
-    assert!(stats.chunks_sealed >= 1, "Should have sealed at least one chunk");
+    assert!(
+        stats.chunks_sealed >= 1,
+        "Should have sealed at least one chunk"
+    );
 }
 
 /// Test ChunkWriter batch operations
