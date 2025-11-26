@@ -419,8 +419,7 @@ impl FailoverManager {
 
     /// Get current failover state (lock-free)
     pub fn state(&self) -> FailoverState {
-        FailoverState::from_u8(self.state.load(Ordering::SeqCst))
-            .unwrap_or(FailoverState::Primary)
+        FailoverState::from_u8(self.state.load(Ordering::SeqCst)).unwrap_or(FailoverState::Primary)
     }
 
     /// Atomically transition from one state to another

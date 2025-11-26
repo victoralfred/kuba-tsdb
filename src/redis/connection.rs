@@ -168,19 +168,15 @@ impl RedisConfig {
 
         // Check URL scheme matches TLS setting
         if self.tls_enabled && !self.url.starts_with("rediss://") {
-            return Err(
-                "TLS is enabled but URL doesn't use 'rediss://' scheme. \
+            return Err("TLS is enabled but URL doesn't use 'rediss://' scheme. \
                  Use 'rediss://host:port' for TLS connections"
-                    .to_string(),
-            );
+                .to_string());
         }
 
         if !self.tls_enabled && self.url.starts_with("rediss://") {
-            return Err(
-                "URL uses 'rediss://' scheme but TLS is not enabled. \
+            return Err("URL uses 'rediss://' scheme but TLS is not enabled. \
                  Either use 'redis://' or enable TLS with .tls(true)"
-                    .to_string(),
-            );
+                .to_string());
         }
 
         Ok(())
@@ -419,14 +415,11 @@ impl RedisPool {
     /// ```
     pub async fn new(config: RedisConfig) -> Result<Self, IndexError> {
         // Validate configuration
-        config
-            .validate()
-            .map_err(IndexError::ConnectionError)?;
+        config.validate().map_err(IndexError::ConnectionError)?;
 
         // Create Redis client (using sanitized URL in error messages to prevent credential leakage)
-        let client = Client::open(config.url.as_str()).map_err(|e| {
-            IndexError::ConnectionError(safe_redis_error(&config.url, &e))
-        })?;
+        let client = Client::open(config.url.as_str())
+            .map_err(|e| IndexError::ConnectionError(safe_redis_error(&config.url, &e)))?;
 
         let metrics = Arc::new(PoolMetrics::default());
         let semaphore = Arc::new(Semaphore::new(config.pool_size as usize));

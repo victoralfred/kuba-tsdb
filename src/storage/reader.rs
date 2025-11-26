@@ -271,9 +271,7 @@ impl ChunkReader {
         // Filter by time range
         if options.start_time.is_some() || options.end_time.is_some() {
             points.retain(|p| {
-                let after_start = options
-                    .start_time
-                    .is_none_or(|start| p.timestamp >= start);
+                let after_start = options.start_time.is_none_or(|start| p.timestamp >= start);
                 let before_end = options.end_time.is_none_or(|end| p.timestamp <= end);
                 after_start && before_end
             });

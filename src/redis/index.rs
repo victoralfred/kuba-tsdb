@@ -327,9 +327,8 @@ impl RedisTimeIndex {
         series_ids
             .iter()
             .map(|s| {
-                s.parse().map_err(|_| {
-                    IndexError::ParseError(format!("Invalid series ID: {}", s))
-                })
+                s.parse()
+                    .map_err(|_| IndexError::ParseError(format!("Invalid series ID: {}", s)))
             })
             .collect()
     }
@@ -686,10 +685,7 @@ impl TimeIndex for RedisTimeIndex {
                         let keys = keys.clone();
                         async move {
                             // SINTER requires &[&str] so we need to convert
-                            redis::cmd("SINTER")
-                                .arg(&keys)
-                                .query_async(&mut conn)
-                                .await
+                            redis::cmd("SINTER").arg(&keys).query_async(&mut conn).await
                         }
                     })
                     .await?;
