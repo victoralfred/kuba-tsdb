@@ -6,10 +6,12 @@
 //! # Redis Key Schema
 //!
 //! ```text
-//! ts:registry                    → SET of all series_ids
-//! ts:series:{id}:index           → ZSET(start_timestamp → chunk_id)
-//! ts:series:{id}:meta            → HASH {created_at, last_write, metric_name, tags...}
-//! ts:chunks:{chunk_id}           → HASH {series_id, path, timestamps, status...}
+//! ts:registry                           → SET of all series_ids
+//! ts:series:{id}:index                  → ZSET(start_timestamp → chunk_id)
+//! ts:series:{id}:meta                   → HASH {created_at, last_write, metric_name, tags...}
+//! ts:chunks:{chunk_id}                  → HASH {series_id, path, timestamps, status...}
+//! ts:metric:{metric_name}:series        → SET of series_ids with this metric (secondary index)
+//! ts:tag:{key}:{value}:series           → SET of series_ids with this tag (secondary index)
 //! ```
 //!
 //! # Example
@@ -39,12 +41,12 @@ use super::scripts::LuaScripts;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use parking_lot::RwLock;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Key prefixes for Redis data structures
@@ -290,6 +292,10 @@ impl RedisTimeIndex {
     }
 
     /// Get chunk metadata from Redis
+    ///
+    /// Note: This method is kept for individual chunk lookups. For batch operations,
+    /// prefer using pipelines in query_chunks to avoid N+1 query pattern.
+    #[allow(dead_code)]
     async fn get_chunk_metadata(
         &self,
         chunk_id: &ChunkId,
@@ -312,6 +318,78 @@ impl RedisTimeIndex {
             }
             None => Ok(None),
         }
+    }
+
+    /// Parse series ID strings into SeriesId values
+    ///
+    /// Helper method for secondary index queries that return string IDs.
+    fn parse_series_ids(&self, series_ids: &[String]) -> Result<Vec<SeriesId>, IndexError> {
+        series_ids
+            .iter()
+            .map(|s| {
+                s.parse().map_err(|_| {
+                    IndexError::ParseError(format!("Invalid series ID: {}", s))
+                })
+            })
+            .collect()
+    }
+
+    /// Filter series by tag pattern (requires client-side lookup)
+    ///
+    /// Pattern matching cannot use set intersection, so we fetch metadata
+    /// for series matching the metric and filter client-side.
+    /// Uses pipeline batching to avoid N+1 queries.
+    async fn filter_by_pattern(
+        &self,
+        series_ids: &[String],
+        pattern: &str,
+    ) -> Result<Vec<SeriesId>, IndexError> {
+        let mut matching = Vec::new();
+
+        // Batch fetch metadata using pipeline to avoid N+1
+        const BATCH_SIZE: usize = 100;
+
+        for batch in series_ids.chunks(BATCH_SIZE) {
+            let batch_owned: Vec<String> = batch.to_vec();
+
+            let metadata_results: Vec<Option<String>> = self
+                .pool
+                .execute(|mut conn| {
+                    let batch = batch_owned.clone();
+                    async move {
+                        let mut pipe = redis::pipe();
+                        for series_id_str in &batch {
+                            // Parse series_id for key generation
+                            if let Ok(series_id) = series_id_str.parse::<SeriesId>() {
+                                let meta_key = Self::series_meta_key(series_id);
+                                pipe.hget(&meta_key, "tags");
+                            }
+                        }
+                        pipe.query_async(&mut conn).await
+                    }
+                })
+                .await
+                .map_err(|e| {
+                    IndexError::ConnectionError(format!("Pipeline fetch failed: {}", e))
+                })?;
+
+            // Process results
+            for (series_id_str, tags_opt) in batch.iter().zip(metadata_results) {
+                if let Some(tags_json) = tags_opt {
+                    let tags: HashMap<String, String> =
+                        serde_json::from_str(&tags_json).unwrap_or_default();
+
+                    // Pattern match: check if any tag value contains the pattern
+                    if tags.values().any(|v| v.contains(pattern)) {
+                        if let Ok(series_id) = series_id_str.parse::<SeriesId>() {
+                            matching.push(series_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(matching)
     }
 }
 
@@ -366,8 +444,8 @@ impl TimeIndex for RedisTimeIndex {
             .await?;
 
         if result == 1 {
-            // Cache the metadata
-            let mut cache = self.local_cache.write();
+            // Cache the metadata (async-safe)
+            let mut cache = self.local_cache.write().await;
             cache.set_series_meta(series_id, metadata, 60_000); // 60 second TTL
             debug!("Registered new series: {}", series_id);
         } else {
@@ -441,6 +519,10 @@ impl TimeIndex for RedisTimeIndex {
     }
 
     /// Query chunks by time range
+    ///
+    /// Uses Redis pipelines to fetch all chunk metadata in a single round trip,
+    /// avoiding the N+1 query problem. For large result sets (>500 chunks),
+    /// fetches are batched to avoid overwhelming Redis.
     async fn query_chunks(
         &self,
         series_id: SeriesId,
@@ -451,7 +533,7 @@ impl TimeIndex for RedisTimeIndex {
         let script = self.scripts.find_chunks_in_range();
         let series_index = Self::series_index_key(series_id);
 
-        // Get chunk IDs in range
+        // Step 1: Get chunk IDs in range (single Redis call)
         let chunk_ids: Vec<String> = self
             .pool
             .execute(|mut conn| {
@@ -469,35 +551,79 @@ impl TimeIndex for RedisTimeIndex {
             })
             .await?;
 
-        // Fetch metadata for each chunk
+        if chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 2: Build chunk keys for pipeline batch fetch
+        let chunk_keys: Vec<String> = chunk_ids
+            .iter()
+            .map(|id| Self::chunk_key(&ChunkId::from_string(id)))
+            .collect();
+
+        // Step 3: Fetch all metadata in batches using pipelines (avoids N+1 problem)
+        // Batch size of 500 prevents overwhelming Redis with very large queries
+        const PIPELINE_BATCH_SIZE: usize = 500;
+        let mut all_metadata: Vec<Option<String>> = Vec::with_capacity(chunk_ids.len());
+
+        for batch_keys in chunk_keys.chunks(PIPELINE_BATCH_SIZE) {
+            let batch_keys_owned: Vec<String> = batch_keys.to_vec();
+
+            let batch_results: Vec<Option<String>> = self
+                .pool
+                .execute(|mut conn| {
+                    let keys = batch_keys_owned.clone();
+                    async move {
+                        let mut pipe = redis::pipe();
+                        for key in &keys {
+                            pipe.hget(key, "metadata");
+                        }
+                        pipe.query_async(&mut conn).await
+                    }
+                })
+                .await
+                .map_err(|e| {
+                    IndexError::ConnectionError(format!("Pipeline fetch failed: {}", e))
+                })?;
+
+            all_metadata.extend(batch_results);
+        }
+
+        // Step 4: Process results in memory (no more Redis calls needed)
         let mut references = Vec::with_capacity(chunk_ids.len());
 
-        for chunk_id_str in chunk_ids {
-            let chunk_id = ChunkId::from_string(&chunk_id_str);
+        for (chunk_id_str, metadata_opt) in chunk_ids.iter().zip(all_metadata) {
+            if let Some(json) = metadata_opt {
+                // Parse metadata JSON, skip invalid entries
+                if let Ok(metadata) = serde_json::from_str::<RedisChunkMetadata>(&json) {
+                    let status = match metadata.status.as_str() {
+                        "active" => ChunkStatus::Active,
+                        "sealed" => ChunkStatus::Sealed,
+                        "compressed" => ChunkStatus::Compressed,
+                        "archived" => ChunkStatus::Archived,
+                        _ => ChunkStatus::Sealed,
+                    };
 
-            if let Some(metadata) = self.get_chunk_metadata(&chunk_id).await? {
-                let status = match metadata.status.as_str() {
-                    "active" => ChunkStatus::Active,
-                    "sealed" => ChunkStatus::Sealed,
-                    "compressed" => ChunkStatus::Compressed,
-                    "archived" => ChunkStatus::Archived,
-                    _ => ChunkStatus::Sealed,
-                };
-
-                references.push(ChunkReference {
-                    chunk_id,
-                    location: ChunkLocation {
-                        engine_id: "local-disk-v1".to_string(),
-                        path: metadata.path,
-                        offset: None,
-                        size: Some(metadata.size_bytes),
-                    },
-                    time_range: TimeRange {
-                        start: metadata.start_time,
-                        end: metadata.end_time,
-                    },
-                    status,
-                });
+                    references.push(ChunkReference {
+                        chunk_id: ChunkId::from_string(chunk_id_str),
+                        location: ChunkLocation {
+                            engine_id: "local-disk-v1".to_string(),
+                            path: metadata.path,
+                            offset: None,
+                            size: Some(metadata.size_bytes),
+                        },
+                        time_range: TimeRange {
+                            start: metadata.start_time,
+                            end: metadata.end_time,
+                        },
+                        status,
+                    });
+                } else {
+                    warn!(
+                        "Failed to parse metadata for chunk {}, skipping",
+                        chunk_id_str
+                    );
+                }
             }
         }
 
@@ -511,71 +637,81 @@ impl TimeIndex for RedisTimeIndex {
         Ok(references)
     }
 
-    /// Find series by metric name and tag filters
+    /// Find series by metric name and tag filters using secondary indexes
+    ///
+    /// Uses Redis secondary indexes for efficient lookups:
+    /// - `ts:metric:{metric_name}:series` - SET of series with this metric
+    /// - `ts:tag:{key}:{value}:series` - SET of series with this tag k/v pair
+    ///
+    /// # Performance
+    ///
+    /// - Before (full scan): O(n) where n = total series count
+    /// - After (secondary indexes):
+    ///   - TagFilter::All: O(m) where m = series with metric
+    ///   - TagFilter::Exact: O(min set size) using SINTER
+    ///   - TagFilter::Pattern: O(m) with client-side filtering
     async fn find_series(
         &self,
         metric_name: &str,
         tag_filter: &TagFilter,
     ) -> Result<Vec<SeriesId>, IndexError> {
-        // Get all series from registry
-        let all_series: Vec<String> = self
-            .pool
-            .execute(|mut conn| async move { conn.smembers(KEY_REGISTRY).await })
-            .await?;
+        // Use metric secondary index instead of scanning all series
+        let metric_index_key = format!("ts:metric:{}:series", metric_name);
 
-        let mut matching = Vec::new();
+        match tag_filter {
+            // Get all series for this metric - O(m) where m = series with metric
+            TagFilter::All => {
+                let series_ids: Vec<String> = self
+                    .pool
+                    .execute(|mut conn| {
+                        let key = metric_index_key.clone();
+                        async move { conn.smembers(key).await }
+                    })
+                    .await?;
 
-        for series_id_str in all_series {
-            let series_id: SeriesId = series_id_str.parse().map_err(|_| {
-                IndexError::ParseError(format!("Invalid series ID: {}", series_id_str))
-            })?;
-
-            let meta_key = Self::series_meta_key(series_id);
-
-            // Get series metadata
-            let meta: HashMap<String, String> = self
-                .pool
-                .execute(|mut conn| {
-                    let meta_key = meta_key.clone();
-                    async move { conn.hgetall(meta_key).await }
-                })
-                .await?;
-
-            // Check metric name
-            if let Some(stored_metric) = meta.get("metric_name") {
-                if stored_metric != metric_name {
-                    continue;
-                }
-            } else {
-                continue;
+                self.parse_series_ids(&series_ids)
             }
 
-            // Check tag filter
-            if let Some(tags_json) = meta.get("tags") {
-                let tags: HashMap<String, String> =
-                    serde_json::from_str(tags_json).unwrap_or_default();
-
-                let matches = match tag_filter {
-                    // All: match all series regardless of tags
-                    TagFilter::All => true,
-                    // Exact: series must have all specified tag key-value pairs
-                    TagFilter::Exact(filter_tags) => {
-                        filter_tags.iter().all(|(k, v)| tags.get(k) == Some(v))
-                    }
-                    // Pattern: wildcard pattern matching (basic implementation)
-                    TagFilter::Pattern(pattern) => {
-                        // Simple pattern matching: check if any tag value contains the pattern
-                        tags.values().any(|v| v.contains(pattern))
-                    }
-                };
-
-                if matches {
-                    matching.push(series_id);
+            // Intersect metric index with all tag indexes - O(min set size)
+            TagFilter::Exact(tags) => {
+                let mut keys = vec![metric_index_key];
+                for (k, v) in tags {
+                    keys.push(format!("ts:tag:{}:{}:series", k, v));
                 }
+
+                // Use SINTER to find series matching all criteria
+                let series_ids: Vec<String> = self
+                    .pool
+                    .execute(|mut conn| {
+                        let keys = keys.clone();
+                        async move {
+                            // SINTER requires &[&str] so we need to convert
+                            redis::cmd("SINTER")
+                                .arg(&keys)
+                                .query_async(&mut conn)
+                                .await
+                        }
+                    })
+                    .await?;
+
+                self.parse_series_ids(&series_ids)
+            }
+
+            // Get metric series, then filter client-side by pattern
+            // Still much better than scanning ALL series
+            TagFilter::Pattern(pattern) => {
+                let series_ids: Vec<String> = self
+                    .pool
+                    .execute(|mut conn| {
+                        let key = metric_index_key.clone();
+                        async move { conn.smembers(key).await }
+                    })
+                    .await?;
+
+                // Filter by pattern client-side (requires metadata lookup)
+                self.filter_by_pattern(&series_ids, pattern).await
             }
         }
-
-        Ok(matching)
     }
 
     /// Update chunk status
@@ -639,9 +775,9 @@ impl TimeIndex for RedisTimeIndex {
             })
             .await?;
 
-        // Invalidate cache
+        // Invalidate cache (async-safe)
         {
-            let mut cache = self.local_cache.write();
+            let mut cache = self.local_cache.write().await;
             cache.invalidate_series(series_id);
         }
 
@@ -663,9 +799,9 @@ impl TimeIndex for RedisTimeIndex {
     /// Rebuild index from storage
     async fn rebuild(&self) -> Result<(), IndexError> {
         // This would typically scan storage and rebuild the index
-        // For now, we just clear the local cache
+        // For now, we just clear the local cache (async-safe)
         {
-            let mut cache = self.local_cache.write();
+            let mut cache = self.local_cache.write().await;
             cache.series_meta.clear();
         }
         info!("Index rebuild requested (cache cleared)");

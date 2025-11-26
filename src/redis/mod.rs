@@ -57,6 +57,9 @@ pub mod failover;
 // Monitoring modules
 pub mod metrics;
 
+// Utility modules
+pub mod util;
+
 // Re-export main types
 pub use buffer::{BufferConfig, WriteBuffer};
 pub use connection::{RedisConfig, RedisPool, RetryPolicy};
