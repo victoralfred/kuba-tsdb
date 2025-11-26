@@ -24,6 +24,7 @@ futures = "0.3"
 bytes = { version = "1.7", features = ["serde"] }
 byteorder = "1.5"
 dashmap = "6.0"
+lru = "0.12"
 
 # Storage
 memmap2 = "0.9"

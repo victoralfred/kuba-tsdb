@@ -547,11 +547,13 @@ impl ActiveChunk {
 
         // Record metrics
         let duration = start.elapsed().as_secs_f64();
+        let series_id_str = self.series_id.to_string();
+        let status = "batch_success".to_string();
         crate::metrics::WRITES_TOTAL
-            .with_label_values(&[&self.series_id.to_string(), "batch_success"])
+            .with_label_values(&[&series_id_str, &status])
             .inc();
         crate::metrics::WRITE_DURATION
-            .with_label_values(&[&self.series_id.to_string()])
+            .with_label_values(&[&series_id_str])
             .observe(duration);
 
         Ok(success_count)

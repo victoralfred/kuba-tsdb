@@ -56,8 +56,9 @@
 //! ```
 
 use crate::types::SeriesId;
-use std::collections::VecDeque;
+use lru::LruCache;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -82,7 +83,12 @@ impl CacheKey {
     }
 
     /// Calculate shard ID for this key
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_shards` is 0
     pub fn shard_id(&self, num_shards: usize) -> usize {
+        assert!(num_shards > 0, "num_shards must be greater than 0");
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.hash(&mut hasher);
         (hasher.finish() as usize) % num_shards
@@ -228,9 +234,23 @@ impl MemoryTracker {
     }
 
     /// Record eviction of size bytes
+    ///
+    /// # Safety
+    ///
+    /// Uses saturating subtraction to prevent underflow. If the requested
+    /// eviction size exceeds current usage, usage will be set to 0.
     pub fn on_evict(&self, shard_id: usize, size: usize) {
-        self.current_bytes.fetch_sub(size, Ordering::Relaxed);
-        self.per_shard_bytes[shard_id].fetch_sub(size, Ordering::Relaxed);
+        // Saturating sub to prevent underflow
+        self.current_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(size))
+            })
+            .ok();
+        self.per_shard_bytes[shard_id]
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(size))
+            })
+            .ok();
     }
 
     /// Get current total memory usage
@@ -254,80 +274,82 @@ impl MemoryTracker {
     }
 }
 
-/// LRU (Least Recently Used) list using VecDeque
+/// LRU (Least Recently Used) list using O(1) operations
 ///
-/// Maintains access order:
-/// - Most recent at back (push_back)
-/// - Least recent at front (pop_front for eviction)
-/// - Access moves key to back
+/// This is a wrapper around the `lru` crate which provides:
+/// - O(1) insertion
+/// - O(1) access/touch (mark as recently used)
+/// - O(1) removal
+/// - O(1) eviction (pop least recently used)
 ///
-/// Note: For production, consider using a proper LRU crate like `lru` or `quick-cache`.
-/// This implementation trades some performance for simplicity and safety.
+/// Internally uses HashMap + intrusive doubly-linked list for optimal performance.
 pub struct LruList {
-    queue: VecDeque<CacheKey>,
+    /// LRU cache storing () as values since we only need key ordering
+    cache: LruCache<CacheKey, ()>,
 }
 
 impl LruList {
-    /// Create a new empty LRU list
+    /// Create a new LRU list with unbounded capacity
+    ///
+    /// Note: In practice, capacity is controlled by memory tracker,
+    /// so we use a very large capacity here.
     pub fn new() -> Self {
+        // Use a large capacity (10M entries) - actual limit is memory-based
+        let capacity = NonZeroUsize::new(10_000_000).unwrap();
         Self {
-            queue: VecDeque::new(),
+            cache: LruCache::new(capacity),
+        }
+    }
+
+    /// Create a new LRU list with specific capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        let capacity = NonZeroUsize::new(capacity.max(1)).unwrap();
+        Self {
+            cache: LruCache::new(capacity),
         }
     }
 
     /// Get current size
     pub fn len(&self) -> usize {
-        self.queue.len()
+        self.cache.len()
     }
 
     /// Check if empty
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.cache.is_empty()
     }
 
     /// Add key to back (most recently used)
+    /// If key already exists, it's moved to back
     pub fn push_back(&mut self, key: CacheKey) {
-        self.queue.push_back(key);
+        self.cache.put(key, ());
     }
 
     /// Remove and return front key (least recently used)
     pub fn pop_front(&mut self) -> Option<CacheKey> {
-        self.queue.pop_front()
+        self.cache.pop_lru().map(|(k, _)| k)
     }
 
     /// Move key to back (mark as recently used)
-    /// Returns true if key was found and moved
+    /// Returns true if key was found and moved, false if not present
     pub fn touch(&mut self, key: &CacheKey) -> bool {
-        // Find and remove the key
-        if let Some(pos) = self.queue.iter().position(|k| k == key) {
-            let key = self.queue.remove(pos).unwrap();
-            // Re-add to back
-            self.queue.push_back(key);
-            true
-        } else {
-            false
-        }
+        self.cache.get(key).is_some()
     }
 
     /// Remove a specific key
     /// Returns true if key was found and removed
     pub fn remove(&mut self, key: &CacheKey) -> bool {
-        if let Some(pos) = self.queue.iter().position(|k| k == key) {
-            self.queue.remove(pos);
-            true
-        } else {
-            false
-        }
+        self.cache.pop(key).is_some()
     }
 
     /// Clear the list
     pub fn clear(&mut self) {
-        self.queue.clear();
+        self.cache.clear();
     }
 
-    /// Get iterator over keys (front to back, LRU to MRU)
+    /// Get iterator over keys (LRU to MRU order)
     pub fn iter(&self) -> impl Iterator<Item = &CacheKey> {
-        self.queue.iter()
+        self.cache.iter().map(|(k, _)| k)
     }
 }
 
