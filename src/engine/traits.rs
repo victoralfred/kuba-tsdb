@@ -4,10 +4,10 @@ use crate::error::{CompressionError, IndexError, StorageError};
 use crate::types::{ChunkId, DataPoint, SeriesId, TagFilter, TimeRange};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
-use futures::Stream;
 
 // =============================================================================
 // Compressor Trait
@@ -23,7 +23,8 @@ pub trait Compressor: Send + Sync + 'static {
     async fn compress(&self, points: &[DataPoint]) -> Result<CompressedBlock, CompressionError>;
 
     /// Decompress a block back to data points
-    async fn decompress(&self, block: &CompressedBlock) -> Result<Vec<DataPoint>, CompressionError>;
+    async fn decompress(&self, block: &CompressedBlock)
+        -> Result<Vec<DataPoint>, CompressionError>;
 
     /// Estimate compression ratio for capacity planning
     fn estimate_ratio(&self, sample: &[DataPoint]) -> f64;

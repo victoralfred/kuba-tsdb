@@ -82,9 +82,7 @@
 //! - Authors: Tuomas Pelkonen et al., Facebook Inc.
 
 use super::bit_stream::{BitReader, BitWriter};
-use crate::engine::traits::{
-    BlockMetadata, CompressedBlock, Compressor, CompressionStats,
-};
+use crate::engine::traits::{BlockMetadata, CompressedBlock, CompressionStats, Compressor};
 use crate::error::CompressionError;
 use crate::types::DataPoint;
 use async_trait::async_trait;
@@ -328,9 +326,10 @@ impl GorillaCompressor {
         const MAX_POINTS_PER_BLOCK: usize = 10_000_000;
 
         if count > MAX_POINTS_PER_BLOCK {
-            return Err(CompressionError::InvalidData(
-                format!("Point count {} exceeds maximum allowed {}", count, MAX_POINTS_PER_BLOCK)
-            ));
+            return Err(CompressionError::InvalidData(format!(
+                "Point count {} exceeds maximum allowed {}",
+                count, MAX_POINTS_PER_BLOCK
+            )));
         }
 
         if count == 0 {
@@ -465,8 +464,8 @@ impl GorillaCompressor {
 
         // Track previous value and zero-run information
         let mut prev_value = points[0].value.to_bits();
-        let mut prev_leading = 0u32;   // Leading zeros in previous XOR
-        let mut prev_trailing = 0u32;  // Trailing zeros in previous XOR
+        let mut prev_leading = 0u32; // Leading zeros in previous XOR
+        let mut prev_trailing = 0u32; // Trailing zeros in previous XOR
 
         for point in &points[1..] {
             // Convert current value to bits and XOR with previous
@@ -498,10 +497,7 @@ impl GorillaCompressor {
                     if meaningful_bits > 0 {
                         // Extract and write only the meaningful bits
                         // Shift right by trailing zeros to remove them
-                        writer.write_bits(
-                            xor >> prev_trailing,
-                            meaningful_bits as u8,
-                        );
+                        writer.write_bits(xor >> prev_trailing, meaningful_bits as u8);
                     }
                 } else {
                     // Need new block info: write '1' + block metadata + meaningful bits
@@ -558,9 +554,10 @@ impl GorillaCompressor {
         const MAX_POINTS_PER_BLOCK: usize = 10_000_000;
 
         if count > MAX_POINTS_PER_BLOCK {
-            return Err(CompressionError::InvalidData(
-                format!("Point count {} exceeds maximum allowed {}", count, MAX_POINTS_PER_BLOCK)
-            ));
+            return Err(CompressionError::InvalidData(format!(
+                "Point count {} exceeds maximum allowed {}",
+                count, MAX_POINTS_PER_BLOCK
+            )));
         }
 
         if count == 0 {
@@ -666,12 +663,10 @@ impl Compressor for GorillaCompressor {
         // Validate no reserved timestamp values
         for (i, point) in points.iter().enumerate() {
             if point.timestamp == i64::MIN || point.timestamp == i64::MAX {
-                return Err(CompressionError::InvalidData(
-                    format!(
-                        "Reserved timestamp value at point {}: {} (i64::MIN and i64::MAX are reserved)",
-                        i, point.timestamp
-                    ),
-                ));
+                return Err(CompressionError::InvalidData(format!(
+                    "Reserved timestamp value at point {}: {} (i64::MIN and i64::MAX are reserved)",
+                    i, point.timestamp
+                )));
             }
         }
 
@@ -692,12 +687,12 @@ impl Compressor for GorillaCompressor {
             for i in 1..points.len() {
                 let delta = points[i].timestamp.checked_sub(points[i - 1].timestamp);
                 if delta.is_none() {
-                    return Err(CompressionError::InvalidData(
-                        format!(
-                            "Timestamp overflow detected at point {}: {} - {} would overflow",
-                            i, points[i].timestamp, points[i - 1].timestamp
-                        ),
-                    ));
+                    return Err(CompressionError::InvalidData(format!(
+                        "Timestamp overflow detected at point {}: {} - {} would overflow",
+                        i,
+                        points[i].timestamp,
+                        points[i - 1].timestamp
+                    )));
                 }
             }
         }
@@ -744,21 +739,28 @@ impl Compressor for GorillaCompressor {
             checksum,
             data: Bytes::from(compressed_data),
             metadata: BlockMetadata {
-                start_timestamp: points.first()
-                    .ok_or_else(|| CompressionError::InvalidData(
-                        "Cannot compress empty points array".into()
-                    ))?.timestamp,
-                end_timestamp: points.last()
-                    .ok_or_else(|| CompressionError::InvalidData(
-                        "Cannot compress empty points array".into()
-                    ))?.timestamp,
+                start_timestamp: points
+                    .first()
+                    .ok_or_else(|| {
+                        CompressionError::InvalidData("Cannot compress empty points array".into())
+                    })?
+                    .timestamp,
+                end_timestamp: points
+                    .last()
+                    .ok_or_else(|| {
+                        CompressionError::InvalidData("Cannot compress empty points array".into())
+                    })?
+                    .timestamp,
                 point_count: points.len(),
                 series_id: points[0].series_id,
             },
         })
     }
 
-    async fn decompress(&self, block: &CompressedBlock) -> Result<Vec<DataPoint>, CompressionError> {
+    async fn decompress(
+        &self,
+        block: &CompressedBlock,
+    ) -> Result<Vec<DataPoint>, CompressionError> {
         let start = std::time::Instant::now();
 
         // Handle empty blocks early
@@ -786,9 +788,10 @@ impl Compressor for GorillaCompressor {
         const MAX_POINTS_PER_BLOCK: usize = 10_000_000;
 
         if count > MAX_POINTS_PER_BLOCK {
-            return Err(CompressionError::InvalidData(
-                format!("Point count {} exceeds maximum allowed {}", count, MAX_POINTS_PER_BLOCK)
-            ));
+            return Err(CompressionError::InvalidData(format!(
+                "Point count {} exceeds maximum allowed {}",
+                count, MAX_POINTS_PER_BLOCK
+            )));
         }
 
         if count == 0 {

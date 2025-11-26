@@ -1,6 +1,5 @@
 /// Simplified tests to investigate claimed bugs in bug.result
 /// Tests are focused on verifying round-trip correctness and edge cases
-
 use gorilla_tsdb::compression::gorilla::GorillaCompressor;
 use gorilla_tsdb::engine::traits::Compressor;
 use gorilla_tsdb::types::DataPoint;
@@ -16,7 +15,10 @@ async fn test_range_boundary_values() {
     let test_cases = vec![
         (vec![0, 10, 73], "dod = 63 (7-bit boundary)"),
         (vec![0, 10, 74], "dod = 64 (claimed missing)"),
-        (vec![0, 100, 137], "dod = -63 (7-bit boundary, delta decreases from 100 to 37)"),
+        (
+            vec![0, 100, 137],
+            "dod = -63 (7-bit boundary, delta decreases from 100 to 37)",
+        ),
         (vec![0, 10, 265], "dod = 255 (9-bit boundary)"),
         (vec![0, 10, 266], "dod = 256 (claimed missing)"),
         (vec![0, 10, 2057], "dod = 2047 (12-bit boundary)"),
@@ -26,12 +28,20 @@ async fn test_range_boundary_values() {
     for (timestamps, desc) in test_cases {
         let points: Vec<DataPoint> = timestamps
             .into_iter()
-            .map(|t| DataPoint { series_id: 1, timestamp: t, value: 1.0 })
+            .map(|t| DataPoint {
+                series_id: 1,
+                timestamp: t,
+                value: 1.0,
+            })
             .collect();
 
-        let compressed = compressor.compress(&points).await
+        let compressed = compressor
+            .compress(&points)
+            .await
             .expect(&format!("Compression failed for {}", desc));
-        let decompressed = compressor.decompress(&compressed).await
+        let decompressed = compressor
+            .decompress(&compressed)
+            .await
             .expect(&format!("Decompression failed for {}", desc));
 
         assert_eq!(decompressed, points, "Round-trip failed for {}", desc);
@@ -46,25 +56,39 @@ async fn test_large_delta_overflow() {
     // Delta that exceeds i32::MAX
     let large_ts = (i32::MAX as i64) + 10000;
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 10, value: 2.0 },
-        DataPoint { series_id: 1, timestamp: large_ts, value: 3.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10,
+            value: 2.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: large_ts,
+            value: 3.0,
+        },
     ];
 
-    println!("Delta: {} (exceeds i32::MAX: {})", large_ts - 10, large_ts - 10 > i32::MAX as i64);
+    println!(
+        "Delta: {} (exceeds i32::MAX: {})",
+        large_ts - 10,
+        large_ts - 10 > i32::MAX as i64
+    );
 
     match compressor.compress(&points).await {
-        Ok(compressed) => {
-            match compressor.decompress(&compressed).await {
-                Ok(decompressed) => {
-                    assert_eq!(decompressed, points, "Large delta should round-trip");
-                }
-                Err(e) => {
-                    println!("⚠️  BUG CONFIRMED: Decompression failed: {:?}", e);
-                    panic!("Large delta causes corruption");
-                }
+        Ok(compressed) => match compressor.decompress(&compressed).await {
+            Ok(decompressed) => {
+                assert_eq!(decompressed, points, "Large delta should round-trip");
             }
-        }
+            Err(e) => {
+                println!("⚠️  BUG CONFIRMED: Decompression failed: {:?}", e);
+                panic!("Large delta causes corruption");
+            }
+        },
         Err(e) => println!("Compression rejected large delta: {:?}", e),
     }
 }
@@ -75,14 +99,30 @@ async fn test_wrapping_overflow() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: i64::MAX - 100, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: i64::MAX - 50, value: 2.0 },
-        DataPoint { series_id: 1, timestamp: i64::MAX - 10, value: 3.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 100,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 50,
+            value: 2.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 10,
+            value: 3.0,
+        },
     ];
 
-    let compressed = compressor.compress(&points).await
+    let compressed = compressor
+        .compress(&points)
+        .await
         .expect("Should handle large timestamps");
-    let decompressed = compressor.decompress(&compressed).await
+    let decompressed = compressor
+        .decompress(&compressed)
+        .await
         .expect("Should decompress large timestamps");
 
     assert_eq!(decompressed, points);
@@ -94,9 +134,21 @@ async fn test_truncated_bitstream() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 10, value: 2.0 },
-        DataPoint { series_id: 1, timestamp: 20, value: 3.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10,
+            value: 2.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 20,
+            value: 3.0,
+        },
     ];
 
     let mut compressed = compressor.compress(&points).await.unwrap();
@@ -106,8 +158,14 @@ async fn test_truncated_bitstream() {
         compressed.data = compressed.data.slice(0..10);
 
         let result = compressor.decompress(&compressed).await;
-        assert!(result.is_err(), "Truncated data should cause error, not panic");
-        println!("✓ Truncated data properly rejected: {:?}", result.unwrap_err());
+        assert!(
+            result.is_err(),
+            "Truncated data should cause error, not panic"
+        );
+        println!(
+            "✓ Truncated data properly rejected: {:?}",
+            result.unwrap_err()
+        );
     }
 }
 
@@ -125,13 +183,25 @@ async fn test_xor_value_patterns() {
 
     for (val1, val2, desc) in test_cases {
         let points = vec![
-            DataPoint { series_id: 1, timestamp: 0, value: val1 },
-            DataPoint { series_id: 1, timestamp: 10, value: val2 },
+            DataPoint {
+                series_id: 1,
+                timestamp: 0,
+                value: val1,
+            },
+            DataPoint {
+                series_id: 1,
+                timestamp: 10,
+                value: val2,
+            },
         ];
 
-        let compressed = compressor.compress(&points).await
+        let compressed = compressor
+            .compress(&points)
+            .await
             .expect(&format!("Compression failed for {}", desc));
-        let decompressed = compressor.decompress(&compressed).await
+        let decompressed = compressor
+            .decompress(&compressed)
+            .await
             .expect(&format!("Decompression failed for {}", desc));
 
         assert_eq!(decompressed, points, "XOR pattern {} failed", desc);
@@ -144,9 +214,21 @@ async fn test_leading_zeros_extreme() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 10, value: f64::MIN_POSITIVE },
-        DataPoint { series_id: 1, timestamp: 20, value: f64::MIN_POSITIVE * 2.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10,
+            value: f64::MIN_POSITIVE,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 20,
+            value: f64::MIN_POSITIVE * 2.0,
+        },
     ];
 
     let v1 = points[0].value.to_bits();
@@ -154,9 +236,13 @@ async fn test_leading_zeros_extreme() {
     let xor = v1 ^ v2;
     println!("XOR leading zeros: {}", xor.leading_zeros());
 
-    let compressed = compressor.compress(&points).await
+    let compressed = compressor
+        .compress(&points)
+        .await
         .expect("Should handle denormalized numbers");
-    let decompressed = compressor.decompress(&compressed).await
+    let decompressed = compressor
+        .decompress(&compressed)
+        .await
         .expect("Should decompress denormalized numbers");
 
     assert_eq!(decompressed, points);
@@ -173,14 +259,14 @@ async fn test_malicious_huge_count() {
 
     let compressed = gorilla_tsdb::engine::traits::CompressedBlock {
         algorithm_id: "gorilla".to_string(),
-        original_size: 15_000_000 * 24,  // Pretend huge data
+        original_size: 15_000_000 * 24, // Pretend huge data
         compressed_size: 1000,
         checksum: 0,
         data: Bytes::from(malicious_data),
         metadata: gorilla_tsdb::engine::traits::BlockMetadata {
             start_timestamp: 0,
             end_timestamp: 1000,
-            point_count: 15_000_000,  // 15 million > 10M limit
+            point_count: 15_000_000, // 15 million > 10M limit
             series_id: 1,
         },
     };
@@ -197,8 +283,16 @@ async fn test_original_size_bug() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 10, value: 2.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10,
+            value: 2.0,
+        },
     ];
 
     let compressed = compressor.compress(&points).await.unwrap();
@@ -209,11 +303,16 @@ async fn test_original_size_bug() {
     println!("Points: {}", points.len());
     println!("Expected original_size: {} bytes", expected_size);
     println!("Actual original_size: {} bytes", actual_size);
-    println!("size_of::<DataPoint>(): {}", std::mem::size_of::<DataPoint>());
+    println!(
+        "size_of::<DataPoint>(): {}",
+        std::mem::size_of::<DataPoint>()
+    );
 
     if actual_size != expected_size {
-        println!("⚠️  BUG CONFIRMED: original_size is {} but should be {}",
-                 actual_size, expected_size);
+        println!(
+            "⚠️  BUG CONFIRMED: original_size is {} but should be {}",
+            actual_size, expected_size
+        );
         println!("    Likely using size_of_val(points) which returns slice metadata (16 bytes)");
 
         // This is definitely a bug
@@ -229,16 +328,40 @@ async fn test_special_floats() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: f64::NAN },
-        DataPoint { series_id: 1, timestamp: 10, value: f64::INFINITY },
-        DataPoint { series_id: 1, timestamp: 20, value: f64::NEG_INFINITY },
-        DataPoint { series_id: 1, timestamp: 30, value: 0.0 },
-        DataPoint { series_id: 1, timestamp: 40, value: -0.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: f64::NAN,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10,
+            value: f64::INFINITY,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 20,
+            value: f64::NEG_INFINITY,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 30,
+            value: 0.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 40,
+            value: -0.0,
+        },
     ];
 
-    let compressed = compressor.compress(&points).await
+    let compressed = compressor
+        .compress(&points)
+        .await
         .expect("Should handle special floats");
-    let decompressed = compressor.decompress(&compressed).await
+    let decompressed = compressor
+        .decompress(&compressed)
+        .await
         .expect("Should decompress special floats");
 
     assert_eq!(decompressed.len(), points.len());
@@ -253,16 +376,40 @@ async fn test_irregular_timestamps() {
     let compressor = GorillaCompressor::new();
 
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 0, value: 1.0 },
-        DataPoint { series_id: 1, timestamp: 5, value: 2.0 },
-        DataPoint { series_id: 1, timestamp: 100, value: 3.0 },
-        DataPoint { series_id: 1, timestamp: 105, value: 4.0 },
-        DataPoint { series_id: 1, timestamp: 10000, value: 5.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 5,
+            value: 2.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 100,
+            value: 3.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 105,
+            value: 4.0,
+        },
+        DataPoint {
+            series_id: 1,
+            timestamp: 10000,
+            value: 5.0,
+        },
     ];
 
-    let compressed = compressor.compress(&points).await
+    let compressed = compressor
+        .compress(&points)
+        .await
         .expect("Should handle irregular timestamps");
-    let decompressed = compressor.decompress(&compressed).await
+    let decompressed = compressor
+        .decompress(&compressed)
+        .await
         .expect("Should decompress irregular timestamps");
 
     assert_eq!(decompressed, points);
@@ -287,9 +434,13 @@ async fn test_random_data() {
     // Sort by timestamp (required for Gorilla)
     points.sort_by_key(|p| p.timestamp);
 
-    let compressed = compressor.compress(&points).await
+    let compressed = compressor
+        .compress(&points)
+        .await
         .expect("Should handle random data");
-    let decompressed = compressor.decompress(&compressed).await
+    let decompressed = compressor
+        .decompress(&compressed)
+        .await
         .expect("Should decompress random data");
 
     let ratio = compressed.original_size as f64 / compressed.compressed_size as f64;

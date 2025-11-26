@@ -30,7 +30,6 @@
 ///! # Ok(())
 ///! # }
 ///! ```
-
 use crate::compression::gorilla::GorillaCompressor;
 use crate::engine::traits::Compressor;
 use crate::storage::chunk::Chunk;
@@ -189,9 +188,7 @@ impl ChunkReader {
             let reader_clone = self.clone_for_parallel();
             let options_clone = options.clone();
 
-            join_set.spawn(async move {
-                reader_clone.read_chunk(path, options_clone).await
-            });
+            join_set.spawn(async move { reader_clone.read_chunk(path, options_clone).await });
         }
 
         // Collect results
@@ -222,8 +219,8 @@ impl ChunkReader {
         _options: &QueryOptions,
     ) -> Result<Vec<DataPoint>, String> {
         // Open chunk with mmap (not async)
-        let mmap_chunk = MmapChunk::open(path)
-            .map_err(|e| format!("Failed to open mmap chunk: {:?}", e))?;
+        let mmap_chunk =
+            MmapChunk::open(path).map_err(|e| format!("Failed to open mmap chunk: {:?}", e))?;
 
         // Get compressed data (zero-copy)
         let compressed_data = mmap_chunk.compressed_data();
@@ -245,7 +242,10 @@ impl ChunkReader {
         };
 
         // Decompress
-        let points = self.compressor.decompress(&compressed_block).await
+        let points = self
+            .compressor
+            .decompress(&compressed_block)
+            .await
             .map_err(|e| format!("Decompression failed: {:?}", e))?;
 
         Ok(points)
@@ -271,7 +271,9 @@ impl ChunkReader {
         // Filter by time range
         if options.start_time.is_some() || options.end_time.is_some() {
             points.retain(|p| {
-                let after_start = options.start_time.map_or(true, |start| p.timestamp >= start);
+                let after_start = options
+                    .start_time
+                    .map_or(true, |start| p.timestamp >= start);
                 let before_end = options.end_time.map_or(true, |end| p.timestamp <= end);
                 after_start && before_end
             });

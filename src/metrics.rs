@@ -2,11 +2,10 @@
 ///!
 ///! This module provides Prometheus metrics for monitoring system performance,
 ///! resource usage, errors, and data integrity.
-
 use lazy_static::lazy_static;
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
-    CounterVec, Gauge, GaugeVec, HistogramVec, TextEncoder, Encoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Encoder, Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 
 lazy_static! {
@@ -210,17 +209,21 @@ pub fn gather_metrics() -> Result<String, String> {
     let metric_families = prometheus::gather();
     let mut buffer = vec![];
 
-    encoder.encode(&metric_families, &mut buffer)
+    encoder
+        .encode(&metric_families, &mut buffer)
         .map_err(|e| format!("Failed to encode metrics: {}", e))?;
 
-    String::from_utf8(buffer)
-        .map_err(|e| format!("Metrics contain invalid UTF-8: {}", e))
+    String::from_utf8(buffer).map_err(|e| format!("Metrics contain invalid UTF-8: {}", e))
 }
 
 /// Record a write operation
 #[inline]
 pub fn record_write(series_id: u128, duration_secs: f64, success: bool) {
-    let status = if success { "success".to_string() } else { "error".to_string() };
+    let status = if success {
+        "success".to_string()
+    } else {
+        "error".to_string()
+    };
     let series_id_str = series_id.to_string();
 
     WRITES_TOTAL
@@ -237,9 +240,7 @@ pub fn record_write(series_id: u128, duration_secs: f64, success: bool) {
 pub fn record_seal(duration_secs: f64, success: bool) {
     let status = if success { "success" } else { "error" };
 
-    SEALS_TOTAL
-        .with_label_values(&[status])
-        .inc();
+    SEALS_TOTAL.with_label_values(&[status]).inc();
 
     SEAL_DURATION
         .with_label_values(&[status])

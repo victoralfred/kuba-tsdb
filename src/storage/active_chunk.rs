@@ -6,7 +6,6 @@
 ///! - Out-of-order point handling (maintains sorted order)
 ///! - Automatic sealing based on configurable thresholds
 ///! - Lock-free reads for common operations
-
 use crate::storage::chunk::Chunk;
 use crate::types::{DataPoint, SeriesId};
 use std::collections::BTreeMap;
@@ -113,8 +112,8 @@ impl ActiveChunk {
             points: RwLock::new(BTreeMap::new()),
             point_count: AtomicU32::new(0),
             sealed: AtomicBool::new(false),
-            min_timestamp: AtomicI64::new(i64::MAX),  // Will be updated on first append
-            max_timestamp: AtomicI64::new(i64::MIN),  // Will be updated on first append
+            min_timestamp: AtomicI64::new(i64::MAX), // Will be updated on first append
+            max_timestamp: AtomicI64::new(i64::MIN), // Will be updated on first append
             created_at: Instant::now(),
             capacity,
             seal_config,
@@ -177,11 +176,10 @@ impl ActiveChunk {
         // P1.3: Acquire write lock with proper error handling
         let lock_start = Instant::now();
         {
-            let mut points = self.points.write()
-                .map_err(|_| {
-                    crate::metrics::record_error("lock_poisoned", "append");
-                    "Lock poisoned: cannot append to corrupted chunk".to_string()
-                })?;
+            let mut points = self.points.write().map_err(|_| {
+                crate::metrics::record_error("lock_poisoned", "append");
+                "Lock poisoned: cannot append to corrupted chunk".to_string()
+            })?;
 
             let lock_duration = lock_start.elapsed().as_secs_f64();
             crate::metrics::LOCK_WAIT_DURATION
@@ -223,7 +221,8 @@ impl ActiveChunk {
             points.insert(point.timestamp, point);
 
             // Update atomic counter
-            self.point_count.store(points.len() as u32, Ordering::Release);
+            self.point_count
+                .store(points.len() as u32, Ordering::Release);
 
             // P1.5: Update cached min/max timestamps using compare-and-swap loop
             // This prevents race conditions where concurrent updates could set incorrect values
@@ -236,17 +235,17 @@ impl ActiveChunk {
             loop {
                 let current_min = self.min_timestamp.load(Ordering::Acquire);
                 if point.timestamp >= current_min {
-                    break;  // No update needed
+                    break; // No update needed
                 }
 
                 match self.min_timestamp.compare_exchange_weak(
                     current_min,
                     point.timestamp,
                     Ordering::Release,
-                    Ordering::Acquire
+                    Ordering::Acquire,
                 ) {
-                    Ok(_) => break,      // Successfully updated
-                    Err(_) => continue,  // Another thread updated, retry
+                    Ok(_) => break,     // Successfully updated
+                    Err(_) => continue, // Another thread updated, retry
                 }
             }
 
@@ -254,17 +253,17 @@ impl ActiveChunk {
             loop {
                 let current_max = self.max_timestamp.load(Ordering::Acquire);
                 if point.timestamp <= current_max {
-                    break;  // No update needed
+                    break; // No update needed
                 }
 
                 match self.max_timestamp.compare_exchange_weak(
                     current_max,
                     point.timestamp,
                     Ordering::Release,
-                    Ordering::Acquire
+                    Ordering::Acquire,
                 ) {
-                    Ok(_) => break,      // Successfully updated
-                    Err(_) => continue,  // Another thread updated, retry
+                    Ok(_) => break,     // Successfully updated
+                    Err(_) => continue, // Another thread updated, retry
                 }
             }
         }
@@ -395,12 +394,11 @@ impl ActiveChunk {
         // P1.1: ZERO-COPY - Take ownership of BTreeMap without cloning
         // P1.3: Proper lock error handling
         let points_btree = {
-            let mut points = self.points.write()
-                .map_err(|_| {
-                    // Restore sealed flag on error
-                    self.sealed.store(false, Ordering::Release);
-                    "Lock poisoned: cannot seal corrupted chunk".to_string()
-                })?;
+            let mut points = self.points.write().map_err(|_| {
+                // Restore sealed flag on error
+                self.sealed.store(false, Ordering::Release);
+                "Lock poisoned: cannot seal corrupted chunk".to_string()
+            })?;
 
             if points.is_empty() {
                 // Restore sealed flag on error
@@ -418,12 +416,11 @@ impl ActiveChunk {
         // Lock released here
 
         // P1.1: Create Chunk directly from BTreeMap (no intermediate Vec, no append loop)
-        let mut chunk = Chunk::from_btreemap(self.series_id, points_btree)
-            .map_err(|e| {
-                // Restore sealed flag on error
-                self.sealed.store(false, Ordering::Release);
-                format!("Failed to create chunk: {}", e)
-            })?;
+        let mut chunk = Chunk::from_btreemap(self.series_id, points_btree).map_err(|e| {
+            // Restore sealed flag on error
+            self.sealed.store(false, Ordering::Release);
+            format!("Failed to create chunk: {}", e)
+        })?;
 
         // Seal the chunk to disk
         let seal_result = chunk.seal(path).await;
@@ -500,11 +497,10 @@ impl ActiveChunk {
 
         // Acquire lock once for entire batch
         {
-            let mut points_map = self.points.write()
-                .map_err(|_| {
-                    crate::metrics::record_error("lock_poisoned", "append_batch");
-                    "Lock poisoned: cannot append to corrupted chunk".to_string()
-                })?;
+            let mut points_map = self.points.write().map_err(|_| {
+                crate::metrics::record_error("lock_poisoned", "append_batch");
+                "Lock poisoned: cannot append to corrupted chunk".to_string()
+            })?;
 
             let lock_duration = lock_start.elapsed().as_secs_f64();
             crate::metrics::LOCK_WAIT_DURATION
@@ -542,7 +538,8 @@ impl ActiveChunk {
             }
 
             // Update point count once at the end
-            self.point_count.store(points_map.len() as u32, Ordering::Release);
+            self.point_count
+                .store(points_map.len() as u32, Ordering::Release);
         }
 
         // Record metrics
@@ -663,9 +660,27 @@ mod tests {
         let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
         // Insert in random order
-        chunk.append(DataPoint { series_id: 1, timestamp: 300, value: 3.0 }).unwrap();
-        chunk.append(DataPoint { series_id: 1, timestamp: 100, value: 1.0 }).unwrap();
-        chunk.append(DataPoint { series_id: 1, timestamp: 200, value: 2.0 }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 300,
+                value: 3.0,
+            })
+            .unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 100,
+                value: 1.0,
+            })
+            .unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 200,
+                value: 2.0,
+            })
+            .unwrap();
 
         assert_eq!(chunk.point_count(), 3);
 
@@ -693,11 +708,13 @@ mod tests {
     async fn test_seal_success() {
         let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: 1000,
-            value: 42.0,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
 
         let result = chunk.seal("/tmp/test_active_chunk_seal.gor".into()).await;
 
@@ -719,7 +736,13 @@ mod tests {
     async fn test_append_after_seal() {
         let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-        chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
         chunk.seal("/tmp/test.gor".into()).await.unwrap();
 
         let result = chunk.append(DataPoint {

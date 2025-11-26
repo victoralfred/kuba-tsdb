@@ -242,9 +242,10 @@ impl TimeRange {
     /// ```
     pub fn new(start: i64, end: i64) -> Result<Self, crate::error::Error> {
         if start > end {
-            return Err(crate::error::Error::Configuration(
-                format!("Invalid time range: start {} > end {}", start, end)
-            ));
+            return Err(crate::error::Error::Configuration(format!(
+                "Invalid time range: start {} > end {}",
+                start, end
+            )));
         }
         Ok(Self { start, end })
     }

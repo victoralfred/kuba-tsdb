@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Magic number identifying Gorilla chunk format: "GORILLA" in hex
-pub const CHUNK_MAGIC: u32 = 0x474F5249;  // "GORI" (first 4 bytes of "GORILLA")
+pub const CHUNK_MAGIC: u32 = 0x474F5249; // "GORI" (first 4 bytes of "GORILLA")
 
 /// Current chunk format version
 pub const CHUNK_VERSION: u16 = 1;
@@ -195,7 +195,10 @@ impl ChunkHeader {
     /// Parsed ChunkHeader or error if invalid
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 64 {
-            return Err(format!("Invalid header size: {} bytes (expected 64)", bytes.len()));
+            return Err(format!(
+                "Invalid header size: {} bytes (expected 64)",
+                bytes.len()
+            ));
         }
 
         // Parse magic number
@@ -206,20 +209,16 @@ impl ChunkHeader {
 
         // Parse series ID (16 bytes)
         let series_id = u128::from_le_bytes([
-            bytes[6], bytes[7], bytes[8], bytes[9],
-            bytes[10], bytes[11], bytes[12], bytes[13],
-            bytes[14], bytes[15], bytes[16], bytes[17],
-            bytes[18], bytes[19], bytes[20], bytes[21],
+            bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13],
+            bytes[14], bytes[15], bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21],
         ]);
 
         // Parse timestamps
         let start_timestamp = i64::from_le_bytes([
-            bytes[22], bytes[23], bytes[24], bytes[25],
-            bytes[26], bytes[27], bytes[28], bytes[29],
+            bytes[22], bytes[23], bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29],
         ]);
         let end_timestamp = i64::from_le_bytes([
-            bytes[30], bytes[31], bytes[32], bytes[33],
-            bytes[34], bytes[35], bytes[36], bytes[37],
+            bytes[30], bytes[31], bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37],
         ]);
 
         // Parse counts and sizes
@@ -229,8 +228,7 @@ impl ChunkHeader {
 
         // Parse checksum
         let checksum = u64::from_le_bytes([
-            bytes[50], bytes[51], bytes[52], bytes[53],
-            bytes[54], bytes[55], bytes[56], bytes[57],
+            bytes[50], bytes[51], bytes[52], bytes[53], bytes[54], bytes[55], bytes[56], bytes[57],
         ]);
 
         // Parse compression type
@@ -451,9 +449,9 @@ pub struct SealConfig {
 impl Default for SealConfig {
     fn default() -> Self {
         Self {
-            max_points: 10_000,           // 10K points
-            max_duration_ms: 3_600_000,   // 1 hour
-            max_size_bytes: 1_048_576,    // 1MB
+            max_points: 10_000,         // 10K points
+            max_duration_ms: 3_600_000, // 1 hour
+            max_size_bytes: 1_048_576,  // 1MB
         }
     }
 }
@@ -482,9 +480,9 @@ impl Chunk {
             metadata: ChunkMetadata {
                 chunk_id,
                 series_id,
-                path: PathBuf::new(),  // Will be set when sealed
-                start_timestamp: i64::MAX,  // Will be updated to min on first append
-                end_timestamp: i64::MIN,    // Will be updated to max on first append
+                path: PathBuf::new(),      // Will be set when sealed
+                start_timestamp: i64::MAX, // Will be updated to min on first append
+                end_timestamp: i64::MIN,   // Will be updated to max on first append
                 point_count: 0,
                 size_bytes: 0,
                 compression: CompressionType::None,
@@ -614,7 +612,7 @@ impl Chunk {
             }
 
             // CRITICAL: Hard limit to prevent unbounded memory growth
-            const MAX_CHUNK_POINTS: usize = 10_000_000;  // 10 million points
+            const MAX_CHUNK_POINTS: usize = 10_000_000; // 10 million points
             if points.len() >= MAX_CHUNK_POINTS {
                 return Err(format!(
                     "Chunk has reached maximum size of {} points. \
@@ -696,7 +694,11 @@ impl Chunk {
         }
 
         // Check duration threshold (use checked_sub to prevent overflow)
-        match self.metadata.end_timestamp.checked_sub(self.metadata.start_timestamp) {
+        match self
+            .metadata
+            .end_timestamp
+            .checked_sub(self.metadata.start_timestamp)
+        {
             Some(duration) => {
                 if duration >= config.max_duration_ms {
                     return true;
@@ -791,11 +793,12 @@ impl Chunk {
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await
-                .map_err(|e| format!(
+            fs::create_dir_all(parent).await.map_err(|e| {
+                format!(
                     "Failed to create directory for series {}, chunk path {:?}: {}",
                     self.metadata.series_id, path, e
-                ))?;
+                )
+            })?;
         }
 
         // P1.2: Compress data with Gorilla on blocking thread pool
@@ -821,32 +824,38 @@ impl Chunk {
         header.flags = ChunkFlags::sealed();
 
         // Validate header
-        header.validate().map_err(|e| format!("Invalid header: {}", e))?;
+        header
+            .validate()
+            .map_err(|e| format!("Invalid header: {}", e))?;
 
         // Write to disk: header + compressed data
-        let mut file = fs::File::create(&path).await
-            .map_err(|e| format!(
+        let mut file = fs::File::create(&path).await.map_err(|e| {
+            format!(
                 "Failed to create chunk file for series {}, path {:?}: {}",
                 self.metadata.series_id, path, e
-            ))?;
+            )
+        })?;
 
         // Write 64-byte header
-        file.write_all(&header.to_bytes()).await
-            .map_err(|e| format!(
+        file.write_all(&header.to_bytes()).await.map_err(|e| {
+            format!(
                 "Failed to write header for series {}, chunk {:?}: {}",
                 self.metadata.series_id, path, e
-            ))?;
+            )
+        })?;
 
         // Write compressed data
-        file.write_all(&compressed.data).await
-            .map_err(|e| format!(
+        file.write_all(&compressed.data).await.map_err(|e| {
+            format!(
                 "Failed to write data for series {}, chunk {:?}: {}",
                 self.metadata.series_id, path, e
-            ))?;
+            )
+        })?;
 
         // CRITICAL: Sync to disk before marking sealed
         // flush() only writes to OS buffers, sync_all() ensures disk persistence
-        file.sync_all().await
+        file.sync_all()
+            .await
             .map_err(|e| format!("Failed to sync file to disk: {}", e))?;
 
         // Update chunk state (only after data is safely on disk)
@@ -858,7 +867,7 @@ impl Chunk {
         // P1.6: Now that seal succeeded, clear in-memory data and update to OnDisk
         // If we had failed earlier, the data would still be in memory for retry
         if let ChunkData::InMemory(ref mut points_map) = self.data {
-            points_map.clear();  // Free memory now that data is safely on disk
+            points_map.clear(); // Free memory now that data is safely on disk
         }
         self.data = ChunkData::OnDisk(path);
 
@@ -903,22 +912,26 @@ impl Chunk {
         use tokio::io::AsyncReadExt;
 
         // Open and read header
-        let mut file = fs::File::open(&path).await
+        let mut file = fs::File::open(&path)
+            .await
             .map_err(|e| format!("Failed to open file: {}", e))?;
 
         let mut header_bytes = [0u8; 64];
-        file.read_exact(&mut header_bytes).await
+        file.read_exact(&mut header_bytes)
+            .await
             .map_err(|e| format!("Failed to read header: {}", e))?;
 
         // Parse and validate header
         let header = ChunkHeader::from_bytes(&header_bytes)
             .map_err(|e| format!("Failed to parse header: {}", e))?;
-        header.validate()
+        header
+            .validate()
             .map_err(|e| format!("Invalid header: {}", e))?;
 
         // Read compressed data for checksum verification
         let mut compressed_data = vec![0u8; header.compressed_size as usize];
-        file.read_exact(&mut compressed_data).await
+        file.read_exact(&mut compressed_data)
+            .await
             .map_err(|e| format!("Failed to read data: {}", e))?;
 
         // Verify checksum
@@ -937,7 +950,7 @@ impl Chunk {
             path.file_stem()
                 .and_then(|s| s.to_str())
                 .and_then(|s| s.strip_prefix("chunk_"))
-                .unwrap_or("00000000-0000-0000-0000-000000000000")
+                .unwrap_or("00000000-0000-0000-0000-000000000000"),
         );
 
         Ok(Self {
@@ -956,7 +969,7 @@ impl Chunk {
             state: ChunkState::Sealed,
             data: ChunkData::OnDisk(path),
             capacity: 0,
-            cached_header: Some(header),  // P2.2: Cache header for decompress()
+            cached_header: Some(header), // P2.2: Cache header for decompress()
         })
     }
 
@@ -1016,27 +1029,32 @@ impl Chunk {
         // P2.2: Use cached header if available, otherwise read from disk
         let (header, compressed_data) = if let Some(ref cached) = self.cached_header {
             // Fast path: header already cached, only read compressed data
-            let mut file = fs::File::open(path).await
+            let mut file = fs::File::open(path)
+                .await
                 .map_err(|e| format!("Failed to open file: {}", e))?;
 
             // Seek past header to compressed data at offset 64
             use tokio::io::AsyncSeekExt;
-            file.seek(std::io::SeekFrom::Start(64)).await
+            file.seek(std::io::SeekFrom::Start(64))
+                .await
                 .map_err(|e| format!("Failed to seek: {}", e))?;
 
             // Read compressed data
             let mut compressed_data = vec![0u8; cached.compressed_size as usize];
-            file.read_exact(&mut compressed_data).await
+            file.read_exact(&mut compressed_data)
+                .await
                 .map_err(|e| format!("Failed to read data: {}", e))?;
 
             (cached.clone(), compressed_data)
         } else {
             // Slow path: read and parse header from disk
-            let mut file = fs::File::open(path).await
+            let mut file = fs::File::open(path)
+                .await
                 .map_err(|e| format!("Failed to open file: {}", e))?;
 
             let mut header_bytes = [0u8; 64];
-            file.read_exact(&mut header_bytes).await
+            file.read_exact(&mut header_bytes)
+                .await
                 .map_err(|e| format!("Failed to read header: {}", e))?;
 
             let header = ChunkHeader::from_bytes(&header_bytes)
@@ -1044,7 +1062,8 @@ impl Chunk {
 
             // Read compressed data
             let mut compressed_data = vec![0u8; header.compressed_size as usize];
-            file.read_exact(&mut compressed_data).await
+            file.read_exact(&mut compressed_data)
+                .await
                 .map_err(|e| format!("Failed to read data: {}", e))?;
 
             (header, compressed_data)
@@ -1067,7 +1086,9 @@ impl Chunk {
 
         // Decompress
         let compressor = GorillaCompressor::new();
-        compressor.decompress(&compressed_block).await
+        compressor
+            .decompress(&compressed_block)
+            .await
             .map_err(|e| format!("Decompression failed: {}", e))
     }
 
@@ -1164,13 +1185,13 @@ mod tests {
         };
 
         // Overlapping ranges
-        assert!(metadata.overlaps(500, 1500));   // Partial overlap (start)
-        assert!(metadata.overlaps(1500, 2500));  // Partial overlap (end)
-        assert!(metadata.overlaps(1200, 1800));  // Fully contained
-        assert!(metadata.overlaps(500, 2500));   // Fully contains chunk
+        assert!(metadata.overlaps(500, 1500)); // Partial overlap (start)
+        assert!(metadata.overlaps(1500, 2500)); // Partial overlap (end)
+        assert!(metadata.overlaps(1200, 1800)); // Fully contained
+        assert!(metadata.overlaps(500, 2500)); // Fully contains chunk
 
         // Non-overlapping ranges
-        assert!(!metadata.overlaps(0, 999));     // Before
+        assert!(!metadata.overlaps(0, 999)); // Before
         assert!(!metadata.overlaps(2001, 3000)); // After
     }
 
@@ -1260,14 +1281,22 @@ mod tests {
         let mut chunk = Chunk::new_active(1, 100);
 
         // Append first point
-        let point1 = DataPoint { series_id: 1, timestamp: 1000, value: 42.0 };
+        let point1 = DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 42.0,
+        };
         assert!(chunk.append(point1).is_ok());
         assert_eq!(chunk.point_count(), 1);
         assert_eq!(chunk.metadata.start_timestamp, 1000);
         assert_eq!(chunk.metadata.end_timestamp, 1000);
 
         // Append second point
-        let point2 = DataPoint { series_id: 1, timestamp: 2000, value: 43.0 };
+        let point2 = DataPoint {
+            series_id: 1,
+            timestamp: 2000,
+            value: 43.0,
+        };
         assert!(chunk.append(point2).is_ok());
         assert_eq!(chunk.point_count(), 2);
         assert_eq!(chunk.metadata.start_timestamp, 1000);
@@ -1285,7 +1314,11 @@ mod tests {
         use crate::types::DataPoint;
 
         let mut chunk = Chunk::new_active(1, 100);
-        let point = DataPoint { series_id: 2, timestamp: 1000, value: 42.0 };
+        let point = DataPoint {
+            series_id: 2,
+            timestamp: 1000,
+            value: 42.0,
+        };
 
         let result = chunk.append(point);
         assert!(result.is_err());
@@ -1305,20 +1338,24 @@ mod tests {
 
         // Not full yet
         for i in 0..4 {
-            chunk.append(DataPoint {
-                series_id: 1,
-                timestamp: i * 1000,
-                value: 42.0
-            }).unwrap();
+            chunk
+                .append(DataPoint {
+                    series_id: 1,
+                    timestamp: i * 1000,
+                    value: 42.0,
+                })
+                .unwrap();
         }
         assert!(!chunk.should_seal(&config));
 
         // Now it should seal
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: 5000,
-            value: 42.0
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 5000,
+                value: 42.0,
+            })
+            .unwrap();
         assert!(chunk.should_seal(&config));
     }
 
@@ -1329,29 +1366,35 @@ mod tests {
         let mut chunk = Chunk::new_active(1, 100);
         let config = SealConfig {
             max_points: 1000,
-            max_duration_ms: 5000,  // 5 seconds
+            max_duration_ms: 5000, // 5 seconds
             max_size_bytes: 100_000,
         };
 
         // Add points within duration
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: 1000,
-            value: 42.0
-        }).unwrap();
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: 5000,
-            value: 43.0
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 5000,
+                value: 43.0,
+            })
+            .unwrap();
         assert!(!chunk.should_seal(&config));
 
         // Add point exceeding duration
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: 7000,
-            value: 44.0
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 7000,
+                value: 44.0,
+            })
+            .unwrap();
         assert!(chunk.should_seal(&config));
     }
 
@@ -1362,8 +1405,20 @@ mod tests {
         let mut chunk = Chunk::new_active(1, 100);
 
         // Add some points
-        chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 }).unwrap();
-        chunk.append(DataPoint { series_id: 1, timestamp: 2000, value: 43.0 }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 2000,
+                value: 43.0,
+            })
+            .unwrap();
 
         // Seal the chunk
         let path = PathBuf::from("/tmp/test_chunk.gor");
@@ -1395,13 +1450,23 @@ mod tests {
         use crate::types::DataPoint;
 
         let mut chunk = Chunk::new_active(1, 100);
-        chunk.append(DataPoint { series_id: 1, timestamp: 1000, value: 42.0 }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
 
         // Seal the chunk
         chunk.seal(PathBuf::from("/tmp/test.gor")).await.unwrap();
 
         // Try to append after sealing
-        let point = DataPoint { series_id: 1, timestamp: 2000, value: 43.0 };
+        let point = DataPoint {
+            series_id: 1,
+            timestamp: 2000,
+            value: 43.0,
+        };
         let result = chunk.append(point);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Sealed"));
@@ -1412,8 +1477,8 @@ mod tests {
         let config = SealConfig::default();
 
         assert_eq!(config.max_points, 10_000);
-        assert_eq!(config.max_duration_ms, 3_600_000);  // 1 hour
-        assert_eq!(config.max_size_bytes, 1_048_576);    // 1MB
+        assert_eq!(config.max_duration_ms, 3_600_000); // 1 hour
+        assert_eq!(config.max_size_bytes, 1_048_576); // 1MB
     }
 
     #[tokio::test]
@@ -1423,10 +1488,26 @@ mod tests {
         // Create active chunk with test data
         let mut chunk = Chunk::new_active(42, 100);
         let original_points = vec![
-            DataPoint { series_id: 42, timestamp: 1000, value: 10.5 },
-            DataPoint { series_id: 42, timestamp: 2000, value: 20.75 },
-            DataPoint { series_id: 42, timestamp: 3000, value: 30.25 },
-            DataPoint { series_id: 42, timestamp: 4000, value: 40.0 },
+            DataPoint {
+                series_id: 42,
+                timestamp: 1000,
+                value: 10.5,
+            },
+            DataPoint {
+                series_id: 42,
+                timestamp: 2000,
+                value: 20.75,
+            },
+            DataPoint {
+                series_id: 42,
+                timestamp: 3000,
+                value: 30.25,
+            },
+            DataPoint {
+                series_id: 42,
+                timestamp: 4000,
+                value: 40.0,
+            },
         ];
 
         // Add points to chunk
@@ -1439,13 +1520,18 @@ mod tests {
 
         // Seal to disk
         let test_path = PathBuf::from("/tmp/test_chunk_roundtrip.gor");
-        chunk.seal(test_path.clone()).await.expect("Failed to seal chunk");
+        chunk
+            .seal(test_path.clone())
+            .await
+            .expect("Failed to seal chunk");
 
         assert!(chunk.is_sealed());
         assert_eq!(chunk.metadata.point_count, 4);
 
         // Read chunk from disk
-        let loaded_chunk = Chunk::read(test_path.clone()).await.expect("Failed to read chunk");
+        let loaded_chunk = Chunk::read(test_path.clone())
+            .await
+            .expect("Failed to read chunk");
 
         assert!(loaded_chunk.is_sealed());
         assert_eq!(loaded_chunk.series_id(), 42);
@@ -1454,7 +1540,10 @@ mod tests {
         assert_eq!(loaded_chunk.metadata.end_timestamp, 4000);
 
         // Decompress and verify points
-        let decompressed_points = loaded_chunk.decompress().await.expect("Failed to decompress");
+        let decompressed_points = loaded_chunk
+            .decompress()
+            .await
+            .expect("Failed to decompress");
 
         assert_eq!(decompressed_points.len(), 4);
         assert_eq!(decompressed_points[0].timestamp, 1000);

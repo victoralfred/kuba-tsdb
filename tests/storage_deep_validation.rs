@@ -50,7 +50,7 @@ fn test_critical_duration_overflow() {
     chunk
         .append(DataPoint {
             series_id: 1,
-            timestamp: i64::MIN + 1000,  // Avoid MIN exactly (may have issues)
+            timestamp: i64::MIN + 1000, // Avoid MIN exactly (may have issues)
             value: 1.0,
         })
         .unwrap();
@@ -58,14 +58,14 @@ fn test_critical_duration_overflow() {
     chunk
         .append(DataPoint {
             series_id: 1,
-            timestamp: i64::MAX - 1000,  // Avoid MAX exactly
+            timestamp: i64::MAX - 1000, // Avoid MAX exactly
             value: 2.0,
         })
         .unwrap();
 
     let config = SealConfig {
         max_points: 1000,
-        max_duration_ms: i64::MAX,  // Very high threshold
+        max_duration_ms: i64::MAX, // Very high threshold
         max_size_bytes: 1_000_000,
     };
 
@@ -341,7 +341,7 @@ fn test_high_series_id_validation() {
     points.insert(
         2000,
         DataPoint {
-            series_id: 2,  // Different series!
+            series_id: 2, // Different series!
             timestamp: 2000,
             value: 2.0,
         },
@@ -349,7 +349,7 @@ fn test_high_series_id_validation() {
     points.insert(
         3000,
         DataPoint {
-            series_id: 3,  // Another different series!
+            series_id: 3, // Another different series!
             timestamp: 3000,
             value: 3.0,
         },
@@ -484,10 +484,7 @@ fn test_performance_btreemap_iteration_overhead() {
     let duration = start.elapsed();
 
     println!("10,000 appends took: {:?}", duration);
-    println!(
-        "Average per append: {:?}",
-        duration / 10000
-    );
+    println!("Average per append: {:?}", duration / 10000);
 
     // Iteration overhead in append should be minimal
     // Currently: ~50-100ns overhead per append from BTreeMap iteration
@@ -534,11 +531,11 @@ fn test_performance_lock_contention() {
     let duration = start.elapsed();
 
     println!("40,000 concurrent appends took: {:?}", duration);
+    println!("Average per append: {:?}", duration / 40000);
     println!(
-        "Average per append: {:?}",
-        duration / 40000
+        "Throughput: {:.0} appends/sec",
+        40000.0 / duration.as_secs_f64()
     );
-    println!("Throughput: {:.0} appends/sec", 40000.0 / duration.as_secs_f64());
 
     // Lock contention should be minimal with RwLock
     // Should achieve > 100K appends/sec
@@ -556,8 +553,14 @@ fn test_outlier_empty_chunk() {
     assert!(!chunk.should_seal(&config), "Empty chunk should not seal");
 
     // Verify metadata is sensible
-    println!("Empty chunk start_timestamp: {}", chunk.metadata.start_timestamp);
-    println!("Empty chunk end_timestamp: {}", chunk.metadata.end_timestamp);
+    println!(
+        "Empty chunk start_timestamp: {}",
+        chunk.metadata.start_timestamp
+    );
+    println!(
+        "Empty chunk end_timestamp: {}",
+        chunk.metadata.end_timestamp
+    );
 }
 
 /// OUTLIER TEST 17: Single point chunk
@@ -641,7 +644,7 @@ async fn test_silent_duplicate_after_clear() {
     let result = chunk.append(DataPoint {
         series_id: 1,
         timestamp: 1000,
-        value: 99.0,  // Different value, same timestamp
+        value: 99.0, // Different value, same timestamp
     });
 
     // Should detect duplicate, but might succeed if data was lost
@@ -668,10 +671,10 @@ fn test_silent_inconsistent_timestamp_cache() {
                 chunk
                     .append(DataPoint {
                         series_id: 1,
-                        timestamp: i,  // Same timestamps from all threads
+                        timestamp: i, // Same timestamps from all threads
                         value: i as f64,
                     })
-                    .ok();  // Ignore duplicates
+                    .ok(); // Ignore duplicates
             }
         });
         handles.push(handle);

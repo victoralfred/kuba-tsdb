@@ -11,7 +11,6 @@
 /// 8. Memory management
 /// 9. Error handling
 /// 10. Performance characteristics
-
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::types::DataPoint;
 use std::sync::Arc;
@@ -100,11 +99,15 @@ fn test_concurrent_read_write() {
 async fn test_seal_while_appending() {
     use std::sync::Mutex;
 
-    let chunk = Arc::new(ActiveChunk::new(1, 100, SealConfig {
-        max_points: 100,
-        max_duration_ms: 1_000_000,
-        max_size_bytes: 1_000_000,
-    }));
+    let chunk = Arc::new(ActiveChunk::new(
+        1,
+        100,
+        SealConfig {
+            max_points: 100,
+            max_duration_ms: 1_000_000,
+            max_size_bytes: 1_000_000,
+        },
+    ));
 
     let sealed = Arc::new(Mutex::new(false));
 
@@ -146,24 +149,22 @@ async fn test_concurrent_seal() {
 
     // Add some points
     for i in 0..50 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     // Try to seal from multiple threads
     let chunk1 = Arc::clone(&chunk);
     let chunk2 = Arc::clone(&chunk);
 
-    let h1 = tokio::spawn(async move {
-        chunk1.seal("/tmp/seal1.gor".into()).await
-    });
+    let h1 = tokio::spawn(async move { chunk1.seal("/tmp/seal1.gor".into()).await });
 
-    let h2 = tokio::spawn(async move {
-        chunk2.seal("/tmp/seal2.gor".into()).await
-    });
+    let h2 = tokio::spawn(async move { chunk2.seal("/tmp/seal2.gor".into()).await });
 
     let r1 = h1.await.unwrap();
     let r2 = h2.await.unwrap();
@@ -184,11 +185,13 @@ fn test_out_of_order_points() {
     // Insert in non-chronological order
     let timestamps = vec![100, 50, 75, 25, 150, 10, 200];
     for ts in timestamps {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: ts,
-            value: ts as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: ts,
+                value: ts as f64,
+            })
+            .unwrap();
     }
 
     // Verify points are stored in sorted order
@@ -225,11 +228,13 @@ fn test_point_far_in_past() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
     // Add recent point
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1_700_000_000_000, // ~2023
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1_700_000_000_000, // ~2023
+            value: 1.0,
+        })
+        .unwrap();
 
     // Add point from year 2000
     let result = chunk.append(DataPoint {
@@ -249,11 +254,13 @@ fn test_all_points_reverse_order() {
 
     // Insert 100 points in reverse chronological order
     for i in (0..100).rev() {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     let (start, end) = chunk.time_range();
@@ -271,17 +278,21 @@ fn test_all_points_reverse_order() {
 fn test_negative_timestamps() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: -1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: -1000,
+            value: 1.0,
+        })
+        .unwrap();
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: -500,
-        value: 2.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: -500,
+            value: 2.0,
+        })
+        .unwrap();
 
     let (start, end) = chunk.time_range();
     assert_eq!(start, -1000);
@@ -293,11 +304,13 @@ fn test_negative_timestamps() {
 fn test_zero_timestamp() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 0,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 0,
+            value: 1.0,
+        })
+        .unwrap();
 
     let (start, end) = chunk.time_range();
     assert_eq!(start, 0);
@@ -309,17 +322,21 @@ fn test_zero_timestamp() {
 fn test_max_timestamp() {
     let chunk = ActiveChunk::new(1, 10, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX,
+            value: 1.0,
+        })
+        .unwrap();
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX - 1,
-        value: 2.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 1,
+            value: 2.0,
+        })
+        .unwrap();
 
     let (_, end) = chunk.time_range();
     assert_eq!(end, i64::MAX);
@@ -330,11 +347,13 @@ fn test_max_timestamp() {
 fn test_min_timestamp() {
     let chunk = ActiveChunk::new(1, 10, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MIN,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MIN,
+            value: 1.0,
+        })
+        .unwrap();
 
     let (start, _) = chunk.time_range();
     assert_eq!(start, i64::MIN);
@@ -368,11 +387,13 @@ fn test_zero_capacity() {
     let chunk = ActiveChunk::new(1, 0, SealConfig::default());
 
     // Should still work (capacity is just a hint)
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     assert_eq!(chunk.point_count(), 1);
 }
@@ -384,19 +405,25 @@ fn test_zero_capacity() {
 /// Test: Exactly at point threshold
 #[test]
 fn test_seal_exact_point_threshold() {
-    let chunk = ActiveChunk::new(1, 100, SealConfig {
-        max_points: 10,
-        max_duration_ms: 1_000_000,
-        max_size_bytes: 1_000_000,
-    });
+    let chunk = ActiveChunk::new(
+        1,
+        100,
+        SealConfig {
+            max_points: 10,
+            max_duration_ms: 1_000_000,
+            max_size_bytes: 1_000_000,
+        },
+    );
 
     // Add exactly 10 points
     for i in 0..10 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     assert!(chunk.should_seal());
@@ -405,19 +432,25 @@ fn test_seal_exact_point_threshold() {
 /// Test: One point before threshold
 #[test]
 fn test_seal_one_before_threshold() {
-    let chunk = ActiveChunk::new(1, 100, SealConfig {
-        max_points: 10,
-        max_duration_ms: 1_000_000,
-        max_size_bytes: 1_000_000,
-    });
+    let chunk = ActiveChunk::new(
+        1,
+        100,
+        SealConfig {
+            max_points: 10,
+            max_duration_ms: 1_000_000,
+            max_size_bytes: 1_000_000,
+        },
+    );
 
     // Add 9 points
     for i in 0..9 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     assert!(!chunk.should_seal());
@@ -426,20 +459,26 @@ fn test_seal_one_before_threshold() {
 /// Test: Multiple thresholds exceeded
 #[test]
 fn test_seal_multiple_thresholds() {
-    let chunk = ActiveChunk::new(1, 100, SealConfig {
-        max_points: 5,
-        max_duration_ms: 1000, // 1 second
-        max_size_bytes: 100,
-    });
+    let chunk = ActiveChunk::new(
+        1,
+        100,
+        SealConfig {
+            max_points: 5,
+            max_duration_ms: 1000, // 1 second
+            max_size_bytes: 100,
+        },
+    );
 
     // Add points up to the max_points threshold
     // The timestamps also exceed max_duration_ms (5 points * 500ms = 2500ms > 1000ms)
     for i in 0..5 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i * 500, // Timestamps: 0, 500, 1000, 1500, 2000 ms
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i * 500, // Timestamps: 0, 500, 1000, 1500, 2000 ms
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     // Should need sealing because max_points reached AND max_duration exceeded
@@ -470,11 +509,13 @@ fn test_wrong_series_id() {
 fn test_series_id_zero() {
     let chunk = ActiveChunk::new(0, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 0,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 0,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     assert_eq!(chunk.point_count(), 1);
 }
@@ -484,11 +525,13 @@ fn test_series_id_zero() {
 fn test_large_series_id() {
     let chunk = ActiveChunk::new(u128::MAX, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: u128::MAX,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: u128::MAX,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     assert_eq!(chunk.point_count(), 1);
 }
@@ -502,14 +545,19 @@ fn test_large_series_id() {
 async fn test_append_after_seal() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     // Seal
-    chunk.seal("/tmp/test_append_after_seal.gor".into()).await.unwrap();
+    chunk
+        .seal("/tmp/test_append_after_seal.gor".into())
+        .await
+        .unwrap();
 
     // Try to append
     let result = chunk.append(DataPoint {
@@ -527,14 +575,19 @@ async fn test_append_after_seal() {
 async fn test_double_seal() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     // First seal
-    chunk.seal("/tmp/test_double_seal1.gor".into()).await.unwrap();
+    chunk
+        .seal("/tmp/test_double_seal1.gor".into())
+        .await
+        .unwrap();
 
     // Second seal
     let result = chunk.seal("/tmp/test_double_seal2.gor".into()).await;
@@ -558,11 +611,13 @@ async fn test_seal_empty() {
 async fn test_seal_single_point() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     let result = chunk.seal("/tmp/test_seal_single.gor".into()).await;
 
@@ -581,11 +636,13 @@ fn test_memory_growth_out_of_order() {
     // Insert many out-of-order points
     for i in 0..1000 {
         let ts = if i % 2 == 0 { i } else { 1000 - i };
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: ts,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: ts,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     assert_eq!(chunk.point_count(), 1000);
@@ -604,11 +661,13 @@ fn test_memory_growth_out_of_order() {
 async fn test_seal_invalid_path() {
     let chunk = ActiveChunk::new(1, 100, SealConfig::default());
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     // Try to seal to invalid path
     let result = chunk.seal("/nonexistent/directory/chunk.gor".into()).await;
@@ -624,26 +683,35 @@ async fn test_seal_invalid_path() {
 /// Test: High throughput single thread
 #[test]
 fn test_high_throughput_single_thread() {
-    let chunk = ActiveChunk::new(1, 10_000, SealConfig {
-        max_points: 100_000,
-        max_duration_ms: 1_000_000_000,
-        max_size_bytes: 10_000_000,
-    });
+    let chunk = ActiveChunk::new(
+        1,
+        10_000,
+        SealConfig {
+            max_points: 100_000,
+            max_duration_ms: 1_000_000_000,
+            max_size_bytes: 10_000_000,
+        },
+    );
 
     let start = std::time::Instant::now();
 
     // Insert 10K points
     for i in 0..10_000 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     let elapsed = start.elapsed();
     println!("Inserted 10K points in {:?}", elapsed);
-    println!("Throughput: {:.0} points/sec", 10_000.0 / elapsed.as_secs_f64());
+    println!(
+        "Throughput: {:.0} points/sec",
+        10_000.0 / elapsed.as_secs_f64()
+    );
 
     assert_eq!(chunk.point_count(), 10_000);
 }
@@ -659,11 +727,13 @@ fn test_burst_writes() {
         let chunk_clone = Arc::clone(&chunk);
         let handle = thread::spawn(move || {
             for i in 0..200 {
-                chunk_clone.append(DataPoint {
-                    series_id: 1,
-                    timestamp: (thread_id * 10000 + i) as i64,
-                    value: i as f64,
-                }).unwrap();
+                chunk_clone
+                    .append(DataPoint {
+                        series_id: 1,
+                        timestamp: (thread_id * 10000 + i) as i64,
+                        value: i as f64,
+                    })
+                    .unwrap();
             }
         });
         handles.push(handle);

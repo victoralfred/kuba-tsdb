@@ -5,11 +5,13 @@
 ///!
 ///! Usage:
 ///!   cargo test --release --test stress_tests -- --ignored --test-threads=1
-
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::storage::chunk::Chunk;
 use gorilla_tsdb::types::DataPoint;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
@@ -23,8 +25,8 @@ async fn test_sustained_high_throughput() {
 
     // Allow enough points for full 60-second test (60M points)
     let config = SealConfig {
-        max_points: 100_000_000, // 100M (way more than needed)
-        max_duration_ms: 60_000_000, // 1000 minutes
+        max_points: 100_000_000,            // 100M (way more than needed)
+        max_duration_ms: 60_000_000,        // 1000 minutes
         max_size_bytes: 1024 * 1024 * 1024, // 1GB
     };
 
@@ -35,7 +37,10 @@ async fn test_sustained_high_throughput() {
     let mut timestamp = 0i64;
 
     println!("🚀 Starting sustained throughput test...");
-    println!("   Target: {} points/sec for {} seconds", TARGET_RATE, DURATION_SECS);
+    println!(
+        "   Target: {} points/sec for {} seconds",
+        TARGET_RATE, DURATION_SECS
+    );
 
     while Instant::now() < end_time {
         let batch_start = Instant::now();
@@ -61,8 +66,10 @@ async fn test_sustained_high_throughput() {
         let current_rate = POINTS_PER_BATCH as f64 / batch_duration.as_secs_f64();
 
         if total_points % 1_000_000 == 0 {
-            println!("   ✓ {} points processed (current rate: {:.0} pts/sec)",
-                     total_points, current_rate);
+            println!(
+                "   ✓ {} points processed (current rate: {:.0} pts/sec)",
+                total_points, current_rate
+            );
         }
     }
 
@@ -73,10 +80,16 @@ async fn test_sustained_high_throughput() {
     println!("   Total points: {}", total_points);
     println!("   Duration: {:.2}s", elapsed.as_secs_f64());
     println!("   Average rate: {:.0} points/sec", actual_rate);
-    println!("   Peak memory: {} MB", chunk.point_count() * 24 / 1_024 / 1_024);
+    println!(
+        "   Peak memory: {} MB",
+        chunk.point_count() * 24 / 1_024 / 1_024
+    );
 
-    assert!(actual_rate >= TARGET_RATE as f64 * 0.8,
-            "Throughput too low: {:.0} < 80% of target", actual_rate);
+    assert!(
+        actual_rate >= TARGET_RATE as f64 * 0.8,
+        "Throughput too low: {:.0} < 80% of target",
+        actual_rate
+    );
 }
 
 /// Test concurrent writes from multiple threads
@@ -97,7 +110,10 @@ async fn test_concurrent_write_stress() {
     let start = Instant::now();
 
     println!("🚀 Starting concurrent write stress test...");
-    println!("   Threads: {}, Points/thread: {}", NUM_THREADS, POINTS_PER_THREAD);
+    println!(
+        "   Threads: {}, Points/thread: {}",
+        NUM_THREADS, POINTS_PER_THREAD
+    );
 
     let mut handles = vec![];
 
@@ -152,10 +168,16 @@ async fn test_concurrent_write_stress() {
     println!("   Throughput: {:.0} points/sec", throughput);
     println!("   Final count: {}", chunk.point_count());
 
-    assert!(total_errors < total_success / 100,
-            "Error rate too high: {} errors", total_errors);
-    assert_eq!(chunk.point_count() as u64, total_success,
-               "Point count mismatch");
+    assert!(
+        total_errors < total_success / 100,
+        "Error rate too high: {} errors",
+        total_errors
+    );
+    assert_eq!(
+        chunk.point_count() as u64,
+        total_success,
+        "Point count mismatch"
+    );
 }
 
 /// Test memory behavior under sustained load
@@ -184,11 +206,13 @@ async fn test_memory_stability() {
 
         // Fill chunk
         for _ in 0..10_000 {
-            chunk.append(DataPoint {
-                series_id: 1,
-                timestamp,
-                value: timestamp as f64,
-            }).unwrap();
+            chunk
+                .append(DataPoint {
+                    series_id: 1,
+                    timestamp,
+                    value: timestamp as f64,
+                })
+                .unwrap();
             timestamp += 1;
         }
 
@@ -198,8 +222,11 @@ async fn test_memory_stability() {
         total_chunks_sealed += 1;
 
         if total_chunks_sealed % 10 == 0 {
-            println!("   ✓ {} chunks sealed ({:.1}s elapsed)",
-                     total_chunks_sealed, start.elapsed().as_secs_f64());
+            println!(
+                "   ✓ {} chunks sealed ({:.1}s elapsed)",
+                total_chunks_sealed,
+                start.elapsed().as_secs_f64()
+            );
         }
 
         // Brief pause to simulate real workload
@@ -211,8 +238,10 @@ async fn test_memory_stability() {
     println!("✅ Test complete!");
     println!("   Total chunks sealed: {}", total_chunks_sealed);
     println!("   Duration: {:.2}s", elapsed.as_secs_f64());
-    println!("   Average seal rate: {:.2} chunks/sec",
-             total_chunks_sealed as f64 / elapsed.as_secs_f64());
+    println!(
+        "   Average seal rate: {:.2} chunks/sec",
+        total_chunks_sealed as f64 / elapsed.as_secs_f64()
+    );
 
     // Cleanup
     for i in 0..total_chunks_sealed {
@@ -240,11 +269,13 @@ async fn test_concurrent_seal_stress() {
             // Fill chunk
             for i in 0..POINTS_PER_CHUNK {
                 let timestamp = (chunk_id * POINTS_PER_CHUNK + i) as i64;
-                chunk.append(DataPoint {
-                    series_id: 1,
-                    timestamp,
-                    value: timestamp as f64,
-                }).unwrap();
+                chunk
+                    .append(DataPoint {
+                        series_id: 1,
+                        timestamp,
+                        value: timestamp as f64,
+                    })
+                    .unwrap();
             }
 
             // Seal to disk
@@ -267,13 +298,17 @@ async fn test_concurrent_seal_stress() {
     let successful_seals = results.iter().filter(|&&r| r).count();
 
     println!("✅ Test complete!");
-    println!("   Successful seals: {}/{}", successful_seals, NUM_CONCURRENT_SEALS);
+    println!(
+        "   Successful seals: {}/{}",
+        successful_seals, NUM_CONCURRENT_SEALS
+    );
     println!("   Duration: {:.2}s", elapsed.as_secs_f64());
-    println!("   Seal rate: {:.0} seals/sec",
-             successful_seals as f64 / elapsed.as_secs_f64());
+    println!(
+        "   Seal rate: {:.0} seals/sec",
+        successful_seals as f64 / elapsed.as_secs_f64()
+    );
 
-    assert_eq!(successful_seals, NUM_CONCURRENT_SEALS,
-               "Some seals failed");
+    assert_eq!(successful_seals, NUM_CONCURRENT_SEALS, "Some seals failed");
 
     // Cleanup
     for i in 0..NUM_CONCURRENT_SEALS {
@@ -298,18 +333,23 @@ async fn test_disk_full_recovery() {
 
     // Fill first chunk
     for i in 0..1000 {
-        chunk1.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk1
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     // Try to seal to invalid path (simulates disk full)
     let invalid_path = "/dev/null/invalid/path/chunk.gor";
     let result = chunk1.seal(invalid_path.into()).await;
 
-    println!("   Seal to invalid path (should fail): {:?}", result.is_err());
+    println!(
+        "   Seal to invalid path (should fail): {:?}",
+        result.is_err()
+    );
     assert!(result.is_err(), "Seal should fail to invalid path");
 
     // Data is preserved but chunk is marked as sealed (cannot retry same chunk)
@@ -320,18 +360,23 @@ async fn test_disk_full_recovery() {
 
     // Fill second chunk with same data
     for i in 0..1000 {
-        chunk2.append(DataPoint {
-            series_id: 1,
-            timestamp: i,
-            value: i as f64,
-        }).unwrap();
+        chunk2
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     // Seal to valid path (recovery by creating new chunk)
     let valid_path = "/tmp/recovery_test_chunk.gor";
     let result = chunk2.seal(valid_path.into()).await;
 
-    println!("   Seal to valid path (should succeed): {:?}", result.is_ok());
+    println!(
+        "   Seal to valid path (should succeed): {:?}",
+        result.is_ok()
+    );
     assert!(result.is_ok(), "Seal should succeed with valid path");
 
     println!("✅ Test complete! Recovery strategy: create new chunk after seal failure.");
@@ -350,23 +395,29 @@ async fn test_timestamp_wraparound() {
     let mut chunk = Chunk::new_active(1, 1000);
 
     // Test near i64::MAX
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX - 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX - 500,
-        value: 2.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 500,
+            value: 2.0,
+        })
+        .unwrap();
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: i64::MAX - 1,
-        value: 3.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: i64::MAX - 1,
+            value: 3.0,
+        })
+        .unwrap();
 
     assert_eq!(chunk.point_count(), 3);
 
@@ -411,8 +462,11 @@ async fn test_maximum_chunk_size() {
         }
 
         if i % 1_000_000 == 0 && i > 0 {
-            println!("   ✓ {} M points ({:.1}s)",
-                     i / 1_000_000, start.elapsed().as_secs_f64());
+            println!(
+                "   ✓ {} M points ({:.1}s)",
+                i / 1_000_000,
+                start.elapsed().as_secs_f64()
+            );
         }
     }
 
@@ -422,9 +476,15 @@ async fn test_maximum_chunk_size() {
     println!("✅ Test complete!");
     println!("   Final count: {} points", final_count);
     println!("   Duration: {:.2}s", elapsed.as_secs_f64());
-    println!("   Write rate: {:.0} points/sec",
-             final_count as f64 / elapsed.as_secs_f64());
+    println!(
+        "   Write rate: {:.0} points/sec",
+        final_count as f64 / elapsed.as_secs_f64()
+    );
 
-    assert!(final_count <= MAX_POINTS,
-            "Exceeded hard limit: {} > {}", final_count, MAX_POINTS);
+    assert!(
+        final_count <= MAX_POINTS,
+        "Exceeded hard limit: {} > {}",
+        final_count,
+        MAX_POINTS
+    );
 }

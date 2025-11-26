@@ -5,7 +5,6 @@
 ///! observability and debuggability in production.
 ///!
 ///! Run with: cargo test --test silent_failures_logging_tests
-
 use gorilla_tsdb::metrics;
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::storage::chunk::Chunk;
@@ -25,18 +24,24 @@ async fn test_write_errors_recorded() {
     metrics::init();
 
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Get initial error count
     let initial_metrics = metrics::gather_metrics().unwrap();
     let initial_errors = count_metric(&initial_metrics, "tsdb_errors_total");
 
     // Attempt invalid write (wrong series ID)
-    let result = writer.write(DataPoint {
-        series_id: 999, // Wrong series
-        timestamp: 1000,
-        value: 42.0,
-    }).await;
+    let result = writer
+        .write(DataPoint {
+            series_id: 999, // Wrong series
+            timestamp: 1000,
+            value: 42.0,
+        })
+        .await;
 
     assert!(result.is_err(), "Write with wrong series should fail");
 
@@ -44,8 +49,12 @@ async fn test_write_errors_recorded() {
     let final_metrics = metrics::gather_metrics().unwrap();
     let final_errors = count_metric(&final_metrics, "tsdb_errors_total");
 
-    assert!(final_errors > initial_errors,
-            "Error count should increase: {} -> {}", initial_errors, final_errors);
+    assert!(
+        final_errors > initial_errors,
+        "Error count should increase: {} -> {}",
+        initial_errors,
+        final_errors
+    );
 }
 
 /// Test that write latency is recorded
@@ -54,23 +63,34 @@ async fn test_write_latency_recorded() {
     metrics::init();
 
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Perform writes
     for i in 0..10 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Check that write duration metric exists
     let metrics_text = metrics::gather_metrics().unwrap();
-    assert!(metrics_text.contains("tsdb_write_duration"),
-            "Write duration metric should be recorded");
-    assert!(metrics_text.contains("tsdb_writes_total"),
-            "Write count metric should be recorded");
+    assert!(
+        metrics_text.contains("tsdb_write_duration"),
+        "Write duration metric should be recorded"
+    );
+    assert!(
+        metrics_text.contains("tsdb_writes_total"),
+        "Write count metric should be recorded"
+    );
 }
 
 /// Test that lock contention is measured
@@ -103,9 +123,10 @@ fn test_lock_contention_measured() {
 
     // Check that lock wait duration was recorded
     let metrics_text = metrics::gather_metrics().unwrap();
-    assert!(metrics_text.contains("tsdb_lock_wait_duration") ||
-            metrics_text.contains("lock"),
-            "Lock contention should be measured");
+    assert!(
+        metrics_text.contains("tsdb_lock_wait_duration") || metrics_text.contains("lock"),
+        "Lock contention should be measured"
+    );
 }
 
 /// Test that checksum failures are tracked
@@ -121,11 +142,13 @@ async fn test_checksum_failures_tracked() {
 
     // Add points and seal
     for i in 0..10 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     let chunk_path = temp_dir.path().join("test_chunk.gor");
@@ -154,7 +177,10 @@ async fn test_checksum_failures_tracked() {
     // Note: This test may fail if checksum validation doesn't record metrics yet
     // It serves as a reminder to add that functionality
     if final_failures > initial_failures {
-        println!("✓ Checksum failures are tracked: {} -> {}", initial_failures, final_failures);
+        println!(
+            "✓ Checksum failures are tracked: {} -> {}",
+            initial_failures, final_failures
+        );
     } else {
         println!("⚠ WARNING: Checksum failures not tracked in metrics");
     }
@@ -173,11 +199,14 @@ async fn test_seal_failures_recorded() {
 
     // Write points
     for i in 0..10 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Get initial metrics
@@ -210,22 +239,31 @@ async fn test_seal_failures_recorded() {
 #[tokio::test]
 async fn test_errors_not_swallowed() {
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Invalid write
-    let result = writer.write(DataPoint {
-        series_id: 999, // Wrong series
-        timestamp: 1000,
-        value: 42.0,
-    }).await;
+    let result = writer
+        .write(DataPoint {
+            series_id: 999, // Wrong series
+            timestamp: 1000,
+            value: 42.0,
+        })
+        .await;
 
     // Error should be returned, not silently ignored
     assert!(result.is_err(), "Error should be returned");
 
     let error = result.unwrap_err();
     assert!(!error.is_empty(), "Error message should not be empty");
-    assert!(error.contains("series") || error.contains("999"),
-            "Error should contain context: {}", error);
+    assert!(
+        error.contains("series") || error.contains("999"),
+        "Error should contain context: {}",
+        error
+    );
 }
 
 /// Test that background task errors are observable
@@ -242,11 +280,14 @@ async fn test_background_task_errors_observable() {
 
     // Write points to trigger auto-seal
     for i in 0..10 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Wait for background seals
@@ -258,9 +299,12 @@ async fn test_background_task_errors_observable() {
     let has_errors = stats.write_errors > 0;
 
     // Either seals succeeded or errors were recorded
-    assert!(has_seals || has_errors,
-            "Background seal should be observable: seals={}, errors={}",
-            stats.chunks_sealed, stats.write_errors);
+    assert!(
+        has_seals || has_errors,
+        "Background seal should be observable: seals={}, errors={}",
+        stats.chunks_sealed,
+        stats.write_errors
+    );
 }
 
 /// Test that panic in append is handled correctly
@@ -297,8 +341,10 @@ fn test_lock_poisoning_reported() {
     });
 
     // Should succeed because parking_lot doesn't poison locks
-    assert!(result.is_ok(),
-            "Append should succeed after panic in separate thread (parking_lot doesn't poison)");
+    assert!(
+        result.is_ok(),
+        "Append should succeed after panic in separate thread (parking_lot doesn't poison)"
+    );
 
     // Verify chunk is still functional
     assert_eq!(chunk.point_count(), 2, "Should have 2 points");
@@ -318,11 +364,13 @@ async fn test_operations_logged() {
     let mut chunk = Chunk::new_active(1, 100);
 
     for i in 0..10 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     let path = temp_dir.path().join("test.gor");
@@ -344,14 +392,20 @@ async fn test_operations_logged() {
 #[tokio::test]
 async fn test_errors_include_context() {
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Error case: wrong series ID
-    let result = writer.write(DataPoint {
-        series_id: 999,
-        timestamp: 1000,
-        value: 42.0,
-    }).await;
+    let result = writer
+        .write(DataPoint {
+            series_id: 999,
+            timestamp: 1000,
+            value: 42.0,
+        })
+        .await;
 
     assert!(result.is_err());
     let error = result.unwrap_err();
@@ -360,8 +414,11 @@ async fn test_errors_include_context() {
     // - What was attempted (write)
     // - Why it failed (wrong series)
     // - Expected vs actual values (1 vs 999)
-    assert!(error.contains("series") && error.contains("999"),
-            "Error should include series ID: {}", error);
+    assert!(
+        error.contains("series") && error.contains("999"),
+        "Error should include series ID: {}",
+        error
+    );
 }
 
 /// Test that performance issues are logged
@@ -385,12 +442,16 @@ async fn test_performance_issues_logged() {
     let metrics_text = metrics::gather_metrics().unwrap();
 
     // Should have latency histograms
-    assert!(metrics_text.contains("duration") || metrics_text.contains("latency"),
-            "Should have latency metrics");
+    assert!(
+        metrics_text.contains("duration") || metrics_text.contains("latency"),
+        "Should have latency metrics"
+    );
 
     // Should have operation counts
-    assert!(metrics_text.contains("total") || metrics_text.contains("count"),
-            "Should have operation count metrics");
+    assert!(
+        metrics_text.contains("total") || metrics_text.contains("count"),
+        "Should have operation count metrics"
+    );
 }
 
 // ============================================================================
@@ -401,13 +462,29 @@ async fn test_performance_issues_logged() {
 #[tokio::test]
 async fn test_partial_writes_detected() {
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Write batch with some invalid points
     let points = vec![
-        DataPoint { series_id: 1, timestamp: 1000, value: 1.0 },
-        DataPoint { series_id: 999, timestamp: 2000, value: 2.0 }, // Invalid
-        DataPoint { series_id: 1, timestamp: 3000, value: 3.0 },
+        DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        },
+        DataPoint {
+            series_id: 999,
+            timestamp: 2000,
+            value: 2.0,
+        }, // Invalid
+        DataPoint {
+            series_id: 1,
+            timestamp: 3000,
+            value: 3.0,
+        },
     ];
 
     // Write one by one and track results
@@ -456,15 +533,21 @@ async fn test_dropped_futures_handled() {
 
     // Stats should not show phantom write
     let stats = writer.stats().await;
-    assert_eq!(stats.points_written, 0,
-               "Dropped future should not count as write");
+    assert_eq!(
+        stats.points_written, 0,
+        "Dropped future should not count as write"
+    );
 }
 
 /// Test that timeout failures are detected
 #[tokio::test]
 async fn test_timeout_failures_detected() {
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Write with timeout
     let write_future = writer.write(DataPoint {
@@ -492,11 +575,13 @@ async fn test_resource_exhaustion_detected() {
 
     // Fill to capacity
     for i in 0..100 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     // Next append should fail with clear error
@@ -508,8 +593,11 @@ async fn test_resource_exhaustion_detected() {
 
     assert!(result.is_err(), "Should fail when full");
     let error = result.unwrap_err();
-    assert!(error.contains("limit") || error.contains("full") || error.contains("capacity"),
-            "Error should mention capacity: {}", error);
+    assert!(
+        error.contains("limit") || error.contains("full") || error.contains("capacity"),
+        "Error should mention capacity: {}",
+        error
+    );
 }
 
 // ============================================================================
@@ -564,11 +652,13 @@ async fn test_end_to_end_observability() {
 
     // Perform various operations
     for i in 0..15 {
-        let _ = writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await;
+        let _ = writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await;
     }
 
     // Wait for auto-seal
@@ -578,11 +668,14 @@ async fn test_end_to_end_observability() {
     let metrics_text = metrics::gather_metrics().unwrap();
 
     // Verify key metrics exist
-    assert!(metrics_text.contains("tsdb_writes_total"),
-            "Should have write count metric");
-    assert!(metrics_text.contains("tsdb_write_duration") ||
-            metrics_text.contains("duration"),
-            "Should have latency metric");
+    assert!(
+        metrics_text.contains("tsdb_writes_total"),
+        "Should have write count metric"
+    );
+    assert!(
+        metrics_text.contains("tsdb_write_duration") || metrics_text.contains("duration"),
+        "Should have latency metric"
+    );
 
     // Stats should be consistent
     let stats = writer.stats().await;
@@ -598,26 +691,36 @@ async fn test_end_to_end_observability() {
 #[tokio::test]
 async fn test_error_cascade_handling() {
     let temp_dir = TempDir::new().unwrap();
-    let writer = ChunkWriter::new(1, temp_dir.path().to_path_buf(), ChunkWriterConfig::default());
+    let writer = ChunkWriter::new(
+        1,
+        temp_dir.path().to_path_buf(),
+        ChunkWriterConfig::default(),
+    );
 
     // Chain of operations where one fails
-    let result1 = writer.write(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).await;
+    let result1 = writer
+        .write(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .await;
 
-    let result2 = writer.write(DataPoint {
-        series_id: 999, // Invalid
-        timestamp: 2000,
-        value: 2.0,
-    }).await;
+    let result2 = writer
+        .write(DataPoint {
+            series_id: 999, // Invalid
+            timestamp: 2000,
+            value: 2.0,
+        })
+        .await;
 
-    let result3 = writer.write(DataPoint {
-        series_id: 1,
-        timestamp: 3000,
-        value: 3.0,
-    }).await;
+    let result3 = writer
+        .write(DataPoint {
+            series_id: 1,
+            timestamp: 3000,
+            value: 3.0,
+        })
+        .await;
 
     // Results should reflect individual successes/failures
     assert!(result1.is_ok(), "First write should succeed");

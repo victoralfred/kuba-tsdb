@@ -10,12 +10,12 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-pub mod types;
-pub mod engine;
 pub mod compression;
-pub mod storage;
-pub mod index;
+pub mod engine;
 pub mod error;
+pub mod index;
+pub mod storage;
+pub mod types;
 
 /// Prometheus metrics and telemetry
 pub mod metrics;
@@ -27,9 +27,9 @@ pub mod config;
 pub mod security;
 
 // Re-export main types
-pub use types::{DataPoint, TimeRange, SeriesId};
-pub use engine::{TimeSeriesDB, TimeSeriesDBBuilder, DatabaseConfig};
+pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};
+pub use types::{DataPoint, SeriesId, TimeRange};
 
 #[cfg(test)]
 mod tests {

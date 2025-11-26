@@ -6,7 +6,6 @@
 ///! silent failures or data corruption in production.
 ///!
 ///! Run with: cargo test --test critical_issues_tests
-
 use gorilla_tsdb::engine::traits::{BlockMetadata, CompressedBlock, Compressor};
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::storage::chunk::Chunk;
@@ -38,30 +37,32 @@ async fn test_rc1_double_seal_race() {
 
     // Fill chunk to capacity
     for i in 0..100 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Attempt concurrent seals
     let writer1 = Arc::clone(&writer);
     let writer2 = Arc::clone(&writer);
 
-    let handle1 = tokio::spawn(async move {
-        writer1.seal().await
-    });
+    let handle1 = tokio::spawn(async move { writer1.seal().await });
 
-    let handle2 = tokio::spawn(async move {
-        writer2.seal().await
-    });
+    let handle2 = tokio::spawn(async move { writer2.seal().await });
 
     let result1 = handle1.await.unwrap();
     let result2 = handle2.await.unwrap();
 
     // One should succeed, one should fail gracefully
-    let successes = vec![result1.is_ok(), result2.is_ok()].iter().filter(|&&x| x).count();
+    let successes = vec![result1.is_ok(), result2.is_ok()]
+        .iter()
+        .filter(|&&x| x)
+        .count();
     assert_eq!(successes, 1, "Exactly one seal should succeed");
 
     // Stats should reflect only one seal
@@ -89,11 +90,13 @@ async fn test_rc2_toctou_sealed_flag() {
     let chunk = Arc::new(ActiveChunk::new(1, 10, seal_config));
 
     // Add initial data so seal will succeed
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 100,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 100,
+            value: 1.0,
+        })
+        .unwrap();
 
     // Writer task
     let chunk_writer = Arc::clone(&chunk);
@@ -111,17 +114,17 @@ async fn test_rc2_toctou_sealed_flag() {
 
     // Sealer task - seal immediately
     let chunk_sealer = Arc::clone(&chunk);
-    let sealer = tokio::spawn(async move {
-        chunk_sealer.seal(chunk_path).await
-    });
+    let sealer = tokio::spawn(async move { chunk_sealer.seal(chunk_path).await });
 
     let _ = sealer.await.unwrap();
     let write_result = writer.await.unwrap();
 
     // Write should fail because chunk was sealed
     assert!(write_result.is_err(), "Write to sealed chunk should fail");
-    assert!(write_result.unwrap_err().contains("sealed"),
-            "Error should mention chunk is sealed");
+    assert!(
+        write_result.unwrap_err().contains("sealed"),
+        "Error should mention chunk is sealed"
+    );
 }
 
 /// RC-3: Test stats update race condition
@@ -147,11 +150,13 @@ async fn test_rc3_stats_update_race() {
         let writer_clone = Arc::clone(&writer);
         let handle = tokio::spawn(async move {
             for j in 0..5 {
-                let _ = writer_clone.write(DataPoint {
-                    series_id: 1,
-                    timestamp: (i * 5 + j) * 1000,
-                    value: (i * 5 + j) as f64,
-                }).await;
+                let _ = writer_clone
+                    .write(DataPoint {
+                        series_id: 1,
+                        timestamp: (i * 5 + j) * 1000,
+                        value: (i * 5 + j) as f64,
+                    })
+                    .await;
             }
         });
         handles.push(handle);
@@ -178,15 +183,20 @@ async fn test_rc3_stats_update_race() {
 
     // Validate: points_written should be monotonically increasing
     for window in samples.windows(2) {
-        assert!(window[1].0 >= window[0].0,
-                "points_written should never decrease: {:?} -> {:?}",
-                window[0], window[1]);
+        assert!(
+            window[1].0 >= window[0].0,
+            "points_written should never decrease: {:?} -> {:?}",
+            window[0],
+            window[1]
+        );
     }
 
     // Final stats should match actual writes
     let final_stats = writer.stats().await;
-    assert_eq!(final_stats.points_written, 50,
-               "Should have written 50 points total");
+    assert_eq!(
+        final_stats.points_written, 50,
+        "Should have written 50 points total"
+    );
 }
 
 /// RC-4: Test atomic min/max update livelock
@@ -224,14 +234,20 @@ fn test_rc4_atomic_minmax_livelock() {
     let elapsed = start.elapsed();
 
     // Should complete in reasonable time (not livelock)
-    assert!(elapsed < Duration::from_secs(5),
-            "CAS loop took too long: {:?}, possible livelock", elapsed);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "CAS loop took too long: {:?}, possible livelock",
+        elapsed
+    );
 
     // Verify final min/max are correct
     let (min, max) = chunk.time_range();
     assert_eq!(min, 0, "Min timestamp should be 0");
-    assert_eq!(max, 31 * 100 * 1000 + 99 * 1000,
-               "Max timestamp should be maximum written");
+    assert_eq!(
+        max,
+        31 * 100 * 1000 + 99 * 1000,
+        "Max timestamp should be maximum written"
+    );
 }
 
 // ============================================================================
@@ -255,11 +271,13 @@ async fn test_se1_background_worker_panic() {
 
     // Write points to trigger auto-seal
     for i in 0..15 {
-        let result = writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await;
+        let result = writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await;
 
         // Write should succeed even if seal has issues
         assert!(result.is_ok(), "Write should succeed: {:?}", result);
@@ -270,8 +288,10 @@ async fn test_se1_background_worker_panic() {
 
     // Check that stats reflect seal attempt (even if failed)
     let stats = writer.stats().await;
-    assert!(stats.chunks_sealed >= 1 || stats.write_errors > 0,
-            "Should have sealed or recorded error");
+    assert!(
+        stats.chunks_sealed >= 1 || stats.write_errors > 0,
+        "Should have sealed or recorded error"
+    );
 }
 
 /// SE-2: Test that seal errors are not silently ignored
@@ -291,11 +311,14 @@ async fn test_se2_seal_errors_not_ignored() {
 
     // Write points
     for i in 0..5 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Actually the seal should succeed with valid temp_dir
@@ -304,12 +327,18 @@ async fn test_se2_seal_errors_not_ignored() {
     let seal_result = writer.seal().await;
 
     // Since temp_dir is valid, seal should succeed
-    assert!(seal_result.is_ok(), "Seal should succeed with valid temp dir");
+    assert!(
+        seal_result.is_ok(),
+        "Seal should succeed with valid temp dir"
+    );
 
     // Test that we detect errors when chunk points are empty
     let writer2 = ChunkWriter::new(2, temp_dir.path().to_path_buf(), config.clone());
     let empty_seal_result = writer2.seal().await;
-    assert!(empty_seal_result.is_err(), "Sealing empty chunk should fail");
+    assert!(
+        empty_seal_result.is_err(),
+        "Sealing empty chunk should fail"
+    );
 }
 
 /// SE-3: Test lock poisoning is properly handled
@@ -332,11 +361,13 @@ fn test_se3_lock_poisoning_detection() {
         // Since parking_lot doesn't poison and std::sync does, let's check both behaviors
 
         // Attempt append which will succeed
-        chunk_clone.append(DataPoint {
-            series_id: 1,
-            timestamp: 1000,
-            value: 42.0,
-        }).unwrap();
+        chunk_clone
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            })
+            .unwrap();
 
         // Panic after successful append (lock released)
         panic!("Intentional panic to poison lock");
@@ -357,7 +388,10 @@ fn test_se3_lock_poisoning_detection() {
     });
 
     // This should succeed because lock was properly released
-    assert!(result.is_ok(), "Append should succeed after panic in separate thread");
+    assert!(
+        result.is_ok(),
+        "Append should succeed after panic in separate thread"
+    );
 
     // Verify both points are in the chunk
     assert_eq!(chunk.point_count(), 2, "Should have 2 points");
@@ -377,11 +411,13 @@ async fn test_se4_checksum_mismatch_detection() {
 
     // Add points and seal
     for i in 0..10 {
-        chunk.append(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).unwrap();
+        chunk
+            .append(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .unwrap();
     }
 
     let chunk_path = temp_dir.path().join("test_chunk.gor");
@@ -405,8 +441,11 @@ async fn test_se4_checksum_mismatch_detection() {
     assert!(result.is_err(), "Reading corrupted chunk should fail");
     let error = result.unwrap_err();
     let error_lower = error.to_lowercase();
-    assert!(error_lower.contains("checksum") || error_lower.contains("corrupt"),
-            "Error should mention checksum or corruption: {}", error);
+    assert!(
+        error_lower.contains("checksum") || error_lower.contains("corrupt"),
+        "Error should mention checksum or corruption: {}",
+        error
+    );
 }
 
 /// SE-5: Test file I/O errors include full context
@@ -418,23 +457,31 @@ async fn test_se5_io_errors_have_context() {
     let _temp_dir = TempDir::new().unwrap();
     let mut chunk = Chunk::new_active(1, 100);
 
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 42.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 42.0,
+        })
+        .unwrap();
 
     // Try to seal to directory that doesn't exist
     // Use a path that definitely doesn't exist and can't be created
     let invalid_path = PathBuf::from("/nonexistent_root_dir/deep/path/chunk.gor");
     let result = chunk.seal(invalid_path.clone()).await;
 
-    assert!(result.is_err(), "Should fail to create file in non-existent directory");
+    assert!(
+        result.is_err(),
+        "Should fail to create file in non-existent directory"
+    );
     let error = result.unwrap_err();
 
     // Error should include useful context
-    assert!(error.contains("series") || error.contains("chunk") || error.contains("path"),
-            "Error should include context (series/chunk/path): {}", error);
+    assert!(
+        error.contains("series") || error.contains("chunk") || error.contains("path"),
+        "Error should include context (series/chunk/path): {}",
+        error
+    );
 }
 
 // ============================================================================
@@ -492,8 +539,11 @@ async fn test_ec2_empty_chunk_handling() {
 
     // Should handle gracefully (either succeed or fail with clear message)
     if let Err(e) = result {
-        assert!(e.contains("empty") || e.contains("no points"),
-                "Error should mention empty chunk: {}", e);
+        assert!(
+            e.contains("empty") || e.contains("no points"),
+            "Error should mention empty chunk: {}",
+            e
+        );
     }
 
     // Decompress empty block
@@ -531,11 +581,13 @@ fn test_ec3_zero_duration_chunks() {
     let chunk = ActiveChunk::new(1, 100, seal_config);
 
     // Add first point
-    chunk.append(DataPoint {
-        series_id: 1,
-        timestamp: 1000,
-        value: 1.0,
-    }).unwrap();
+    chunk
+        .append(DataPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 1.0,
+        })
+        .unwrap();
 
     // Try to add duplicate timestamp
     let result = chunk.append(DataPoint {
@@ -547,8 +599,11 @@ fn test_ec3_zero_duration_chunks() {
     // Should either reject duplicate or handle gracefully
     match result {
         Err(e) => {
-            assert!(e.contains("duplicate") || e.contains("timestamp"),
-                    "Error should mention duplicate timestamp: {}", e);
+            assert!(
+                e.contains("duplicate") || e.contains("timestamp"),
+                "Error should mention duplicate timestamp: {}",
+                e
+            );
         }
         Ok(_) => {
             // If allowed, verify time_range handles it
@@ -576,14 +631,18 @@ fn test_ec4_time_range_overflow() {
     let duration = range.duration_ms();
 
     // Duration calculation should not overflow
-    assert!(duration.is_some() || duration.is_none(),
-            "duration_ms should return Option");
+    assert!(
+        duration.is_some() || duration.is_none(),
+        "duration_ms should return Option"
+    );
 
     // Test that operations on range don't panic
     let contains_min = range.contains(i64::MIN + 2000);
     let contains_max = range.contains(i64::MAX - 2000);
-    assert!(contains_min && contains_max,
-            "Contains should work on extreme values");
+    assert!(
+        contains_min && contains_max,
+        "Contains should work on extreme values"
+    );
 }
 
 // ============================================================================
@@ -635,7 +694,12 @@ fn test_concurrent_initialization_race() {
 
     // Verify time_range is valid
     let (min, max) = chunk.time_range();
-    assert!(min <= max, "Time range should be valid: min={}, max={}", min, max);
+    assert!(
+        min <= max,
+        "Time range should be valid: min={}, max={}",
+        min,
+        max
+    );
     assert_eq!(min, 0, "Min should be first timestamp");
     assert_eq!(max, 9000, "Max should be last timestamp");
 
@@ -676,8 +740,11 @@ fn test_memory_limit_enforcement() {
     }
 
     // Verify point count doesn't exceed limit
-    assert!(chunk.point_count() <= 1_000,
-            "Point count {} should not exceed 1000", chunk.point_count());
+    assert!(
+        chunk.point_count() <= 1_000,
+        "Point count {} should not exceed 1000",
+        chunk.point_count()
+    );
 }
 
 /// Test Arc reference cleanup in seal operations
@@ -697,11 +764,14 @@ async fn test_arc_reference_cleanup() {
 
     // Write points
     for i in 0..10 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Seal should succeed without Arc unwrap panic
@@ -722,28 +792,31 @@ async fn test_concurrent_seal_and_write() {
 
     // Fill chunk
     for i in 0..50 {
-        writer.write(DataPoint {
-            series_id: 1,
-            timestamp: i * 1000,
-            value: i as f64,
-        }).await.unwrap();
+        writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .await
+            .unwrap();
     }
 
     // Spawn sealer
     let writer_sealer = Arc::clone(&writer);
-    let seal_handle = tokio::spawn(async move {
-        writer_sealer.seal().await
-    });
+    let seal_handle = tokio::spawn(async move { writer_sealer.seal().await });
 
     // Try to write during seal
     let writer_writer = Arc::clone(&writer);
     let write_handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        writer_writer.write(DataPoint {
-            series_id: 1,
-            timestamp: 51000,
-            value: 51.0,
-        }).await
+        writer_writer
+            .write(DataPoint {
+                series_id: 1,
+                timestamp: 51000,
+                value: 51.0,
+            })
+            .await
     });
 
     let seal_result = seal_handle.await.unwrap();

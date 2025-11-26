@@ -1,15 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use gorilla_tsdb::compression::GorillaCompressor;
 use gorilla_tsdb::engine::traits::Compressor;
 use gorilla_tsdb::types::DataPoint;
 
 fn create_regular_points(count: usize) -> Vec<DataPoint> {
     (0..count)
-        .map(|i| DataPoint::new(
-            1,
-            1000 + (i as i64 * 10),
-            100.0 + (i as f64 * 0.5),
-        ))
+        .map(|i| DataPoint::new(1, 1000 + (i as i64 * 10), 100.0 + (i as f64 * 0.5)))
         .collect()
 }
 
@@ -24,9 +20,7 @@ fn bench_compression(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                rt.block_on(async {
-                    black_box(compressor.compress(&points).await.unwrap())
-                })
+                rt.block_on(async { black_box(compressor.compress(&points).await.unwrap()) })
             });
         });
     }
@@ -46,9 +40,7 @@ fn bench_decompression(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                rt.block_on(async {
-                    black_box(compressor.decompress(&compressed).await.unwrap())
-                })
+                rt.block_on(async { black_box(compressor.decompress(&compressed).await.unwrap()) })
             });
         });
     }
