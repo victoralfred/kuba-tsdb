@@ -119,7 +119,10 @@ pub fn extract_host_port(url: &str) -> Option<(String, u16)> {
 pub fn connection_error_message(url: &str, error_description: &str) -> String {
     // Try to extract just host:port for cleaner messages
     if let Some((host, port)) = extract_host_port(url) {
-        format!("Redis connection failed to {}:{}: {}", host, port, error_description)
+        format!(
+            "Redis connection failed to {}:{}: {}",
+            host, port, error_description
+        )
     } else {
         // Fallback to sanitized URL if parsing fails
         format!(

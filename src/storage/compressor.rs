@@ -476,9 +476,10 @@ impl CompressionService {
 
         // Compress using Snappy
         let compressed = snap::raw::Encoder::new().compress_vec(&data).map_err(|e| {
-            StorageError::Io(std::io::Error::other(
-                format!("Snappy compression failed: {}", e),
-            ))
+            StorageError::Io(std::io::Error::other(format!(
+                "Snappy compression failed: {}",
+                e
+            )))
         })?;
 
         // Write compressed data to .snappy file
@@ -505,9 +506,7 @@ impl CompressionService {
         let count = tasks.len();
         for task in tasks {
             self.task_tx.send(task).map_err(|_| {
-                StorageError::Io(std::io::Error::other(
-                    "Failed to queue compression task",
-                ))
+                StorageError::Io(std::io::Error::other("Failed to queue compression task"))
             })?;
         }
 
