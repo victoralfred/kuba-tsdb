@@ -31,12 +31,11 @@ use crate::types::{SeriesId, TimeRange};
 
 use super::connection::{HealthStatus, RedisPool};
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for failover behavior
@@ -79,18 +78,38 @@ impl Default for FailoverConfig {
 }
 
 /// Current state of the failover system
+///
+/// Uses repr(u8) to enable atomic state transitions via AtomicU8.
+/// This prevents race conditions when multiple tasks try to change state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum FailoverState {
     /// Primary connection is healthy
-    Primary,
+    Primary = 0,
     /// Failing over to replica
-    FailingOver,
+    FailingOver = 1,
     /// Using replica connection
-    Replica,
+    Replica = 2,
     /// All connections failed, using local cache
-    LocalCache,
+    LocalCache = 3,
     /// Recovering back to primary
-    Recovering,
+    Recovering = 4,
+}
+
+impl FailoverState {
+    /// Convert from u8 to FailoverState
+    ///
+    /// Returns None for invalid values.
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Primary),
+            1 => Some(Self::FailingOver),
+            2 => Some(Self::Replica),
+            3 => Some(Self::LocalCache),
+            4 => Some(Self::Recovering),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for FailoverState {
@@ -321,6 +340,9 @@ pub struct FailoverStats {
 ///
 /// Monitors Redis health and automatically fails over to replicas
 /// or local cache when the primary is unavailable.
+///
+/// Uses atomic state transitions to prevent race conditions when
+/// multiple tasks attempt concurrent state changes.
 pub struct FailoverManager {
     /// Primary Redis connection pool
     primary: Arc<RedisPool>,
@@ -334,8 +356,11 @@ pub struct FailoverManager {
     /// Configuration
     config: FailoverConfig,
 
-    /// Current failover state
-    state: RwLock<FailoverState>,
+    /// Current failover state - uses AtomicU8 for lock-free transitions
+    ///
+    /// This enables atomic compare-and-swap operations for state transitions,
+    /// preventing race conditions when multiple tasks try to change state.
+    state: AtomicU8,
 
     /// Consecutive failure count
     consecutive_failures: AtomicU64,
@@ -374,7 +399,7 @@ impl FailoverManager {
             replicas: RwLock::new(Vec::new()),
             local_cache: RwLock::new(local_cache),
             config,
-            state: RwLock::new(FailoverState::Primary),
+            state: AtomicU8::new(FailoverState::Primary as u8),
             consecutive_failures: AtomicU64::new(0),
             consecutive_successes: AtomicU64::new(0),
             failover_count: AtomicU64::new(0),
@@ -386,18 +411,29 @@ impl FailoverManager {
     }
 
     /// Add a replica connection pool
-    pub fn add_replica(&self, replica: Arc<RedisPool>) {
-        let mut replicas = self.replicas.write();
+    pub async fn add_replica(&self, replica: Arc<RedisPool>) {
+        let mut replicas = self.replicas.write().await;
         replicas.push(replica);
         info!("Added replica (total: {})", replicas.len());
     }
 
-    /// Get current failover state
+    /// Get current failover state (lock-free)
     pub fn state(&self) -> FailoverState {
-        *self.state.read()
+        FailoverState::from_u8(self.state.load(Ordering::SeqCst))
+            .unwrap_or(FailoverState::Primary)
     }
 
-    /// Check if we're operating in degraded mode
+    /// Atomically transition from one state to another
+    ///
+    /// Returns true if transition succeeded, false if current state wasn't `from`.
+    /// This is the core primitive for race-free state transitions.
+    fn try_transition(&self, from: FailoverState, to: FailoverState) -> bool {
+        self.state
+            .compare_exchange(from as u8, to as u8, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Check if we're operating in degraded mode (lock-free)
     pub fn is_degraded(&self) -> bool {
         let state = self.state();
         matches!(
@@ -451,7 +487,7 @@ impl FailoverManager {
 
         let current_state = self.state();
 
-        // Check if we should fail over
+        // Check if we should fail over - use atomic transition to prevent races
         if current_state == FailoverState::Primary
             && failures >= self.config.failure_threshold as u64
         {
@@ -464,53 +500,66 @@ impl FailoverManager {
     }
 
     /// Perform failover to replica or local cache
+    ///
+    /// Uses atomic state transitions to prevent race conditions.
     async fn failover(&self) {
-        let mut state = self.state.write();
-
-        if *state != FailoverState::Primary {
-            return; // Already failed over
+        // Atomically: Primary -> FailingOver
+        // If this fails, someone else already started failover
+        if !self.try_transition(FailoverState::Primary, FailoverState::FailingOver) {
+            debug!("Failover already in progress or completed");
+            return;
         }
-
-        *state = FailoverState::FailingOver;
-        drop(state);
 
         info!("Initiating failover from primary");
         self.failover_count.fetch_add(1, Ordering::Relaxed);
 
         // Try replicas first
-        let replicas = self.replicas.read();
+        let replicas = self.replicas.read().await;
         for (i, replica) in replicas.iter().enumerate() {
             let health = replica.health_check().await;
             if matches!(health, HealthStatus::Healthy | HealthStatus::Degraded) {
-                let mut state = self.state.write();
-                *state = FailoverState::Replica;
-                info!("Failed over to replica {}", i);
+                // Atomically: FailingOver -> Replica
+                if self.try_transition(FailoverState::FailingOver, FailoverState::Replica) {
+                    info!("Failed over to replica {}", i);
+                } else {
+                    // Someone else changed state - log but continue
+                    warn!("Unexpected state change during failover to replica");
+                }
                 return;
             }
         }
+        drop(replicas);
 
         // Fall back to local cache
-        if self.config.local_cache_enabled {
-            let mut state = self.state.write();
-            *state = FailoverState::LocalCache;
-            warn!("All Redis connections failed, using local cache fallback");
+        // Atomically: FailingOver -> LocalCache
+        let new_state = FailoverState::LocalCache;
+        if self.try_transition(FailoverState::FailingOver, new_state) {
+            if self.config.local_cache_enabled {
+                warn!("All Redis connections failed, using local cache fallback");
+            } else {
+                error!("All Redis connections failed and local cache is disabled");
+            }
         } else {
-            let mut state = self.state.write();
-            *state = FailoverState::LocalCache;
-            error!("All Redis connections failed and local cache is disabled");
+            warn!("Unexpected state change during failover to local cache");
         }
     }
 
     /// Recover to primary
+    ///
+    /// Uses atomic state transitions to prevent race conditions.
     async fn recover(&self) {
-        let mut state = self.state.write();
+        let current_state = self.state();
 
-        if *state == FailoverState::Primary {
+        // Can only recover from Replica or LocalCache states
+        if current_state == FailoverState::Primary {
             return; // Already on primary
         }
 
-        *state = FailoverState::Recovering;
-        drop(state);
+        // Atomically: Current -> Recovering
+        if !self.try_transition(current_state, FailoverState::Recovering) {
+            debug!("Recovery already in progress or state changed");
+            return;
+        }
 
         info!("Recovering to primary Redis");
         self.recovery_count.fetch_add(1, Ordering::Relaxed);
@@ -518,31 +567,32 @@ impl FailoverManager {
         // Verify primary is truly healthy
         let health = self.primary.health_check().await;
         if health == HealthStatus::Healthy {
-            let mut state = self.state.write();
-            *state = FailoverState::Primary;
-            self.consecutive_successes.store(0, Ordering::Relaxed);
-            info!("Successfully recovered to primary");
+            // Atomically: Recovering -> Primary
+            if self.try_transition(FailoverState::Recovering, FailoverState::Primary) {
+                self.consecutive_successes.store(0, Ordering::Relaxed);
+                info!("Successfully recovered to primary");
 
-            // Clear local cache after recovery
-            let mut cache = self.local_cache.write();
-            cache.clear();
+                // Clear local cache after recovery (async-safe)
+                let mut cache = self.local_cache.write().await;
+                cache.clear();
+            }
         } else {
             warn!("Primary not healthy during recovery attempt");
-            let mut state = self.state.write();
-            *state = FailoverState::LocalCache;
+            // Atomically: Recovering -> LocalCache (revert)
+            let _ = self.try_transition(FailoverState::Recovering, FailoverState::LocalCache);
         }
     }
 
     /// Get the active connection pool
     ///
     /// Returns the primary, a replica, or None if all are unavailable.
-    pub fn active_pool(&self) -> Option<Arc<RedisPool>> {
+    pub async fn active_pool(&self) -> Option<Arc<RedisPool>> {
         let state = self.state();
 
         match state {
             FailoverState::Primary => Some(Arc::clone(&self.primary)),
             FailoverState::Replica => {
-                let replicas = self.replicas.read();
+                let replicas = self.replicas.read().await;
                 replicas.first().map(Arc::clone)
             }
             _ => None,
@@ -561,7 +611,7 @@ impl FailoverManager {
 
         // Try local cache first if in local cache mode
         if state == FailoverState::LocalCache && self.config.local_cache_enabled {
-            let mut cache = self.local_cache.write();
+            let mut cache = self.local_cache.write().await;
             if let Some(chunks) = cache.get_chunks(series_id, range) {
                 debug!("Serving from local cache");
                 return Ok(chunks);
@@ -582,7 +632,7 @@ impl FailoverManager {
     }
 
     /// Cache query results for fallback
-    pub fn cache_query_result(
+    pub async fn cache_query_result(
         &self,
         series_id: SeriesId,
         range: &TimeRange,
@@ -592,13 +642,13 @@ impl FailoverManager {
             return;
         }
 
-        let mut cache = self.local_cache.write();
+        let mut cache = self.local_cache.write().await;
         cache.put_chunks(series_id, range, chunks);
     }
 
     /// Get failover statistics
-    pub fn stats(&self) -> FailoverStats {
-        let cache = self.local_cache.read();
+    pub async fn stats(&self) -> FailoverStats {
+        let cache = self.local_cache.read().await;
 
         FailoverStats {
             state: self.state(),

@@ -36,14 +36,15 @@
 //! ```
 
 use crate::error::IndexError;
-use parking_lot::RwLock;
 use redis::aio::MultiplexedConnection;
 use redis::{Client, RedisError};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
+
+use super::util::safe_redis_error;
 
 /// Configuration for Redis connection pool
 ///
@@ -124,6 +125,25 @@ impl RedisConfig {
         self
     }
 
+    /// Enable or disable TLS for Redis connections
+    ///
+    /// When enabled, uses the `rediss://` URL scheme and TLS encryption.
+    /// Requires the `redis-tls` feature to be enabled.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use gorilla_tsdb::redis::RedisConfig;
+    ///
+    /// // Enable TLS for a Redis connection
+    /// let config = RedisConfig::with_url("rediss://secure.redis.example.com:6380")
+    ///     .tls(true);
+    /// ```
+    pub fn tls(mut self, enabled: bool) -> Self {
+        self.tls_enabled = enabled;
+        self
+    }
+
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), String> {
         if self.url.is_empty() {
@@ -135,7 +155,50 @@ impl RedisConfig {
         if self.pool_size > 1000 {
             return Err("Pool size cannot exceed 1000".to_string());
         }
+
+        // Validate TLS configuration
+        #[cfg(not(feature = "redis-tls"))]
+        if self.tls_enabled {
+            return Err(
+                "TLS is enabled but the 'redis-tls' feature is not compiled. \
+                 Enable it with: cargo build --features redis-tls"
+                    .to_string(),
+            );
+        }
+
+        // Check URL scheme matches TLS setting
+        if self.tls_enabled && !self.url.starts_with("rediss://") {
+            return Err(
+                "TLS is enabled but URL doesn't use 'rediss://' scheme. \
+                 Use 'rediss://host:port' for TLS connections"
+                    .to_string(),
+            );
+        }
+
+        if !self.tls_enabled && self.url.starts_with("rediss://") {
+            return Err(
+                "URL uses 'rediss://' scheme but TLS is not enabled. \
+                 Either use 'redis://' or enable TLS with .tls(true)"
+                    .to_string(),
+            );
+        }
+
         Ok(())
+    }
+
+    /// Get the effective URL for connection
+    ///
+    /// Converts between `redis://` and `rediss://` based on TLS setting.
+    pub fn effective_url(&self) -> String {
+        if self.tls_enabled && self.url.starts_with("redis://") {
+            // Convert redis:// to rediss://
+            format!("rediss://{}", &self.url[8..])
+        } else if !self.tls_enabled && self.url.starts_with("rediss://") {
+            // Convert rediss:// to redis://
+            format!("redis://{}", &self.url[9..])
+        } else {
+            self.url.clone()
+        }
     }
 }
 
@@ -360,9 +423,9 @@ impl RedisPool {
             .validate()
             .map_err(|e| IndexError::ConnectionError(e))?;
 
-        // Create Redis client
+        // Create Redis client (using sanitized URL in error messages to prevent credential leakage)
         let client = Client::open(config.url.as_str()).map_err(|e| {
-            IndexError::ConnectionError(format!("Failed to create Redis client: {}", e))
+            IndexError::ConnectionError(safe_redis_error(&config.url, &e))
         })?;
 
         let metrics = Arc::new(PoolMetrics::default());
@@ -399,17 +462,18 @@ impl RedisPool {
             })?
             .map_err(|e| {
                 self.metrics.record_connection_failure();
-                IndexError::ConnectionError(format!("Failed to connect: {}", e))
+                // Sanitize error message to prevent credential leakage
+                IndexError::ConnectionError(safe_redis_error(&self.config.url, &e))
             })?;
 
-        // Store the connection
+        // Store the connection (async-safe lock access)
         {
-            let mut guard = self.connection.write();
+            let mut guard = self.connection.write().await;
             *guard = Some(conn);
         }
 
         self.metrics.record_connection();
-        *self.health_status.write() = HealthStatus::Healthy;
+        *self.health_status.write().await = HealthStatus::Healthy;
 
         debug!("Redis connection established in {:?}", start.elapsed());
         Ok(())
@@ -428,9 +492,9 @@ impl RedisPool {
             .await
             .map_err(|_| IndexError::ConnectionError("Semaphore closed".to_string()))?;
 
-        // Check if we need to reconnect
+        // Check if we need to reconnect (async-safe lock access)
         let conn = {
-            let guard = self.connection.read();
+            let guard = self.connection.read().await;
             guard.clone()
         };
 
@@ -439,7 +503,7 @@ impl RedisPool {
             None => {
                 // Try to reconnect
                 self.connect().await?;
-                let guard = self.connection.read();
+                let guard = self.connection.read().await;
                 guard.clone().ok_or_else(|| {
                     IndexError::ConnectionError("No connection available".to_string())
                 })?
@@ -506,9 +570,10 @@ impl RedisPool {
                         continue;
                     }
 
-                    return Err(IndexError::ConnectionError(format!(
-                        "Redis command failed: {}",
-                        e
+                    // Sanitize error to prevent credential leakage in logs
+                    return Err(IndexError::ConnectionError(safe_redis_error(
+                        &self.config.url,
+                        &e,
                     )));
                 }
                 Err(_) => {
@@ -558,15 +623,21 @@ impl RedisPool {
             Err(_) => HealthStatus::Unhealthy,
         };
 
-        *self.health_status.write() = status.clone();
-        *self.last_health_check.write() = Some(Instant::now());
+        // Update health status (async-safe)
+        *self.health_status.write().await = status.clone();
+        *self.last_health_check.write().await = Some(Instant::now());
 
         status
     }
 
     /// Get the current health status
+    ///
+    /// Uses try_read to avoid blocking in sync context. Returns Unknown if lock is held.
     pub fn health_status(&self) -> HealthStatus {
-        self.health_status.read().clone()
+        self.health_status
+            .try_read()
+            .map(|guard| guard.clone())
+            .unwrap_or(HealthStatus::Unknown)
     }
 
     /// Get pool metrics
@@ -580,11 +651,17 @@ impl RedisPool {
     }
 
     /// Check if the pool needs a health check
+    ///
+    /// Uses try_read to avoid blocking in sync context. Returns true if lock is held
+    /// (conservative approach: check if unsure).
     pub fn needs_health_check(&self) -> bool {
-        let last_check = self.last_health_check.read();
-        match *last_check {
-            None => true,
-            Some(instant) => instant.elapsed() > self.config.health_check_interval,
+        match self.last_health_check.try_read() {
+            Ok(guard) => match *guard {
+                None => true,
+                Some(instant) => instant.elapsed() > self.config.health_check_interval,
+            },
+            // If we can't get the lock, conservatively return true to trigger a check
+            Err(_) => true,
         }
     }
 }
@@ -722,5 +799,85 @@ mod tests {
         assert_eq!(config.url, "redis://localhost:6380");
         assert_eq!(config.pool_size, 32);
         assert_eq!(config.connection_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_tls_config() {
+        // TLS enabled with rediss:// URL should be valid
+        let config = RedisConfig::with_url("rediss://secure.redis.example.com:6380").tls(true);
+        assert!(config.tls_enabled);
+
+        // Non-TLS with redis:// URL should be valid
+        let config = RedisConfig::with_url("redis://localhost:6379").tls(false);
+        assert!(!config.tls_enabled);
+        assert!(config.validate().is_ok());
+    }
+
+    #[cfg(feature = "redis-tls")]
+    #[test]
+    fn test_tls_url_mismatch() {
+        // TLS enabled but redis:// URL - should fail validation
+        let config = RedisConfig::with_url("redis://localhost:6379").tls(true);
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("rediss://"));
+
+        // TLS disabled but rediss:// URL - should fail validation
+        let config = RedisConfig::with_url("rediss://localhost:6379").tls(false);
+        let result = config.validate();
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "redis-tls"))]
+    #[test]
+    fn test_tls_url_mismatch_without_feature() {
+        // Without TLS feature, TLS enabled should fail with feature error
+        let config = RedisConfig::with_url("redis://localhost:6379").tls(true);
+        let result = config.validate();
+        assert!(result.is_err());
+        // Should mention the redis-tls feature
+        assert!(result.unwrap_err().contains("redis-tls"));
+
+        // TLS disabled but rediss:// URL - should fail validation (URL scheme mismatch)
+        let config = RedisConfig::with_url("rediss://localhost:6379").tls(false);
+        let result = config.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_effective_url() {
+        // TLS enabled converts redis:// to rediss://
+        let config = RedisConfig {
+            url: "redis://localhost:6379".to_string(),
+            tls_enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(config.effective_url(), "rediss://localhost:6379");
+
+        // TLS disabled converts rediss:// to redis://
+        let config = RedisConfig {
+            url: "rediss://localhost:6379".to_string(),
+            tls_enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(config.effective_url(), "redis://localhost:6379");
+
+        // No conversion when URL scheme matches TLS setting
+        let config = RedisConfig {
+            url: "rediss://localhost:6379".to_string(),
+            tls_enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(config.effective_url(), "rediss://localhost:6379");
+    }
+
+    #[cfg(not(feature = "redis-tls"))]
+    #[test]
+    fn test_tls_feature_not_enabled() {
+        // When redis-tls feature is not enabled, TLS should fail validation
+        let config = RedisConfig::with_url("rediss://localhost:6379").tls(true);
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("redis-tls"));
     }
 }

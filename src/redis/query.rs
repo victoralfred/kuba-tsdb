@@ -30,11 +30,12 @@ use crate::types::{SeriesId, TimeRange};
 
 use super::index::RedisTimeIndex;
 
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 /// Configuration for query optimization
@@ -68,34 +69,26 @@ impl Default for QueryConfig {
     }
 }
 
-/// Query result cache entry
+/// Query result cache entry with TTL support
 struct CacheEntry {
     /// Cached chunk references
     chunks: Vec<ChunkReference>,
     /// When this entry was cached
     cached_at: Instant,
-    /// Time-to-live for this entry
-    ttl: Duration,
-    /// Number of times this entry was accessed
-    access_count: u64,
 }
 
 impl CacheEntry {
-    fn new(chunks: Vec<ChunkReference>, ttl: Duration) -> Self {
+    /// Create a new cache entry
+    fn new(chunks: Vec<ChunkReference>) -> Self {
         Self {
             chunks,
             cached_at: Instant::now(),
-            ttl,
-            access_count: 0,
         }
     }
 
-    fn is_expired(&self) -> bool {
-        self.cached_at.elapsed() > self.ttl
-    }
-
-    fn touch(&mut self) {
-        self.access_count += 1;
+    /// Check if the entry is expired based on the provided TTL
+    fn is_expired(&self, ttl: Duration) -> bool {
+        self.cached_at.elapsed() > ttl
     }
 }
 
@@ -117,93 +110,101 @@ impl CacheKey {
     }
 }
 
-/// Query result cache
+/// LRU-based query result cache
+///
+/// Uses the `lru` crate for O(1) eviction instead of O(n) scanning.
+/// This is a significant performance improvement for caches with many entries.
 struct QueryCache {
-    /// Cached query results
-    entries: HashMap<CacheKey, CacheEntry>,
-    /// Maximum entries in cache
-    max_entries: usize,
-    /// Default TTL for new entries
+    /// LRU cache for query results - provides O(1) get, put, and eviction
+    entries: LruCache<CacheKey, CacheEntry>,
+    /// Default TTL for entries
     default_ttl: Duration,
+    /// Counter for expired entries (for stats)
+    expired_evictions: u64,
 }
 
 impl QueryCache {
+    /// Create a new LRU-based query cache
+    ///
+    /// # Arguments
+    ///
+    /// * `max_entries` - Maximum number of entries to cache
+    /// * `default_ttl_secs` - Default time-to-live for cache entries in seconds
     fn new(max_entries: usize, default_ttl_secs: u64) -> Self {
+        // NonZeroUsize ensures cache capacity is at least 1
+        let capacity = NonZeroUsize::new(max_entries.max(1))
+            .expect("Cache capacity must be non-zero");
+
         Self {
-            entries: HashMap::new(),
-            max_entries,
+            entries: LruCache::new(capacity),
             default_ttl: Duration::from_secs(default_ttl_secs),
+            expired_evictions: 0,
         }
     }
 
-    /// Get a cached result if available and not expired
+    /// Get a cached result if available and not expired - O(1)
+    ///
+    /// LruCache::get automatically promotes the entry to most-recently-used.
     fn get(&mut self, key: &CacheKey) -> Option<Vec<ChunkReference>> {
-        if let Some(entry) = self.entries.get_mut(key) {
-            if entry.is_expired() {
-                self.entries.remove(key);
+        // LruCache::get returns Option<&V> and promotes to MRU
+        if let Some(entry) = self.entries.get(key) {
+            if entry.is_expired(self.default_ttl) {
+                // Remove expired entry - need to use pop since we have immutable ref
+                self.entries.pop(key);
+                self.expired_evictions += 1;
                 return None;
             }
-            entry.touch();
             return Some(entry.chunks.clone());
         }
         None
     }
 
-    /// Cache a query result
+    /// Cache a query result - O(1), auto-evicts LRU if at capacity
+    ///
+    /// LruCache::put automatically evicts the least-recently-used entry
+    /// if the cache is at capacity.
     fn put(&mut self, key: CacheKey, chunks: Vec<ChunkReference>) {
-        // Evict if at capacity
-        if self.entries.len() >= self.max_entries {
-            self.evict_one();
-        }
-
-        self.entries
-            .insert(key, CacheEntry::new(chunks, self.default_ttl));
+        // LruCache::put handles eviction automatically
+        self.entries.put(key, CacheEntry::new(chunks));
     }
 
-    /// Evict the least recently accessed entry or an expired entry
-    fn evict_one(&mut self) {
-        // First try to find an expired entry
-        let expired_key = self
-            .entries
-            .iter()
-            .find(|(_, v)| v.is_expired())
-            .map(|(k, _)| k.clone());
-
-        if let Some(key) = expired_key {
-            self.entries.remove(&key);
-            return;
-        }
-
-        // Otherwise, evict the least accessed entry
-        let lru_key = self
-            .entries
-            .iter()
-            .min_by_key(|(_, v)| v.access_count)
-            .map(|(k, _)| k.clone());
-
-        if let Some(key) = lru_key {
-            self.entries.remove(&key);
-        }
-    }
-
-    /// Invalidate all entries for a series
+    /// Invalidate all entries for a series - O(n) but rare operation
+    ///
+    /// This operation requires scanning all entries since we're filtering
+    /// by series_id which is part of the composite key.
     fn invalidate_series(&mut self, series_id: SeriesId) {
-        self.entries.retain(|k, _| k.series_id != series_id);
+        // Collect keys to remove (can't mutate while iterating)
+        let keys_to_remove: Vec<CacheKey> = self
+            .entries
+            .iter()
+            .filter(|(k, _)| k.series_id == series_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for key in keys_to_remove {
+            self.entries.pop(&key);
+        }
     }
 
     /// Clear all cached entries
     fn clear(&mut self) {
         self.entries.clear();
+        self.expired_evictions = 0;
     }
 
     /// Get cache statistics
     fn stats(&self) -> CacheStats {
-        let expired_count = self.entries.values().filter(|e| e.is_expired()).count();
+        // Count expired entries by iterating (O(n) but stats are infrequent)
+        let expired_count = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.is_expired(self.default_ttl))
+            .count();
 
         CacheStats {
             entries: self.entries.len(),
             expired: expired_count,
-            total_accesses: self.entries.values().map(|e| e.access_count).sum(),
+            total_accesses: 0, // LRU doesn't track access counts
         }
     }
 }
@@ -311,11 +312,11 @@ impl QueryPlanner {
 
         let plan = self.plan_query(series_id, time_range.clone());
 
-        // Check cache first if enabled
+        // Check cache first if enabled (async-safe)
         if plan.use_cache {
             let cache_key = CacheKey::new(series_id, &time_range);
             let cached = {
-                let mut cache = self.cache.write();
+                let mut cache = self.cache.write().await;
                 cache.get(&cache_key)
             };
 
@@ -334,10 +335,10 @@ impl QueryPlanner {
             .query_chunks(series_id, time_range.clone())
             .await?;
 
-        // Cache the result if applicable
+        // Cache the result if applicable (async-safe)
         if plan.use_cache {
             let cache_key = CacheKey::new(series_id, &time_range);
-            let mut cache = self.cache.write();
+            let mut cache = self.cache.write().await;
             cache.put(cache_key, chunks.clone());
         }
 
@@ -401,22 +402,22 @@ impl QueryPlanner {
     /// Invalidate cached results for a series
     ///
     /// Call this when a series is modified to prevent stale cache reads.
-    pub fn invalidate_series(&self, series_id: SeriesId) {
-        let mut cache = self.cache.write();
+    pub async fn invalidate_series(&self, series_id: SeriesId) {
+        let mut cache = self.cache.write().await;
         cache.invalidate_series(series_id);
         info!("Invalidated cache for series {}", series_id);
     }
 
     /// Clear all cached results
-    pub fn clear_cache(&self) {
-        let mut cache = self.cache.write();
+    pub async fn clear_cache(&self) {
+        let mut cache = self.cache.write().await;
         cache.clear();
         info!("Cleared query cache");
     }
 
     /// Get query planner statistics
-    pub fn stats(&self) -> QueryPlannerStats {
-        let cache = self.cache.read();
+    pub async fn stats(&self) -> QueryPlannerStats {
+        let cache = self.cache.read().await;
         let cache_stats = cache.stats();
 
         QueryPlannerStats {

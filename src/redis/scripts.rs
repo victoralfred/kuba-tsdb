@@ -152,7 +152,17 @@ impl LuaScripts {
         )
     }
 
-    /// Register a new series with metadata
+    /// Register a new series with metadata and secondary indexes
+    ///
+    /// This script atomically:
+    /// 1. Checks if series already exists
+    /// 2. Adds series to the main registry
+    /// 3. Creates secondary indexes for metric name and tags
+    /// 4. Stores series metadata
+    ///
+    /// # Secondary Index Schema
+    /// - `ts:metric:{metric_name}:series` - SET of series_ids with this metric
+    /// - `ts:tag:{key}:{value}:series` - SET of series_ids with this tag k/v pair
     ///
     /// # Keys
     /// - KEYS[1]: Series registry key (ts:registry)
@@ -162,7 +172,7 @@ impl LuaScripts {
     /// - ARGV[1]: Series ID
     /// - ARGV[2]: Current timestamp (created_at)
     /// - ARGV[3]: Metric name
-    /// - ARGV[4]: Tags JSON
+    /// - ARGV[4]: Tags JSON (object with string keys and values)
     /// - ARGV[5]: Retention days (optional, 0 for none)
     ///
     /// # Returns
@@ -186,8 +196,18 @@ impl LuaScripts {
                 return 0
             end
 
-            -- Add to registry
+            -- Add to main registry
             redis.call('SADD', registry_key, series_id)
+
+            -- Add to metric secondary index for efficient metric-based queries
+            redis.call('SADD', 'ts:metric:' .. metric_name .. ':series', series_id)
+
+            -- Add to tag secondary indexes for efficient tag-based filtering
+            -- Parse tags JSON and create an index entry for each tag key-value pair
+            local tags = cjson.decode(tags_json)
+            for key, value in pairs(tags) do
+                redis.call('SADD', 'ts:tag:' .. key .. ':' .. value .. ':series', series_id)
+            end
 
             -- Set metadata
             redis.call('HSET', series_meta_key,
@@ -205,7 +225,13 @@ impl LuaScripts {
         )
     }
 
-    /// Delete a series and all its data
+    /// Delete a series and all its data including secondary indexes
+    ///
+    /// This script atomically:
+    /// 1. Retrieves series metadata (metric name and tags)
+    /// 2. Removes series from secondary indexes (metric and tag indexes)
+    /// 3. Deletes all chunk data associated with the series
+    /// 4. Removes series from main registry
     ///
     /// # Keys
     /// - KEYS[1]: Series registry key (ts:registry)
@@ -228,6 +254,23 @@ impl LuaScripts {
 
             local series_id = ARGV[1]
             local chunk_prefix = ARGV[2]
+
+            -- Get metadata before deletion for secondary index cleanup
+            local metric_name = redis.call('HGET', series_meta_key, 'metric_name')
+            local tags_json = redis.call('HGET', series_meta_key, 'tags')
+
+            -- Remove from metric secondary index
+            if metric_name then
+                redis.call('SREM', 'ts:metric:' .. metric_name .. ':series', series_id)
+            end
+
+            -- Remove from tag secondary indexes
+            if tags_json then
+                local tags = cjson.decode(tags_json)
+                for key, value in pairs(tags) do
+                    redis.call('SREM', 'ts:tag:' .. key .. ':' .. value .. ':series', series_id)
+                end
+            end
 
             -- Get all chunk IDs for this series
             local chunk_ids = redis.call('ZRANGE', series_index, 0, -1)
