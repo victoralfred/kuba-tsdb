@@ -1,11 +1,11 @@
-///! Active chunk management with thread-safe, out-of-order point handling
-///!
-///! This module provides `ActiveChunk`, a thread-safe wrapper around chunk data
-///! that supports:
-///! - Concurrent appends from multiple threads
-///! - Out-of-order point handling (maintains sorted order)
-///! - Automatic sealing based on configurable thresholds
-///! - Lock-free reads for common operations
+//! Active chunk management with thread-safe, out-of-order point handling
+//!
+//! This module provides `ActiveChunk`, a thread-safe wrapper around chunk data
+//! that supports:
+//! - Concurrent appends from multiple threads
+//! - Out-of-order point handling (maintains sorted order)
+//! - Automatic sealing based on configurable thresholds
+//! - Lock-free reads for common operations
 use crate::storage::chunk::Chunk;
 use crate::types::{DataPoint, SeriesId};
 use std::collections::BTreeMap;

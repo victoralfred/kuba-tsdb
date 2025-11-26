@@ -64,7 +64,7 @@ impl Default for QueryConfig {
             cache_ttl_secs: 60,
             max_parallel_fetches: 8,
             enable_cache: true,
-            min_cacheable_range_ms: 3600_000, // 1 hour
+            min_cacheable_range_ms: 3_600_000, // 1 hour
         }
     }
 }
@@ -289,7 +289,7 @@ impl QueryPlanner {
         let use_cache = self.config.enable_cache && duration >= self.config.min_cacheable_range_ms;
 
         // Prefetch adjacent chunks for streaming queries
-        let prefetch_adjacent = duration > 86400_000; // > 1 day
+        let prefetch_adjacent = duration > 86_400_000; // > 1 day
 
         QueryPlan {
             series_id,
@@ -310,7 +310,7 @@ impl QueryPlanner {
     ) -> Result<Vec<ChunkReference>, IndexError> {
         self.queries_executed.fetch_add(1, Ordering::Relaxed);
 
-        let plan = self.plan_query(series_id, time_range.clone());
+        let plan = self.plan_query(series_id, time_range);
 
         // Check cache first if enabled (async-safe)
         if plan.use_cache {
@@ -332,7 +332,7 @@ impl QueryPlanner {
         // Execute query against Redis
         let chunks = self
             .index
-            .query_chunks(series_id, time_range.clone())
+            .query_chunks(series_id, time_range)
             .await?;
 
         // Cache the result if applicable (async-safe)
@@ -370,7 +370,7 @@ impl QueryPlanner {
             let futures: Vec<_> = chunk
                 .iter()
                 .map(|(series_id, range)| async {
-                    let chunks = self.query_chunks(*series_id, range.clone()).await?;
+                    let chunks = self.query_chunks(*series_id, *range).await?;
                     Ok::<_, IndexError>((*series_id, chunks))
                 })
                 .collect();
@@ -466,24 +466,24 @@ impl TimeRangeAnalyzer {
     pub fn analyze(range: &TimeRange) -> TimeRangeAnalysis {
         let duration_ms = range.end - range.start;
 
-        let granularity = if duration_ms < 3600_000 {
+        let granularity = if duration_ms < 3_600_000 {
             TimeGranularity::SubHour
-        } else if duration_ms < 86400_000 {
+        } else if duration_ms < 86_400_000 {
             TimeGranularity::Hour
-        } else if duration_ms < 604800_000 {
+        } else if duration_ms < 604_800_000 {
             TimeGranularity::Day
         } else {
             TimeGranularity::Week
         };
 
         // Estimate chunk count (assuming 2-hour chunks)
-        let estimated_chunks = (duration_ms / 7200_000).max(1) as usize;
+        let estimated_chunks = (duration_ms / 7_200_000).max(1) as usize;
 
         TimeRangeAnalysis {
             duration_ms,
             granularity,
             estimated_chunks,
-            should_cache: duration_ms > 3600_000,
+            should_cache: duration_ms > 3_600_000,
             should_stream: estimated_chunks > 100,
         }
     }

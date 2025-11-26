@@ -1,7 +1,7 @@
-///! Security hardening for Gorilla TSDB
-///!
-///! This module provides security features including path validation,
-///! rate limiting, and input sanitization.
+//! Security hardening for Gorilla TSDB
+//!
+//! This module provides security features including path validation,
+//! rate limiting, and input sanitization.
 use governor::{
     clock::DefaultClock,
     state::{InMemoryState, NotKeyed},
@@ -91,14 +91,8 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     // For existing paths or paths with existing parents, check for symlink attacks
     let check_path = if path.exists() {
         Some(path)
-    } else if let Some(parent) = path.parent() {
-        if parent.exists() {
-            Some(parent)
-        } else {
-            None
-        }
     } else {
-        None
+        path.parent().filter(|parent| parent.exists())
     };
 
     if let Some(check_path) = check_path {

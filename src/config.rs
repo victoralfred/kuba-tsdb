@@ -1,12 +1,12 @@
-///! Configuration management for Gorilla TSDB
-///!
-///! This module provides configuration file support with TOML format,
-///! environment variable overrides, and sensible defaults.
+//! Configuration management for Gorilla TSDB
+//!
+//! This module provides configuration file support with TOML format,
+//! environment variable overrides, and sensible defaults.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     /// Server configuration
     pub server: ServerConfig,
@@ -167,18 +167,6 @@ fn default_rate_limit() -> u32 {
 }
 fn default_true() -> bool {
     true
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            storage: StorageConfig::default(),
-            performance: PerformanceConfig::default(),
-            monitoring: MonitoringConfig::default(),
-            security: SecurityConfig::default(),
-        }
-    }
 }
 
 impl Default for ServerConfig {

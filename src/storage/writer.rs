@@ -1,11 +1,11 @@
-///! Chunk writer for managing active chunks and automatic sealing
-///!
-///! The `ChunkWriter` handles the lifecycle of chunks for a single time series,
-///! including:
-///! - Point batching for efficient writes
-///! - Automatic chunk rotation based on configurable thresholds
-///! - Async write pipeline with backpressure handling
-///! - Automatic sealing when thresholds are exceeded
+//! Chunk writer for managing active chunks and automatic sealing
+//!
+//! The `ChunkWriter` handles the lifecycle of chunks for a single time series,
+//! including:
+//! - Point batching for efficient writes
+//! - Automatic chunk rotation based on configurable thresholds
+//! - Async write pipeline with backpressure handling
+//! - Automatic sealing when thresholds are exceeded
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
 use crate::storage::chunk::Chunk;
 use crate::types::{DataPoint, SeriesId};
@@ -238,11 +238,10 @@ impl ChunkWriter {
         if crate::config::Config::default()
             .security
             .enable_rate_limiting
+            && !crate::security::check_write_rate_limit()
         {
-            if !crate::security::check_write_rate_limit() {
-                crate::metrics::record_error("rate_limit", "write");
-                return Err("Write rate limit exceeded".to_string());
-            }
+            crate::metrics::record_error("rate_limit", "write");
+            return Err("Write rate limit exceeded".to_string());
         }
 
         // Get or create active chunk

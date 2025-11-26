@@ -1,7 +1,7 @@
-///! Directory management utilities for storage layer
-///!
-///! Provides utilities for managing series directories, metadata files,
-///! write locks, and cleanup operations.
+//! Directory management utilities for storage layer
+//!
+//! Provides utilities for managing series directories, metadata files,
+//! write locks, and cleanup operations.
 use crate::error::StorageError;
 use crate::types::SeriesId;
 use serde::{Deserialize, Serialize};
@@ -191,8 +191,8 @@ impl WriteLock {
                     // Successfully created lock file atomically
                     use std::io::Write;
                     file.write_all(lock_content.as_bytes())
-                        .map_err(|e| StorageError::Io(e))?;
-                    file.sync_all().map_err(|e| StorageError::Io(e))?;
+                        .map_err(StorageError::Io)?;
+                    file.sync_all().map_err(StorageError::Io)?;
 
                     self.lock_file = Some(file);
                     self.held = true;

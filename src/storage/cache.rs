@@ -1116,11 +1116,15 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
 
     /// Stop background eviction thread
     pub async fn stop_background_eviction(&self) {
-        if let Some(tx) = self.shutdown_tx.write().take() {
+        // Extract the sender from the lock before awaiting to avoid holding lock across await
+        let tx = self.shutdown_tx.write().take();
+        if let Some(tx) = tx {
             let _ = tx.send(()).await;
         }
 
-        if let Some(handle) = self.eviction_handle.write().take() {
+        // Extract the handle from the lock before awaiting
+        let handle = self.eviction_handle.write().take();
+        if let Some(handle) = handle {
             let _ = handle.await;
         }
     }
