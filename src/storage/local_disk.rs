@@ -31,6 +31,7 @@ use tokio::fs;
 ///
 /// # Example
 ///
+<<<<<<< HEAD
 /// ```rust,no_run
 /// use gorilla_tsdb::storage::LocalDiskEngine;
 /// use gorilla_tsdb::engine::traits::StorageEngine;
@@ -38,6 +39,18 @@ use tokio::fs;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let engine = LocalDiskEngine::new("/tmp/tsdb".into())?;
 /// assert_eq!(engine.engine_id(), "local-disk-v1");
+=======
+/// ```rust
+/// use gorilla_tsdb::storage::LocalDiskEngine;
+/// use gorilla_tsdb::types::DataPoint;
+/// use gorilla_tsdb::engine::traits::StorageEngine;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let engine = LocalDiskEngine::new("/data/tsdb".into())?;
+///
+/// let points = vec![DataPoint::new(1, 1000, 42.5)];
+/// engine.write(1, &points).await?;
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 /// # Ok(())
 /// # }
 /// ```
@@ -46,7 +59,11 @@ pub struct LocalDiskEngine {
     base_path: PathBuf,
 
     /// In-memory index of chunks by series
+<<<<<<< HEAD
     /// Maps series_id -> `Vec<ChunkMetadata>`
+=======
+    /// Maps series_id -> Vec<ChunkMetadata>
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
     chunk_index: Arc<RwLock<HashMap<SeriesId, Vec<ChunkMetadata>>>>,
 
     /// Storage statistics
@@ -68,6 +85,7 @@ impl LocalDiskEngine {
     ///
     /// # Example
     ///
+<<<<<<< HEAD
     /// ```rust,no_run
     /// use gorilla_tsdb::storage::LocalDiskEngine;
     /// use gorilla_tsdb::engine::traits::StorageEngine;
@@ -77,6 +95,13 @@ impl LocalDiskEngine {
     /// assert_eq!(engine.engine_id(), "local-disk-v1");
     /// # Ok(())
     /// # }
+=======
+    /// ```rust
+    /// use gorilla_tsdb::storage::LocalDiskEngine;
+    ///
+    /// let engine = LocalDiskEngine::new("/data/tsdb".into())?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
     /// ```
     pub fn new(base_path: PathBuf) -> Result<Self, StorageError> {
         // Create base directory if it doesn't exist
@@ -95,12 +120,16 @@ impl LocalDiskEngine {
     }
 
     /// Get the file path for a chunk
+<<<<<<< HEAD
     fn chunk_path(
         &self,
         series_id: SeriesId,
         chunk_id: &ChunkId,
         compression: CompressionType,
     ) -> PathBuf {
+=======
+    fn chunk_path(&self, series_id: SeriesId, chunk_id: &ChunkId, compression: CompressionType) -> PathBuf {
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         let extension = match compression {
             CompressionType::None => "raw",
             CompressionType::Gorilla => "gor",
@@ -151,6 +180,7 @@ impl LocalDiskEngine {
     }
 
     /// Load all chunks for a series
+<<<<<<< HEAD
     async fn load_series_chunks(
         &self,
         series_id: SeriesId,
@@ -158,6 +188,9 @@ impl LocalDiskEngine {
         use crate::storage::chunk::ChunkHeader;
         use tokio::io::AsyncReadExt;
 
+=======
+    async fn load_series_chunks(&self, series_id: SeriesId) -> Result<Vec<ChunkMetadata>, StorageError> {
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         let series_dir = self.series_path(series_id);
         if !series_dir.exists() {
             return Ok(Vec::new());
@@ -169,6 +202,7 @@ impl LocalDiskEngine {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("gor") {
+<<<<<<< HEAD
                 // Read chunk header to get metadata
                 let mut file = match fs::File::open(&path).await {
                     Ok(f) => f,
@@ -216,6 +250,22 @@ impl LocalDiskEngine {
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0),
                     last_accessed: chrono::Utc::now().timestamp_millis(),
+=======
+                // Load chunk metadata (simplified - would normally parse header)
+                let metadata = fs::metadata(&path).await?;
+
+                chunks.push(ChunkMetadata {
+                    chunk_id: ChunkId::new(),
+                    series_id,
+                    path: path.clone(),
+                    start_timestamp: 0,  // TODO: Load from chunk header
+                    end_timestamp: 0,    // TODO: Load from chunk header
+                    point_count: 0,       // TODO: Load from chunk header
+                    size_bytes: metadata.len(),
+                    compression: CompressionType::Gorilla,
+                    created_at: 0,
+                    last_accessed: 0,
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
                 });
             }
         }
@@ -231,10 +281,14 @@ impl StorageEngine for LocalDiskEngine {
         "local-disk-v1"
     }
 
+<<<<<<< HEAD
     async fn initialize(
         &self,
         _config: crate::engine::traits::StorageConfig,
     ) -> Result<(), StorageError> {
+=======
+    async fn initialize(&self, _config: crate::engine::traits::StorageConfig) -> Result<(), StorageError> {
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         // Load existing chunk index from disk
         self.load_index().await
     }
@@ -245,9 +299,12 @@ impl StorageEngine for LocalDiskEngine {
         chunk_id: ChunkId,
         data: &crate::engine::traits::CompressedBlock,
     ) -> Result<crate::engine::traits::ChunkLocation, StorageError> {
+<<<<<<< HEAD
         use crate::storage::chunk::ChunkHeader;
         use tokio::io::AsyncWriteExt;
 
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         // Create series directory if needed
         let series_dir = self.series_path(series_id);
         fs::create_dir_all(&series_dir).await?;
@@ -255,6 +312,7 @@ impl StorageEngine for LocalDiskEngine {
         // Determine chunk path
         let path = self.chunk_path(series_id, &chunk_id, CompressionType::Gorilla);
 
+<<<<<<< HEAD
         // Create chunk header
         let mut header = ChunkHeader::new(series_id);
         header.start_timestamp = data.metadata.start_timestamp;
@@ -289,11 +347,19 @@ impl StorageEngine for LocalDiskEngine {
         // Get actual file size
         let metadata = file.metadata().await?;
         let total_size = metadata.len();
+=======
+        // TODO: Write chunk data to file
+        // For now, just return a placeholder location
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 
         // Update index
         {
             let mut index = self.chunk_index.write();
+<<<<<<< HEAD
             let series_chunks = index.entry(series_id).or_default();
+=======
+            let series_chunks = index.entry(series_id).or_insert_with(Vec::new);
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 
             series_chunks.push(ChunkMetadata {
                 chunk_id: chunk_id.clone(),
@@ -302,7 +368,11 @@ impl StorageEngine for LocalDiskEngine {
                 start_timestamp: data.metadata.start_timestamp,
                 end_timestamp: data.metadata.end_timestamp,
                 point_count: data.metadata.point_count as u32,
+<<<<<<< HEAD
                 size_bytes: total_size,
+=======
+                size_bytes: data.compressed_size as u64,
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
                 compression: CompressionType::Gorilla,
                 created_at: chrono::Utc::now().timestamp_millis(),
                 last_accessed: chrono::Utc::now().timestamp_millis(),
@@ -316,18 +386,27 @@ impl StorageEngine for LocalDiskEngine {
         {
             let mut stats = self.stats.write();
             stats.write_ops += 1;
+<<<<<<< HEAD
             stats.total_bytes += total_size;
+=======
+            stats.total_bytes += data.compressed_size as u64;
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
             stats.total_chunks += 1;
         }
 
         Ok(crate::engine::traits::ChunkLocation {
             engine_id: self.engine_id().to_string(),
             path: path.to_string_lossy().to_string(),
+<<<<<<< HEAD
             offset: Some(64), // Data starts after 64-byte header
+=======
+            offset: Some(0),
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
             size: Some(data.compressed_size),
         })
     }
 
+<<<<<<< HEAD
     async fn read_chunk(
         &self,
         location: &crate::engine::traits::ChunkLocation,
@@ -476,6 +555,16 @@ impl StorageEngine for LocalDiskEngine {
         }
 
         Ok(())
+=======
+    async fn read_chunk(&self, location: &crate::engine::traits::ChunkLocation) -> Result<crate::engine::traits::CompressedBlock, StorageError> {
+        // TODO: Implement chunk reading
+        Err(StorageError::ChunkNotFound(format!("Chunk at {} not found", location.path)))
+    }
+
+    async fn delete_chunk(&self, location: &crate::engine::traits::ChunkLocation) -> Result<(), StorageError> {
+        // TODO: Implement chunk deletion
+        Err(StorageError::ChunkNotFound(format!("Chunk at {} not found", location.path)))
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
     }
 
     async fn list_chunks(
@@ -503,10 +592,14 @@ impl StorageEngine for LocalDiskEngine {
                         offset: Some(0),
                         size: Some(c.size_bytes as usize),
                     },
+<<<<<<< HEAD
                     time_range: crate::types::TimeRange::new_unchecked(
                         c.start_timestamp,
                         c.end_timestamp,
                     ),
+=======
+                    time_range: crate::types::TimeRange::new_unchecked(c.start_timestamp, c.end_timestamp),
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
                     size_bytes: c.size_bytes as usize,
                     point_count: c.point_count as usize,
                     created_at: c.created_at,
@@ -522,12 +615,16 @@ impl StorageEngine for LocalDiskEngine {
         &self,
         _series_id: SeriesId,
         _time_range: crate::types::TimeRange,
+<<<<<<< HEAD
     ) -> std::pin::Pin<
         Box<
             dyn futures::Stream<Item = Result<crate::engine::traits::CompressedBlock, StorageError>>
                 + Send,
         >,
     > {
+=======
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<crate::engine::traits::CompressedBlock, StorageError>> + Send>> {
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         // TODO: Implement streaming
         Box::pin(futures::stream::empty())
     }
@@ -557,6 +654,7 @@ mod tests {
     }
 
     #[tokio::test]
+<<<<<<< HEAD
     async fn test_series_path() {
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
@@ -606,6 +704,8 @@ mod tests {
     }
 
     #[tokio::test]
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
     async fn test_list_chunks() {
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
@@ -616,6 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
+<<<<<<< HEAD
     async fn test_list_chunks_with_time_filter() {
         use crate::engine::traits::{BlockMetadata, CompressedBlock};
         use crate::types::TimeRange;
@@ -666,6 +767,8 @@ mod tests {
     }
 
     #[tokio::test]
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
     async fn test_stats() {
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
@@ -674,6 +777,7 @@ mod tests {
         assert_eq!(stats.total_chunks, 0);
         assert_eq!(stats.write_ops, 0);
     }
+<<<<<<< HEAD
 
     #[tokio::test]
     async fn test_write_and_read_chunk() {
@@ -992,4 +1096,6 @@ mod tests {
         assert_eq!(read_block.metadata.point_count, 25);
         assert_eq!(read_block.metadata.series_id, 42);
     }
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 }

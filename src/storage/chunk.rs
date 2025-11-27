@@ -17,7 +17,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Magic number identifying Gorilla chunk format: "GORILLA" in hex
+<<<<<<< HEAD
 pub const CHUNK_MAGIC: u32 = 0x474F5249; // "GORI" (first 4 bytes of "GORILLA")
+=======
+pub const CHUNK_MAGIC: u32 = 0x474F5249;  // "GORI" (first 4 bytes of "GORILLA")
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 
 /// Current chunk format version
 pub const CHUNK_VERSION: u16 = 1;
@@ -108,6 +112,7 @@ impl ChunkHeader {
             return Err(format!("Unsupported version: {}", self.version));
         }
         if self.point_count == 0 {
+<<<<<<< HEAD
             return Err(format!(
                 "Invalid chunk header: point_count is 0. Chunks must contain at least one data point. \
                  Series ID: {}",
@@ -120,6 +125,12 @@ impl ChunkHeader {
                  Time range is inverted. Series ID: {}",
                 self.start_timestamp, self.end_timestamp, self.series_id
             ));
+=======
+            return Err("Empty chunk".to_string());
+        }
+        if self.start_timestamp > self.end_timestamp {
+            return Err("Invalid time range".to_string());
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         }
         Ok(())
     }
@@ -131,6 +142,7 @@ impl ChunkHeader {
         }
         self.uncompressed_size as f64 / self.compressed_size as f64
     }
+<<<<<<< HEAD
 
     /// Serialize header to bytes (64 bytes total)
     ///
@@ -257,6 +269,8 @@ impl ChunkHeader {
             flags,
         })
     }
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 }
 
 /// Compression type for chunk data
@@ -359,6 +373,7 @@ impl ChunkMetadata {
     }
 }
 
+<<<<<<< HEAD
 /// Chunk lifecycle states
 ///
 /// A chunk progresses through these states:
@@ -1139,6 +1154,8 @@ impl Chunk {
     }
 }
 
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,6 +1202,7 @@ mod tests {
         };
 
         // Overlapping ranges
+<<<<<<< HEAD
         assert!(metadata.overlaps(500, 1500)); // Partial overlap (start)
         assert!(metadata.overlaps(1500, 2500)); // Partial overlap (end)
         assert!(metadata.overlaps(1200, 1800)); // Fully contained
@@ -1192,6 +1210,15 @@ mod tests {
 
         // Non-overlapping ranges
         assert!(!metadata.overlaps(0, 999)); // Before
+=======
+        assert!(metadata.overlaps(500, 1500));   // Partial overlap (start)
+        assert!(metadata.overlaps(1500, 2500));  // Partial overlap (end)
+        assert!(metadata.overlaps(1200, 1800));  // Fully contained
+        assert!(metadata.overlaps(500, 2500));   // Fully contains chunk
+
+        // Non-overlapping ranges
+        assert!(!metadata.overlaps(0, 999));     // Before
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
         assert!(!metadata.overlaps(2001, 3000)); // After
     }
 
@@ -1209,6 +1236,7 @@ mod tests {
         assert!(!compressed.is_sealed());
         assert!(compressed.is_snappy_compressed());
     }
+<<<<<<< HEAD
 
     #[test]
     fn test_chunk_header_serialization() {
@@ -1558,4 +1586,6 @@ mod tests {
         // Cleanup
         let _ = tokio::fs::remove_file(test_path).await;
     }
+=======
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 }
