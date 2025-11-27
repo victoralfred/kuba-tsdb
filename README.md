@@ -1,3 +1,4 @@
+[![Rust CI/CD](https://github.com/victoralfred/gorilla-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/gorilla-tsdb/actions/workflows/rust.yml)
 # Gorilla TSDB
 
 This project is a high-performance, production-ready time-series database written in Rust, featuring Facebook's Gorilla compression algorithm, pluggable engine architecture, Redis-based indexing, and async I/O for extreme throughput.
