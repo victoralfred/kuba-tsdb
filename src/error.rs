@@ -17,6 +17,10 @@ pub enum Error {
     #[error("Index error: {0}")]
     Index(#[from] IndexError),
 
+    /// Ingestion error
+    #[error("Ingestion error: {0}")]
+    Ingestion(#[from] IngestionError),
+
     /// Configuration error
     #[error("Configuration error: {0}")]
     Configuration(String),
@@ -80,6 +84,38 @@ pub enum StorageError {
     /// Data is corrupted
     #[error("Corrupted data: {0}")]
     CorruptedData(String),
+}
+
+/// Ingestion errors
+#[derive(Error, Debug)]
+pub enum IngestionError {
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
+    /// Channel closed unexpectedly
+    #[error("Channel closed: {0}")]
+    ChannelClosed(String),
+
+    /// Backpressure triggered
+    #[error("Backpressure: {0}")]
+    Backpressure(String),
+
+    /// Write operation failed
+    #[error("Write error: {0}")]
+    WriteError(String),
+
+    /// Validation failed
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    /// Shutdown error
+    #[error("Shutdown error: {0}")]
+    ShutdownError(String),
+
+    /// Storage error
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
 }
 
 /// Index errors

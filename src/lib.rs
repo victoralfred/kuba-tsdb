@@ -30,6 +30,10 @@ pub mod security;
 /// Provides Redis-based indexing using Sorted Sets for ultra-fast time-based lookups
 pub mod redis;
 
+/// Async ingestion pipeline for high-throughput data ingestion
+/// Provides batching, buffering, parallel writes, and backpressure management
+pub mod ingestion;
+
 // Re-export main types
 pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};
