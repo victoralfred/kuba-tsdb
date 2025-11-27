@@ -14,6 +14,10 @@ use tracing::debug;
 
 use super::metrics::IngestionMetrics;
 
+/// Default number of shards for the sharded batcher.
+/// Using a power of 2 allows for efficient modulo via bitwise AND.
+pub const DEFAULT_SHARD_COUNT: usize = 16;
+
 /// Configuration for point batching
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
@@ -35,14 +39,34 @@ impl Default for BatchConfig {
     }
 }
 
+/// Maximum allowed batch size to prevent memory spikes
+pub const MAX_BATCH_SIZE_LIMIT: usize = 1_000_000;
+
+/// Maximum allowed initial capacity to prevent excessive allocation
+pub const MAX_INITIAL_CAPACITY: usize = 100_000;
+
 impl BatchConfig {
     /// Validate the configuration
+    ///
+    /// Checks both minimum and maximum bounds to prevent misconfiguration.
     pub fn validate(&self) -> Result<(), String> {
         if self.max_batch_size == 0 {
             return Err("max_batch_size must be > 0".to_string());
         }
+        if self.max_batch_size > MAX_BATCH_SIZE_LIMIT {
+            return Err(format!(
+                "max_batch_size {} exceeds maximum allowed {}",
+                self.max_batch_size, MAX_BATCH_SIZE_LIMIT
+            ));
+        }
         if self.max_batch_timeout.is_zero() {
             return Err("max_batch_timeout must be > 0".to_string());
+        }
+        if self.initial_capacity > MAX_INITIAL_CAPACITY {
+            return Err(format!(
+                "initial_capacity {} exceeds maximum allowed {}",
+                self.initial_capacity, MAX_INITIAL_CAPACITY
+            ));
         }
         Ok(())
     }
@@ -313,6 +337,174 @@ impl Batcher {
     /// Get the age of the current batch
     pub async fn current_batch_age(&self) -> Duration {
         self.state.lock().await.batch_start.elapsed()
+    }
+}
+
+/// Sharded batcher that distributes load across multiple independent batchers.
+///
+/// This reduces lock contention under high concurrency by partitioning
+/// data points by series_id, allowing multiple threads to batch points
+/// concurrently without competing for the same lock.
+///
+/// # Performance
+///
+/// With N shards, lock contention is reduced by approximately N times
+/// under uniform series distribution. The default of 16 shards provides
+/// good parallelism on modern multi-core systems.
+pub struct ShardedBatcher {
+    /// Individual batchers for each shard
+    shards: Vec<Batcher>,
+    /// Number of shards (stored for efficient masking)
+    shard_count: usize,
+    /// Mask for fast shard selection (shard_count - 1 when power of 2)
+    shard_mask: u128,
+}
+
+impl ShardedBatcher {
+    /// Create a new sharded batcher with the default number of shards.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Batch configuration (applied to each shard)
+    /// * `output` - Channel to send completed batches
+    /// * `metrics` - Metrics collector (shared across all shards)
+    pub fn new(
+        config: BatchConfig,
+        output: mpsc::Sender<PointBatch>,
+        metrics: Arc<IngestionMetrics>,
+    ) -> Self {
+        Self::with_shard_count(config, output, metrics, DEFAULT_SHARD_COUNT)
+    }
+
+    /// Create a new sharded batcher with a specific number of shards.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Batch configuration (applied to each shard)
+    /// * `output` - Channel to send completed batches
+    /// * `metrics` - Metrics collector (shared across all shards)
+    /// * `shard_count` - Number of shards (rounded up to next power of 2)
+    ///
+    /// # Panics
+    ///
+    /// Panics if shard_count is 0.
+    pub fn with_shard_count(
+        config: BatchConfig,
+        output: mpsc::Sender<PointBatch>,
+        metrics: Arc<IngestionMetrics>,
+        shard_count: usize,
+    ) -> Self {
+        assert!(shard_count > 0, "shard_count must be > 0");
+
+        // Round up to next power of 2 for efficient masking
+        let shard_count = shard_count.next_power_of_two();
+        let shard_mask = (shard_count - 1) as u128;
+
+        let shards: Vec<Batcher> = (0..shard_count)
+            .map(|_| Batcher::new(config.clone(), output.clone(), Arc::clone(&metrics)))
+            .collect();
+
+        Self {
+            shards,
+            shard_count,
+            shard_mask,
+        }
+    }
+
+    /// Get the shard index for a given series_id.
+    ///
+    /// Uses bitwise AND for fast modulo when shard_count is a power of 2.
+    #[inline]
+    fn shard_for(&self, series_id: u128) -> usize {
+        (series_id & self.shard_mask) as usize
+    }
+
+    /// Add a single point to the appropriate shard based on series_id.
+    ///
+    /// # Arguments
+    ///
+    /// * `point` - The data point to add
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the output channel is closed.
+    pub async fn add_point(&self, point: DataPoint) -> Result<(), IngestionError> {
+        let shard_idx = self.shard_for(point.series_id);
+        self.shards[shard_idx].add_point(point).await
+    }
+
+    /// Add multiple points, distributing them to appropriate shards.
+    ///
+    /// Points are grouped by shard before being added to minimize
+    /// lock acquisitions.
+    ///
+    /// # Arguments
+    ///
+    /// * `points` - Vector of data points to add
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the output channel is closed.
+    pub async fn add_batch(&self, points: Vec<DataPoint>) -> Result<(), IngestionError> {
+        if points.is_empty() {
+            return Ok(());
+        }
+
+        // Group points by shard to minimize lock acquisitions
+        let mut shard_points: Vec<Vec<DataPoint>> =
+            (0..self.shard_count).map(|_| Vec::new()).collect();
+
+        for point in points {
+            let shard_idx = self.shard_for(point.series_id);
+            shard_points[shard_idx].push(point);
+        }
+
+        // Add grouped points to each shard
+        for (shard_idx, points) in shard_points.into_iter().enumerate() {
+            if !points.is_empty() {
+                self.shards[shard_idx].add_batch(points).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Flush all shards.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any shard's output channel is closed.
+    pub async fn flush(&self) -> Result<(), IngestionError> {
+        for shard in &self.shards {
+            shard.flush().await?;
+        }
+        Ok(())
+    }
+
+    /// Check timeout on all shards.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any shard's output channel is closed.
+    pub async fn check_timeout(&self) -> Result<(), IngestionError> {
+        for shard in &self.shards {
+            shard.check_timeout().await?;
+        }
+        Ok(())
+    }
+
+    /// Get the total number of pending points across all shards.
+    pub async fn pending_count(&self) -> usize {
+        let mut total = 0;
+        for shard in &self.shards {
+            total += shard.pending_count().await;
+        }
+        total
+    }
+
+    /// Get the number of shards.
+    pub fn shard_count(&self) -> usize {
+        self.shard_count
     }
 }
 

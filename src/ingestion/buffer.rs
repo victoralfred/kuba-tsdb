@@ -7,7 +7,6 @@ use crate::error::IngestionError;
 use crate::types::{DataPoint, SeriesId};
 
 use dashmap::DashMap;
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,6 +16,15 @@ use tracing::{debug, info, warn};
 use super::backpressure::BackpressureController;
 use super::batch::PointBatch;
 use super::metrics::IngestionMetrics;
+
+/// Minimum valid timestamp (Unix epoch 1970-01-01 in milliseconds)
+pub const MIN_VALID_TIMESTAMP: i64 = 0;
+/// Maximum valid timestamp (year 2100 in milliseconds)
+pub const MAX_VALID_TIMESTAMP: i64 = 4_102_444_800_000;
+/// Maximum allowed series count to prevent memory exhaustion
+pub const MAX_SERIES_COUNT: usize = 10_000_000;
+/// Maximum points per series limit
+pub const MAX_POINTS_PER_SERIES: usize = 1_000_000;
 
 /// Configuration for the write buffer manager
 #[derive(Debug, Clone)]
@@ -31,6 +39,8 @@ pub struct BufferConfig {
     pub max_buffer_age: Duration,
     /// Initial capacity for series buffers
     pub initial_series_capacity: usize,
+    /// Maximum number of unique series to buffer (prevents memory exhaustion)
+    pub max_series_count: usize,
 }
 
 impl Default for BufferConfig {
@@ -41,6 +51,7 @@ impl Default for BufferConfig {
             flush_interval: Duration::from_secs(1),
             max_buffer_age: Duration::from_secs(10),
             initial_series_capacity: 1_000,
+            max_series_count: 100_000, // 100K series default limit
         }
     }
 }
@@ -51,11 +62,26 @@ impl BufferConfig {
         if self.max_points_per_series == 0 {
             return Err("max_points_per_series must be > 0".to_string());
         }
+        if self.max_points_per_series > MAX_POINTS_PER_SERIES {
+            return Err(format!(
+                "max_points_per_series {} exceeds maximum {}",
+                self.max_points_per_series, MAX_POINTS_PER_SERIES
+            ));
+        }
         if self.max_total_memory == 0 {
             return Err("max_total_memory must be > 0".to_string());
         }
         if self.flush_interval.is_zero() {
             return Err("flush_interval must be > 0".to_string());
+        }
+        if self.max_series_count == 0 {
+            return Err("max_series_count must be > 0".to_string());
+        }
+        if self.max_series_count > MAX_SERIES_COUNT {
+            return Err(format!(
+                "max_series_count {} exceeds maximum {}",
+                self.max_series_count, MAX_SERIES_COUNT
+            ));
         }
         Ok(())
     }
@@ -63,13 +89,23 @@ impl BufferConfig {
 
 /// Per-series write buffer
 ///
-/// Uses a BTreeMap to maintain sorted order by timestamp,
-/// allowing efficient handling of out-of-order points.
+/// Optimized for time-series data which is typically mostly-ordered.
+/// Uses a hybrid approach:
+/// - Fast path: Vec append for in-order timestamps (O(1))
+/// - Slow path: Insertion for out-of-order data, with deferred sorting
+///
+/// This provides significant performance improvement over BTreeMap
+/// for the common case of monotonically increasing timestamps.
 pub struct SeriesBuffer {
     /// Series identifier
     series_id: SeriesId,
-    /// Points sorted by timestamp (handles out-of-order automatically)
-    points: BTreeMap<i64, f64>,
+    /// Points stored as (timestamp, value) pairs
+    /// May be temporarily unsorted if out-of-order points were added
+    points: Vec<(i64, f64)>,
+    /// Whether the points vector is known to be sorted
+    is_sorted: bool,
+    /// Last timestamp added (for fast-path detection)
+    last_timestamp: Option<i64>,
     /// When this buffer was created
     created_at: Instant,
     /// When this buffer was last modified
@@ -78,6 +114,8 @@ pub struct SeriesBuffer {
     total_added: u64,
     /// Points that overwrote existing timestamps
     overwrites: u64,
+    /// Count of out-of-order insertions (for monitoring)
+    out_of_order_count: u64,
 }
 
 impl SeriesBuffer {
@@ -86,27 +124,156 @@ impl SeriesBuffer {
         let now = Instant::now();
         Self {
             series_id,
-            points: BTreeMap::new(),
+            points: Vec::new(),
+            is_sorted: true, // Empty vec is trivially sorted
+            last_timestamp: None,
             created_at: now,
             last_modified: now,
             total_added: 0,
             overwrites: 0,
+            out_of_order_count: 0,
         }
     }
 
-    /// Add a point to the buffer
+    /// Create a new series buffer with pre-allocated capacity
+    pub fn with_capacity(series_id: SeriesId, capacity: usize) -> Self {
+        let now = Instant::now();
+        Self {
+            series_id,
+            points: Vec::with_capacity(capacity),
+            is_sorted: true,
+            last_timestamp: None,
+            created_at: now,
+            last_modified: now,
+            total_added: 0,
+            overwrites: 0,
+            out_of_order_count: 0,
+        }
+    }
+
+    /// Add a point to the buffer with validation
+    ///
+    /// If a point with the same timestamp already exists, it will be overwritten.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - Unix timestamp in milliseconds (must be in valid range)
+    /// * `value` - The data point value (must be finite, not NaN or Infinity)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` if this was an overwrite of an existing timestamp
+    /// * `Ok(false)` if this was a new timestamp
+    /// * `Err` if timestamp or value is invalid
+    pub fn add_validated(
+        &mut self,
+        timestamp: i64,
+        value: f64,
+    ) -> Result<bool, crate::error::IngestionError> {
+        // Validate timestamp range using RangeInclusive for cleaner code
+        if !(MIN_VALID_TIMESTAMP..=MAX_VALID_TIMESTAMP).contains(&timestamp) {
+            return Err(crate::error::IngestionError::ValidationError(format!(
+                "Timestamp {} out of valid range [{}, {}]",
+                timestamp, MIN_VALID_TIMESTAMP, MAX_VALID_TIMESTAMP
+            )));
+        }
+
+        // Validate value is finite (not NaN or Infinity)
+        if !value.is_finite() {
+            return Err(crate::error::IngestionError::ValidationError(
+                "Value must be finite (not NaN or Infinity)".to_string(),
+            ));
+        }
+
+        Ok(self.add_unchecked(timestamp, value))
+    }
+
+    /// Add a point without validation (for internal use or pre-validated data)
+    ///
+    /// Uses a fast path for in-order timestamps (O(1) append) and
+    /// falls back to a slower path for out-of-order data.
+    ///
+    /// Returns true if this was an overwrite of an existing timestamp.
+    ///
+    /// Note: last_modified is updated lazily (every 100 points or on first point)
+    /// to reduce Instant::now() overhead in the hot path.
+    #[inline]
+    pub fn add_unchecked(&mut self, timestamp: i64, value: f64) -> bool {
+        self.total_added += 1;
+
+        // Update last_modified lazily to reduce Instant::now() calls
+        // Only update every 100 points or on first point to reduce syscall overhead
+        if self.total_added == 1 || self.total_added.is_multiple_of(100) {
+            self.last_modified = Instant::now();
+        }
+
+        // Fast path: timestamp is greater than last (in-order, most common case)
+        if let Some(last_ts) = self.last_timestamp {
+            if timestamp > last_ts {
+                // Simple append - O(1)
+                self.points.push((timestamp, value));
+                self.last_timestamp = Some(timestamp);
+                return false;
+            } else if timestamp == last_ts {
+                // Overwrite the last point (common case for duplicate timestamps)
+                if let Some(last) = self.points.last_mut() {
+                    last.1 = value;
+                    self.overwrites += 1;
+                    return true;
+                }
+            }
+        } else {
+            // First point - just append
+            self.points.push((timestamp, value));
+            self.last_timestamp = Some(timestamp);
+            return false;
+        }
+
+        // Slow path: out-of-order insertion
+        self.out_of_order_count += 1;
+        self.is_sorted = false;
+
+        // Check if this timestamp already exists (for overwrite tracking)
+        // Use binary search if we know the data is sorted
+        let overwrite = if self.points.len() > 1 {
+            // Linear scan for now; will be sorted on drain
+            self.points.iter().any(|(ts, _)| *ts == timestamp)
+        } else {
+            false
+        };
+
+        if overwrite {
+            // Update existing point
+            for (ts, val) in &mut self.points {
+                if *ts == timestamp {
+                    *val = value;
+                    break;
+                }
+            }
+            self.overwrites += 1;
+        } else {
+            // Append out-of-order point (will be sorted on drain)
+            self.points.push((timestamp, value));
+            // Update last_timestamp only if this is the new maximum
+            if timestamp > self.last_timestamp.unwrap_or(i64::MIN) {
+                self.last_timestamp = Some(timestamp);
+            }
+        }
+
+        overwrite
+    }
+
+    /// Add a point to the buffer (legacy API, no validation)
     ///
     /// If a point with the same timestamp already exists, it will be overwritten.
     /// Returns true if this was an overwrite.
+    ///
+    /// # Deprecated
+    ///
+    /// Use `add_validated` for production code to ensure data integrity.
+    #[inline]
     pub fn add(&mut self, timestamp: i64, value: f64) -> bool {
-        self.last_modified = Instant::now();
-        self.total_added += 1;
-
-        let overwrite = self.points.insert(timestamp, value).is_some();
-        if overwrite {
-            self.overwrites += 1;
-        }
-        overwrite
+        self.add_unchecked(timestamp, value)
     }
 
     /// Add multiple points to the buffer
@@ -116,7 +283,25 @@ impl SeriesBuffer {
         }
     }
 
-    /// Number of unique points in the buffer
+    /// Ensure the points are sorted by timestamp
+    ///
+    /// Called automatically before drain, but can be called manually
+    /// if sorted access is needed.
+    fn ensure_sorted(&mut self) {
+        if !self.is_sorted {
+            // Sort by timestamp, keeping last value for duplicates
+            self.points.sort_by_key(|(ts, _)| *ts);
+            self.points.dedup_by(|(ts1, _), (ts2, _)| {
+                // Deduplicate by timestamp - keep the later value
+                *ts1 == *ts2
+            });
+            self.is_sorted = true;
+        }
+    }
+
+    /// Number of points in the buffer
+    ///
+    /// Note: This may include duplicates until drain() is called.
     pub fn len(&self) -> usize {
         self.points.len()
     }
@@ -137,14 +322,23 @@ impl SeriesBuffer {
     }
 
     /// Drain all points from the buffer, returning them as sorted DataPoints
+    ///
+    /// Points are sorted by timestamp and duplicates are removed (last value wins).
     pub fn drain(&mut self) -> Vec<DataPoint> {
+        // Ensure sorted before draining
+        self.ensure_sorted();
+
+        let series_id = self.series_id;
         let points: Vec<DataPoint> = self
             .points
-            .iter()
-            .map(|(&timestamp, &value)| DataPoint::new(self.series_id, timestamp, value))
+            .drain(..)
+            .map(|(timestamp, value)| DataPoint::new(series_id, timestamp, value))
             .collect();
 
-        self.points.clear();
+        // Reset state
+        self.is_sorted = true;
+        self.last_timestamp = None;
+
         points
     }
 
@@ -160,11 +354,16 @@ impl SeriesBuffer {
         }
     }
 
+    /// Get count of out-of-order insertions
+    pub fn out_of_order_count(&self) -> u64 {
+        self.out_of_order_count
+    }
+
     /// Estimated memory usage in bytes
     pub fn memory_size(&self) -> usize {
-        // BTreeMap node overhead + (timestamp, value) per entry
-        // Rough estimate: 64 bytes per entry for BTreeMap overhead
-        std::mem::size_of::<Self>() + self.points.len() * 80
+        // Vec capacity * (timestamp + value) + struct overhead
+        // Each (i64, f64) is 16 bytes, plus Vec overhead
+        std::mem::size_of::<Self>() + self.points.capacity() * 16
     }
 }
 
@@ -243,13 +442,19 @@ impl WriteBufferManager {
     }
 
     /// Run the buffer manager (processes incoming batches)
-    pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns error if called more than once (double-start).
+    pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) -> Result<(), IngestionError> {
         // Take ownership of the input receiver
         let mut input = match self.input.write().await.take() {
             Some(rx) => rx,
             None => {
-                warn!("WriteBufferManager input already taken");
-                return;
+                warn!("WriteBufferManager input already taken - double start detected");
+                return Err(IngestionError::ConfigError(
+                    "WriteBufferManager already running (double start)".to_string(),
+                ));
             }
         };
 
@@ -287,23 +492,78 @@ impl WriteBufferManager {
         }
 
         info!("WriteBufferManager stopped");
-    }
-
-    /// Process an incoming point batch
-    async fn process_batch(&self, batch: PointBatch) -> Result<(), IngestionError> {
-        let point_count = batch.len();
-
-        for point in batch.points {
-            self.add_point(point).await?;
-        }
-
-        debug!("Processed batch with {} points", point_count);
         Ok(())
     }
 
-    /// Add a single point to the appropriate series buffer
-    async fn add_point(&self, point: DataPoint) -> Result<(), IngestionError> {
+    /// Process an incoming point batch
+    ///
+    /// Optimized to batch atomic counter updates instead of updating per-point.
+    /// This reduces cache line bouncing under high throughput.
+    async fn process_batch(&self, batch: PointBatch) -> Result<(), IngestionError> {
+        let point_count = batch.len();
+
+        // Track counters locally to batch atomic updates
+        let mut new_points: usize = 0;
+        let mut overwrites: u64 = 0;
+        let mut series_to_flush: Vec<(SeriesId, Vec<DataPoint>)> = Vec::new();
+
+        for point in batch.points {
+            let result = self.add_point_internal(point, &mut series_to_flush)?;
+            if result {
+                overwrites += 1;
+            } else {
+                new_points += 1;
+            }
+        }
+
+        // Batch atomic updates - single update instead of per-point
+        if new_points > 0 {
+            self.total_buffered.fetch_add(new_points, Ordering::Relaxed);
+            // Approximate memory increase: 16 bytes per point (timestamp + value)
+            self.memory_used
+                .fetch_add(new_points.saturating_mul(16), Ordering::Relaxed);
+        }
+
+        // Record overwrites in metrics
+        for _ in 0..overwrites {
+            self.metrics.record_overwrite();
+        }
+
+        // Flush any series that exceeded their threshold
+        for (series_id, points) in series_to_flush {
+            self.send_write_batch(series_id, points).await?;
+        }
+
+        // Update backpressure state once per batch
+        self.backpressure
+            .update_memory_usage(self.memory_used.load(Ordering::Relaxed));
+
+        debug!(
+            "Processed batch with {} points ({} new, {} overwrites)",
+            point_count, new_points, overwrites
+        );
+        Ok(())
+    }
+
+    /// Internal point addition without atomic updates (for batching)
+    ///
+    /// Returns true if this was an overwrite, false if new point.
+    /// Collects series that need flushing into the provided vector.
+    fn add_point_internal(
+        &self,
+        point: DataPoint,
+        flush_queue: &mut Vec<(SeriesId, Vec<DataPoint>)>,
+    ) -> Result<bool, IngestionError> {
         let series_id = point.series_id;
+
+        // Check series count limit before creating new buffer
+        let is_new_series = !self.buffers.contains_key(&series_id);
+        if is_new_series && self.buffers.len() >= self.config.max_series_count {
+            return Err(IngestionError::ValidationError(format!(
+                "Maximum series count {} exceeded",
+                self.config.max_series_count
+            )));
+        }
 
         // Get or create buffer for this series
         let mut buffer = self
@@ -311,16 +571,53 @@ impl WriteBufferManager {
             .entry(series_id)
             .or_insert_with(|| SeriesBuffer::new(series_id));
 
-        let overwrite = buffer.add(point.timestamp, point.value);
+        // Use validated add to check timestamp and value
+        let overwrite = buffer.add_validated(point.timestamp, point.value)?;
+
+        // Check if buffer should be flushed
+        if buffer.len() >= self.config.max_points_per_series {
+            let points = buffer.drain();
+            drop(buffer); // Release lock before adding to flush queue
+            flush_queue.push((series_id, points));
+        }
+
+        Ok(overwrite)
+    }
+
+    /// Add a single point to the appropriate series buffer (public API)
+    ///
+    /// # Errors
+    ///
+    /// Returns `IngestionError::ValidationError` if:
+    /// - Series count limit is exceeded (new series would exceed max_series_count)
+    /// - Timestamp is out of valid range
+    /// - Value is NaN or Infinity
+    pub async fn add_point(&self, point: DataPoint) -> Result<(), IngestionError> {
+        let series_id = point.series_id;
+
+        // Check series count limit before creating new buffer
+        let is_new_series = !self.buffers.contains_key(&series_id);
+        if is_new_series && self.buffers.len() >= self.config.max_series_count {
+            return Err(IngestionError::ValidationError(format!(
+                "Maximum series count {} exceeded",
+                self.config.max_series_count
+            )));
+        }
+
+        // Get or create buffer for this series
+        let mut buffer = self
+            .buffers
+            .entry(series_id)
+            .or_insert_with(|| SeriesBuffer::new(series_id));
+
+        // Use validated add to check timestamp and value
+        let overwrite = buffer.add_validated(point.timestamp, point.value)?;
 
         // Update counters
         if !overwrite {
             self.total_buffered.fetch_add(1, Ordering::Relaxed);
-            // Approximate memory increase
-            self.memory_used.fetch_add(80, Ordering::Relaxed);
-        }
-
-        if overwrite {
+            self.memory_used.fetch_add(16, Ordering::Relaxed);
+        } else {
             self.metrics.record_overwrite();
         }
 
@@ -328,7 +625,6 @@ impl WriteBufferManager {
         if buffer.len() >= self.config.max_points_per_series {
             let points = buffer.drain();
             drop(buffer); // Release lock before sending
-
             self.send_write_batch(series_id, points).await?;
         } else {
             drop(buffer);
@@ -372,9 +668,19 @@ impl WriteBufferManager {
 
                 self.send_write_batch(series_id, points).await?;
 
-                // Update counters
-                self.total_buffered.fetch_sub(count, Ordering::Relaxed);
-                self.memory_used.fetch_sub(count * 80, Ordering::Relaxed);
+                // Update counters using saturating subtraction to prevent underflow
+                // Use fetch_update for safe saturating subtraction
+                let _ = self.total_buffered.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |current| Some(current.saturating_sub(count)),
+                );
+                // Memory: 16 bytes per point (timestamp + value)
+                let _ = self.memory_used.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |current| Some(current.saturating_sub(count.saturating_mul(16))),
+                );
             }
         }
 

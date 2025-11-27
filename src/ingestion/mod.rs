@@ -60,7 +60,7 @@ pub mod metrics;
 pub mod writer;
 
 pub use backpressure::{BackpressureConfig, BackpressureController, BackpressureStrategy};
-pub use batch::{BatchConfig, Batcher, PointBatch};
+pub use batch::{BatchConfig, Batcher, PointBatch, ShardedBatcher, DEFAULT_SHARD_COUNT};
 pub use buffer::{BufferConfig, SeriesBuffer, WriteBufferManager};
 pub use metrics::IngestionMetrics;
 pub use writer::{ParallelWriter, WriteWorker, WriterConfig};
@@ -68,9 +68,13 @@ pub use writer::{ParallelWriter, WriteWorker, WriterConfig};
 use crate::error::IngestionError;
 use crate::types::DataPoint;
 
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+/// Maximum allowed batch size to prevent memory spikes (100K points)
+pub const MAX_INGEST_BATCH_SIZE: usize = 100_000;
 
 /// Configuration for the ingestion pipeline
 #[derive(Debug, Clone)]
@@ -262,7 +266,9 @@ impl IngestionPipeline {
             })?;
 
         tokio::spawn(async move {
-            buffer_manager.run(shutdown_rx).await;
+            if let Err(e) = buffer_manager.run(shutdown_rx).await {
+                warn!("WriteBufferManager error: {}", e);
+            }
         });
 
         // Start parallel writer
@@ -276,7 +282,9 @@ impl IngestionPipeline {
             })?;
 
         tokio::spawn(async move {
-            writer.run(shutdown_rx).await;
+            if let Err(e) = writer.run(shutdown_rx).await {
+                warn!("ParallelWriter error: {}", e);
+            }
         });
 
         info!("Ingestion pipeline started");
@@ -291,7 +299,14 @@ impl IngestionPipeline {
     ///
     /// # Returns
     ///
-    /// Result indicating success or backpressure/error
+    /// Result indicating success or error
+    ///
+    /// # Errors
+    ///
+    /// * `IngestionError::Backpressure` - Pipeline is under memory pressure
+    /// * `IngestionError::ValidationError` - Point has invalid timestamp/value
+    /// * `IngestionError::ChannelClosed` - Internal channel was closed
+    #[must_use = "this returns a Result that should be checked"]
     pub async fn ingest(&self, point: DataPoint) -> Result<(), IngestionError> {
         // Check backpressure before accepting
         if self.backpressure.should_reject() {
@@ -312,14 +327,30 @@ impl IngestionPipeline {
     ///
     /// # Arguments
     ///
-    /// * `points` - Vector of data points to ingest
+    /// * `points` - Vector of data points to ingest (max 100,000 points)
     ///
     /// # Returns
     ///
-    /// Result indicating success or backpressure/error
+    /// Result indicating success or error
+    ///
+    /// # Errors
+    ///
+    /// * `IngestionError::ValidationError` - Batch size exceeds maximum (100K points)
+    /// * `IngestionError::Backpressure` - Pipeline is under memory pressure
+    /// * `IngestionError::ChannelClosed` - Internal channel was closed
+    #[must_use = "this returns a Result that should be checked"]
     pub async fn ingest_batch(&self, points: Vec<DataPoint>) -> Result<(), IngestionError> {
         if points.is_empty() {
             return Ok(());
+        }
+
+        // Check batch size limit to prevent memory spikes
+        if points.len() > MAX_INGEST_BATCH_SIZE {
+            return Err(IngestionError::ValidationError(format!(
+                "Batch size {} exceeds maximum allowed {}",
+                points.len(),
+                MAX_INGEST_BATCH_SIZE
+            )));
         }
 
         // Check backpressure before accepting
@@ -363,26 +394,36 @@ impl IngestionPipeline {
     /// Gracefully shutdown the pipeline
     ///
     /// Flushes all pending data and stops background tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if flush fails during shutdown. The shutdown signal
+    /// is still sent even if flush fails, but the error is propagated.
     pub async fn shutdown(mut self) -> Result<(), IngestionError> {
         info!("Shutting down ingestion pipeline");
 
-        // Flush remaining data
-        if let Err(e) = self.flush().await {
-            warn!("Error flushing during shutdown: {}", e);
-        }
+        // Flush remaining data - capture any error
+        let flush_result = self.flush().await;
 
-        // Send shutdown signal
+        // Send shutdown signal regardless of flush result
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
 
-        info!("Ingestion pipeline shutdown complete");
-        Ok(())
+        // Log completion status
+        if flush_result.is_ok() {
+            info!("Ingestion pipeline shutdown complete");
+        } else {
+            warn!("Ingestion pipeline shutdown with flush errors");
+        }
+
+        // Propagate any flush error after shutdown signal sent
+        flush_result
     }
 }
 
 /// Pipeline statistics snapshot
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PipelineStats {
     /// Total points received
     pub points_received: u64,
@@ -400,6 +441,49 @@ pub struct PipelineStats {
     pub backpressure_active: bool,
     /// Memory used by buffers in bytes
     pub memory_used_bytes: usize,
+}
+
+impl fmt::Display for PipelineStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "received={} written={} rejected={} batches={} buffered={} series={} backpressure={} memory={}",
+            self.points_received,
+            self.points_written,
+            self.points_rejected,
+            self.batches_processed,
+            self.buffer_size,
+            self.active_series,
+            self.backpressure_active,
+            self.memory_used_bytes
+        )
+    }
+}
+
+impl PipelineStats {
+    /// Calculate the write success rate (0.0 - 1.0)
+    ///
+    /// Returns 1.0 if no points have been received.
+    #[must_use]
+    pub fn write_success_rate(&self) -> f64 {
+        if self.points_received > 0 {
+            self.points_written as f64 / self.points_received as f64
+        } else {
+            1.0
+        }
+    }
+
+    /// Calculate the rejection rate (0.0 - 1.0)
+    ///
+    /// Returns 0.0 if no points have been received.
+    #[must_use]
+    pub fn rejection_rate(&self) -> f64 {
+        if self.points_received > 0 {
+            self.points_rejected as f64 / self.points_received as f64
+        } else {
+            0.0
+        }
+    }
 }
 
 #[cfg(test)]
