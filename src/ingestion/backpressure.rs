@@ -57,17 +57,37 @@ impl Default for BackpressureConfig {
     }
 }
 
+/// Maximum allowed memory limit (100 GB) to prevent absurd configurations
+pub const MAX_MEMORY_LIMIT: usize = 100 * 1024 * 1024 * 1024;
+
+/// Maximum allowed queue limit to prevent excessive memory usage
+pub const MAX_QUEUE_LIMIT: usize = 100_000_000;
+
 impl BackpressureConfig {
     /// Validate the configuration
+    ///
+    /// Checks both minimum and maximum bounds to prevent misconfiguration.
     pub fn validate(&self) -> Result<(), String> {
         if self.memory_limit == 0 {
             return Err("memory_limit must be > 0".to_string());
+        }
+        if self.memory_limit > MAX_MEMORY_LIMIT {
+            return Err(format!(
+                "memory_limit {} exceeds maximum allowed {}",
+                self.memory_limit, MAX_MEMORY_LIMIT
+            ));
         }
         if self.memory_warning_threshold > 100 {
             return Err("memory_warning_threshold must be <= 100".to_string());
         }
         if self.queue_limit == 0 {
             return Err("queue_limit must be > 0".to_string());
+        }
+        if self.queue_limit > MAX_QUEUE_LIMIT {
+            return Err(format!(
+                "queue_limit {} exceeds maximum allowed {}",
+                self.queue_limit, MAX_QUEUE_LIMIT
+            ));
         }
         if self.queue_warning_threshold > 100 {
             return Err("queue_warning_threshold must be <= 100".to_string());
@@ -76,13 +96,23 @@ impl BackpressureConfig {
     }
 
     /// Get the memory warning threshold in bytes
+    ///
+    /// Uses saturating arithmetic to prevent overflow with large limits.
     pub fn memory_warning_bytes(&self) -> usize {
-        (self.memory_limit as u64 * self.memory_warning_threshold as u64 / 100) as usize
+        // Use saturating multiplication to prevent overflow
+        let threshold =
+            (self.memory_limit as u64).saturating_mul(self.memory_warning_threshold as u64) / 100;
+        threshold.min(usize::MAX as u64) as usize
     }
 
     /// Get the queue warning threshold
+    ///
+    /// Uses saturating arithmetic to prevent overflow with large limits.
     pub fn queue_warning_count(&self) -> usize {
-        (self.queue_limit as u64 * self.queue_warning_threshold as u64 / 100) as usize
+        // Use saturating multiplication to prevent overflow
+        let threshold =
+            (self.queue_limit as u64).saturating_mul(self.queue_warning_threshold as u64) / 100;
+        threshold.min(usize::MAX as u64) as usize
     }
 }
 
@@ -166,8 +196,16 @@ impl BackpressureController {
     }
 
     /// Decrement queue depth by one
+    ///
+    /// Uses saturating subtraction to prevent underflow if called
+    /// more times than increment_queue.
     pub fn decrement_queue(&self) {
-        self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+        // Use fetch_update with saturating_sub to prevent underflow
+        let _ = self
+            .queue_depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(1))
+            });
         self.check_backpressure();
     }
 
@@ -251,6 +289,87 @@ impl BackpressureController {
             }
             BackpressureStrategy::Block | BackpressureStrategy::DropOldest => false,
         }
+    }
+
+    /// Try to reserve space for incoming points (atomic check-and-reserve)
+    ///
+    /// This addresses the TOCTOU race in the check-then-act pattern by atomically
+    /// checking limits and updating counters. If the reservation fails due to
+    /// exceeding limits, no state is modified.
+    ///
+    /// # Arguments
+    ///
+    /// * `point_count` - Number of points to reserve space for
+    /// * `memory_bytes` - Approximate memory bytes needed
+    ///
+    /// # Returns
+    ///
+    /// `true` if reservation succeeded, `false` if it would exceed limits.
+    pub fn try_reserve(&self, point_count: usize, memory_bytes: usize) -> bool {
+        // Atomic check-and-update for queue depth
+        let queue_reserved =
+            self.queue_depth
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    let new_depth = current.saturating_add(point_count);
+                    if new_depth > self.config.queue_limit {
+                        None // Reject: would exceed limit
+                    } else {
+                        Some(new_depth)
+                    }
+                });
+
+        if queue_reserved.is_err() {
+            // Queue limit would be exceeded
+            self.rejections.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+
+        // Atomic check-and-update for memory
+        let memory_reserved =
+            self.memory_used
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    let new_memory = current.saturating_add(memory_bytes);
+                    if new_memory > self.config.memory_limit {
+                        None // Reject: would exceed limit
+                    } else {
+                        Some(new_memory)
+                    }
+                });
+
+        if memory_reserved.is_err() {
+            // Memory limit would be exceeded - rollback queue reservation
+            let _ = self
+                .queue_depth
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    Some(current.saturating_sub(point_count))
+                });
+            self.rejections.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+
+        // Check and update backpressure state after successful reservation
+        self.check_backpressure();
+        true
+    }
+
+    /// Release previously reserved space (call on error or after processing)
+    ///
+    /// # Arguments
+    ///
+    /// * `point_count` - Number of points to release
+    /// * `memory_bytes` - Memory bytes to release
+    pub fn release(&self, point_count: usize, memory_bytes: usize) {
+        let _ = self
+            .queue_depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(point_count))
+            });
+        let _ = self
+            .memory_used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(memory_bytes))
+            });
+        self.check_backpressure();
     }
 
     /// Wait until backpressure is relieved (for Block strategy)

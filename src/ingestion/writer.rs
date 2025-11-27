@@ -78,28 +78,49 @@ pub struct WriteStats {
 pub struct WriteWorker {
     /// Worker ID
     id: usize,
-    /// Configuration
-    config: WriterConfig,
+    /// Configuration (shared via Arc to avoid cloning per batch)
+    config: Arc<WriterConfig>,
     /// Metrics collector
     metrics: Arc<IngestionMetrics>,
     /// Batches written
     batches_written: AtomicU64,
     /// Points written
     points_written: AtomicU64,
+    /// Bytes written (compressed)
+    bytes_written: AtomicU64,
     /// Write errors
     write_errors: AtomicU64,
+    /// Total retries
+    retries: AtomicU64,
+    /// Total latency in microseconds (for computing average)
+    total_latency_us: AtomicU64,
 }
 
 impl WriteWorker {
-    /// Create a new write worker
+    /// Create a new write worker with an owned config
     pub fn new(id: usize, config: WriterConfig, metrics: Arc<IngestionMetrics>) -> Self {
+        Self::with_shared_config(id, Arc::new(config), metrics)
+    }
+
+    /// Create a new write worker with a shared config
+    ///
+    /// This is more efficient when creating multiple workers, as the config
+    /// is not cloned for each worker.
+    pub fn with_shared_config(
+        id: usize,
+        config: Arc<WriterConfig>,
+        metrics: Arc<IngestionMetrics>,
+    ) -> Self {
         Self {
             id,
             config,
             metrics,
             batches_written: AtomicU64::new(0),
             points_written: AtomicU64::new(0),
+            bytes_written: AtomicU64::new(0),
             write_errors: AtomicU64::new(0),
+            retries: AtomicU64::new(0),
+            total_latency_us: AtomicU64::new(0),
         }
     }
 
@@ -129,10 +150,16 @@ impl WriteWorker {
             match self.write_points(&batch).await {
                 Ok(bytes_written) => {
                     let latency = start.elapsed();
+                    let latency_us = latency.as_micros() as u64;
 
+                    // Update all tracked stats
                     self.batches_written.fetch_add(1, Ordering::Relaxed);
                     self.points_written
                         .fetch_add(point_count, Ordering::Relaxed);
+                    self.bytes_written
+                        .fetch_add(bytes_written, Ordering::Relaxed);
+                    self.total_latency_us
+                        .fetch_add(latency_us, Ordering::Relaxed);
 
                     self.metrics
                         .record_write(point_count, bytes_written, latency);
@@ -147,6 +174,7 @@ impl WriteWorker {
                 Err(e) => {
                     last_error = Some(e);
                     if attempt < self.config.max_retries {
+                        self.retries.fetch_add(1, Ordering::Relaxed);
                         self.metrics.record_retry();
                     }
                 }
@@ -189,33 +217,43 @@ impl WriteWorker {
 
     /// Get worker statistics
     pub fn stats(&self) -> WriteStats {
+        let batches = self.batches_written.load(Ordering::Relaxed);
+        let total_latency = self.total_latency_us.load(Ordering::Relaxed);
+
+        // Calculate average latency (avoid division by zero)
+        let avg_latency_us = if batches > 0 {
+            total_latency / batches
+        } else {
+            0
+        };
+
         WriteStats {
-            batches_written: self.batches_written.load(Ordering::Relaxed),
+            batches_written: batches,
             points_written: self.points_written.load(Ordering::Relaxed),
-            bytes_written: 0, // Would track actual bytes
+            bytes_written: self.bytes_written.load(Ordering::Relaxed),
             write_errors: self.write_errors.load(Ordering::Relaxed),
-            retries: 0,
-            avg_latency_us: 0,
+            retries: self.retries.load(Ordering::Relaxed),
+            avg_latency_us,
         }
     }
 }
 
 /// Parallel writer that distributes work across multiple workers
 pub struct ParallelWriter {
-    /// Configuration
-    config: WriterConfig,
+    /// Configuration (shared via Arc to avoid cloning per batch)
+    config: Arc<WriterConfig>,
     /// Input channel for write batches
     input: tokio::sync::RwLock<Option<mpsc::Receiver<WriteBatch>>>,
     /// Metrics collector
     metrics: Arc<IngestionMetrics>,
     /// Concurrency limiter
     semaphore: Arc<Semaphore>,
-    /// Active write count
-    active_writes: AtomicUsize,
-    /// Total batches processed
-    batches_processed: AtomicU64,
-    /// Total points written
-    points_written: AtomicU64,
+    /// Active write count (wrapped in Arc for safe sharing across tasks)
+    active_writes: Arc<AtomicUsize>,
+    /// Total batches processed (wrapped in Arc for safe sharing across tasks)
+    batches_processed: Arc<AtomicU64>,
+    /// Total points written (wrapped in Arc for safe sharing across tasks)
+    points_written: Arc<AtomicU64>,
 }
 
 impl ParallelWriter {
@@ -229,24 +267,33 @@ impl ParallelWriter {
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
         Self {
-            config,
+            config: Arc::new(config),
             input: tokio::sync::RwLock::new(Some(input)),
             metrics,
             semaphore,
-            active_writes: AtomicUsize::new(0),
-            batches_processed: AtomicU64::new(0),
-            points_written: AtomicU64::new(0),
+            active_writes: Arc::new(AtomicUsize::new(0)),
+            batches_processed: Arc::new(AtomicU64::new(0)),
+            points_written: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Run the parallel writer
-    pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns error if called more than once (double-start).
+    pub async fn run(
+        &self,
+        mut shutdown: broadcast::Receiver<()>,
+    ) -> Result<(), crate::error::IngestionError> {
         // Take ownership of the input receiver
         let mut input = match self.input.write().await.take() {
             Some(rx) => rx,
             None => {
-                warn!("ParallelWriter input already taken");
-                return;
+                warn!("ParallelWriter input already taken - double start detected");
+                return Err(crate::error::IngestionError::ConfigError(
+                    "ParallelWriter already running (double start)".to_string(),
+                ));
             }
         };
 
@@ -270,17 +317,20 @@ impl ParallelWriter {
                     self.active_writes.fetch_add(1, Ordering::Relaxed);
 
                     let metrics = Arc::clone(&self.metrics);
-                    let config = self.config.clone();
-                    let batches_processed = &self.batches_processed;
-                    let points_written = &self.points_written;
-                    let active_writes = &self.active_writes;
+                    // Use Arc::clone instead of config.clone() to avoid allocation
+                    let config = Arc::clone(&self.config);
+
+                    // Clone Arc references to move into spawned task
+                    let batches_processed = Arc::clone(&self.batches_processed);
+                    let points_written = Arc::clone(&self.points_written);
+                    let active_writes = Arc::clone(&self.active_writes);
 
                     // Spawn task to process the batch
                     let point_count = batch.points.len() as u64;
                     let batch_seq = batch.sequence;
 
-                    // Create worker for this batch
-                    let worker = WriteWorker::new(0, config, metrics);
+                    // Create worker for this batch using shared config
+                    let worker = WriteWorker::with_shared_config(0, config, metrics);
 
                     tokio::spawn(async move {
                         let result = worker.process_batch(batch).await;
@@ -289,13 +339,13 @@ impl ParallelWriter {
                             error!("Failed to write batch {}: {}", batch_seq, e);
                         }
 
+                        // Update counters AFTER task completes (fixes race condition)
+                        batches_processed.fetch_add(1, Ordering::Relaxed);
+                        points_written.fetch_add(point_count, Ordering::Relaxed);
+                        active_writes.fetch_sub(1, Ordering::Relaxed);
+
                         drop(permit);
                     });
-
-                    // Update counters (approximate - actual count comes from worker)
-                    batches_processed.fetch_add(1, Ordering::Relaxed);
-                    points_written.fetch_add(point_count, Ordering::Relaxed);
-                    active_writes.fetch_sub(1, Ordering::Relaxed);
                 }
 
                 _ = shutdown.recv() => {
@@ -305,21 +355,42 @@ impl ParallelWriter {
             }
         }
 
-        // Wait for active writes to complete
-        self.wait_for_completion().await;
+        // Wait for active writes to complete (with timeout)
+        if let Err(e) = self.wait_for_completion().await {
+            warn!("Error during shutdown wait: {}", e);
+        }
 
         info!("ParallelWriter stopped");
+        Ok(())
     }
 
-    /// Wait for all active writes to complete
-    async fn wait_for_completion(&self) {
+    /// Wait for all active writes to complete with timeout
+    ///
+    /// Waits up to 30 seconds for all active writes to complete.
+    /// Returns error if timeout is exceeded.
+    async fn wait_for_completion(&self) -> Result<(), crate::error::IngestionError> {
         let max_concurrent = self.config.num_workers * self.config.max_concurrent_writes;
+        let timeout = Duration::from_secs(30);
+        let start = Instant::now();
 
         // Wait until all permits are available (meaning no active writes)
         loop {
             let available = self.semaphore.available_permits();
             if available == max_concurrent {
-                break;
+                return Ok(());
+            }
+
+            // Check timeout
+            if start.elapsed() > timeout {
+                let remaining = max_concurrent - available;
+                warn!(
+                    "Shutdown timeout: {} writes still active after {:?}",
+                    remaining, timeout
+                );
+                return Err(crate::error::IngestionError::ShutdownError(format!(
+                    "Timeout waiting for {} active writes to complete",
+                    remaining
+                )));
             }
 
             debug!(
