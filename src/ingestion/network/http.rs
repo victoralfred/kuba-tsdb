@@ -146,7 +146,8 @@ impl HttpListener {
             None => None,
         };
 
-        let rate_limiter = Arc::new(RateLimiter::new(Default::default()));
+        // Use rate limiter with background cleanup task to prevent unbounded memory growth
+        let rate_limiter = RateLimiter::new_with_cleanup(Default::default());
 
         let state = AppState {
             rate_limiter,
