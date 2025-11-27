@@ -120,7 +120,10 @@ impl WriteWorker {
         for attempt in 0..=self.config.max_retries {
             if attempt > 0 {
                 tokio::time::sleep(self.config.retry_delay).await;
-                debug!("Worker {} retry {} for batch {}", self.id, attempt, batch.sequence);
+                debug!(
+                    "Worker {} retry {} for batch {}",
+                    self.id, attempt, batch.sequence
+                );
             }
 
             match self.write_points(&batch).await {
@@ -128,9 +131,11 @@ impl WriteWorker {
                     let latency = start.elapsed();
 
                     self.batches_written.fetch_add(1, Ordering::Relaxed);
-                    self.points_written.fetch_add(point_count, Ordering::Relaxed);
+                    self.points_written
+                        .fetch_add(point_count, Ordering::Relaxed);
 
-                    self.metrics.record_write(point_count, bytes_written, latency);
+                    self.metrics
+                        .record_write(point_count, bytes_written, latency);
 
                     debug!(
                         "Worker {} wrote batch {} ({} points, {} bytes) in {:?}",
@@ -152,9 +157,8 @@ impl WriteWorker {
         self.write_errors.fetch_add(1, Ordering::Relaxed);
         self.metrics.record_write_error();
 
-        Err(last_error.unwrap_or_else(|| {
-            IngestionError::WriteError("Unknown write error".to_string())
-        }))
+        Err(last_error
+            .unwrap_or_else(|| IngestionError::WriteError("Unknown write error".to_string())))
     }
 
     /// Write points to storage (stub - will integrate with storage layer)
@@ -318,7 +322,10 @@ impl ParallelWriter {
                 break;
             }
 
-            debug!("Waiting for {} active writes to complete", max_concurrent - available);
+            debug!(
+                "Waiting for {} active writes to complete",
+                max_concurrent - available
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -370,10 +377,7 @@ mod tests {
 
         let batch = WriteBatch {
             series_id: 1,
-            points: vec![
-                DataPoint::new(1, 1000, 42.0),
-                DataPoint::new(1, 1001, 43.0),
-            ],
+            points: vec![DataPoint::new(1, 1000, 42.0), DataPoint::new(1, 1001, 43.0)],
             sequence: 0,
         };
 

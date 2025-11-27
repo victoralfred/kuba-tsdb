@@ -60,10 +60,10 @@ pub mod metrics;
 pub mod writer;
 
 pub use backpressure::{BackpressureConfig, BackpressureController, BackpressureStrategy};
-pub use batch::{PointBatch, BatchConfig, Batcher};
+pub use batch::{BatchConfig, Batcher, PointBatch};
 pub use buffer::{BufferConfig, SeriesBuffer, WriteBufferManager};
 pub use metrics::IngestionMetrics;
-pub use writer::{WriterConfig, WriteWorker, ParallelWriter};
+pub use writer::{ParallelWriter, WriteWorker, WriterConfig};
 
 use crate::error::IngestionError;
 use crate::types::DataPoint;
@@ -231,7 +231,10 @@ impl IngestionPipeline {
 
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
-        info!("Ingestion pipeline initialized with {} writer workers", config.writer.num_workers);
+        info!(
+            "Ingestion pipeline initialized with {} writer workers",
+            config.writer.num_workers
+        );
 
         Ok(Self {
             batcher,
@@ -250,9 +253,13 @@ impl IngestionPipeline {
     pub async fn start(&self) -> Result<(), IngestionError> {
         // Start buffer manager flush task
         let buffer_manager = Arc::clone(&self.buffer_manager);
-        let shutdown_rx = self.shutdown_tx.as_ref()
+        let shutdown_rx = self
+            .shutdown_tx
+            .as_ref()
             .map(|tx| tx.subscribe())
-            .ok_or_else(|| IngestionError::ShutdownError("Pipeline already shut down".to_string()))?;
+            .ok_or_else(|| {
+                IngestionError::ShutdownError("Pipeline already shut down".to_string())
+            })?;
 
         tokio::spawn(async move {
             buffer_manager.run(shutdown_rx).await;
@@ -260,9 +267,13 @@ impl IngestionPipeline {
 
         // Start parallel writer
         let writer = Arc::clone(&self.writer);
-        let shutdown_rx = self.shutdown_tx.as_ref()
+        let shutdown_rx = self
+            .shutdown_tx
+            .as_ref()
             .map(|tx| tx.subscribe())
-            .ok_or_else(|| IngestionError::ShutdownError("Pipeline already shut down".to_string()))?;
+            .ok_or_else(|| {
+                IngestionError::ShutdownError("Pipeline already shut down".to_string())
+            })?;
 
         tokio::spawn(async move {
             writer.run(shutdown_rx).await;
@@ -286,7 +297,7 @@ impl IngestionPipeline {
         if self.backpressure.should_reject() {
             self.metrics.record_rejected(1);
             return Err(IngestionError::Backpressure(
-                "Pipeline under pressure, try again later".to_string()
+                "Pipeline under pressure, try again later".to_string(),
             ));
         }
 
@@ -315,7 +326,7 @@ impl IngestionPipeline {
         if self.backpressure.should_reject() {
             self.metrics.record_rejected(points.len() as u64);
             return Err(IngestionError::Backpressure(
-                "Pipeline under pressure, try again later".to_string()
+                "Pipeline under pressure, try again later".to_string(),
             ));
         }
 
@@ -404,9 +415,7 @@ mod tests {
 
     #[test]
     fn test_ingestion_config_builder() {
-        let config = IngestionConfig::builder()
-            .channel_buffer_size(5000)
-            .build();
+        let config = IngestionConfig::builder().channel_buffer_size(5000).build();
 
         assert!(config.is_ok());
         assert_eq!(config.unwrap().channel_buffer_size, 5000);
