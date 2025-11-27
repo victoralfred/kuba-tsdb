@@ -57,6 +57,12 @@ pub mod backpressure;
 pub mod batch;
 pub mod buffer;
 pub mod metrics;
+pub mod network;
+pub mod protocol;
+pub mod routing;
+pub mod schema;
+pub mod spill;
+pub mod wal;
 pub mod writer;
 
 pub use backpressure::{BackpressureConfig, BackpressureController, BackpressureStrategy};

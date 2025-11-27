@@ -75,6 +75,31 @@ rayon = "1.8"
 # Security
 governor = "0.10.2"
 
+# TLS
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+
+# Network utilities
+socket2 = { version = "0.5", features = ["all"] }
+
+# HTTP server (for metrics/health endpoints)
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+hyper = { version = "1.0", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+# Protocol parsing
+smallvec = { version = "1.13", features = ["serde"] }
+prost = "0.13"
+
+# Compression
+lz4_flex = "0.11"
+
+# Checksums
+crc32fast = "1.4"
+
 # Configuration
 toml = "0.9.8"
 
