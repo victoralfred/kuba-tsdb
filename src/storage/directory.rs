@@ -73,6 +73,9 @@ impl SeriesMetadata {
     }
 
     /// Save metadata to file (atomic write)
+    ///
+    /// Uses a unique temporary file per operation to avoid race conditions
+    /// when multiple concurrent saves target the same path.
     pub async fn save(&self, path: &Path) -> Result<(), StorageError> {
         let contents = serde_json::to_string_pretty(self).map_err(|e| {
             StorageError::Io(std::io::Error::new(
@@ -81,11 +84,29 @@ impl SeriesMetadata {
             ))
         })?;
 
-        // Atomic write: write to temp file, then rename
-        let temp_path = path.with_extension("tmp");
-        fs::write(&temp_path, contents).await?;
-        fs::rename(&temp_path, path).await?;
+        // Atomic write: write to unique temp file, then rename
+        // Use process ID and random suffix to ensure uniqueness across concurrent saves
+        let temp_filename = format!(
+            ".metadata.{}.{}.tmp",
+            std::process::id(),
+            rand::random::<u32>()
+        );
+        let temp_path = path.parent().map_or_else(
+            || std::path::PathBuf::from(&temp_filename),
+            |p| p.join(&temp_filename),
+        );
 
+        fs::write(&temp_path, contents).await?;
+
+        // Rename is atomic on POSIX systems - last writer wins
+        let rename_result = fs::rename(&temp_path, path).await;
+
+        // Clean up temp file if rename failed (best effort)
+        if rename_result.is_err() {
+            let _ = fs::remove_file(&temp_path).await;
+        }
+
+        rename_result?;
         Ok(())
     }
 

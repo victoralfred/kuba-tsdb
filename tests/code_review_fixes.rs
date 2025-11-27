@@ -403,7 +403,12 @@ async fn test_writer_seal_with_multiple_arc_references() {
 /// Tests the fix for EDGE-003
 #[test]
 fn test_metrics_gathering_returns_result() {
-    use gorilla_tsdb::metrics::gather_metrics;
+    use gorilla_tsdb::metrics::{gather_metrics, init};
+
+    // Initialize metrics to ensure at least some metrics are registered
+    // This is needed because lazy_static metrics may not be initialized
+    // if no other code has touched them yet (test isolation)
+    init();
 
     let result = gather_metrics();
     assert!(result.is_ok(), "Metrics gathering should return Ok");
