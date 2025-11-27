@@ -200,7 +200,10 @@ impl Batcher {
         let mut state = self.state.lock().await;
 
         // If adding all points would exceed batch size, flush in chunks
-        let remaining_capacity = self.config.max_batch_size.saturating_sub(state.current_batch.len());
+        let remaining_capacity = self
+            .config
+            .max_batch_size
+            .saturating_sub(state.current_batch.len());
 
         if points.len() <= remaining_capacity {
             // All points fit in current batch
@@ -223,7 +226,8 @@ impl Batcher {
             let mut remaining: Vec<DataPoint> = points_iter.collect();
 
             while remaining.len() >= self.config.max_batch_size {
-                let batch_points: Vec<DataPoint> = remaining.drain(..self.config.max_batch_size).collect();
+                let batch_points: Vec<DataPoint> =
+                    remaining.drain(..self.config.max_batch_size).collect();
                 let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
                 let batch = PointBatch::new(batch_points, seq);
 
@@ -289,15 +293,12 @@ impl Batcher {
 
         debug!(
             "Flushing batch {} with {} points (age: {:?})",
-            batch.sequence,
-            point_count,
-            batch_age
+            batch.sequence, point_count, batch_age
         );
 
-        self.output
-            .send(batch)
-            .await
-            .map_err(|_| IngestionError::ChannelClosed("Batch output channel closed".to_string()))?;
+        self.output.send(batch).await.map_err(|_| {
+            IngestionError::ChannelClosed("Batch output channel closed".to_string())
+        })?;
 
         self.metrics.record_batch_flushed(point_count, batch_age);
 
@@ -339,10 +340,7 @@ mod tests {
 
     #[test]
     fn test_point_batch_creation() {
-        let points = vec![
-            DataPoint::new(1, 1000, 42.0),
-            DataPoint::new(1, 1001, 43.0),
-        ];
+        let points = vec![DataPoint::new(1, 1000, 42.0), DataPoint::new(1, 1001, 43.0)];
 
         let batch = PointBatch::new(points, 0);
         assert_eq!(batch.len(), 2);
@@ -369,10 +367,7 @@ mod tests {
     #[test]
     fn test_point_batch_extend() {
         let mut batch = PointBatch::with_capacity(10, 0);
-        let points = vec![
-            DataPoint::new(1, 1000, 42.0),
-            DataPoint::new(1, 1001, 43.0),
-        ];
+        let points = vec![DataPoint::new(1, 1000, 42.0), DataPoint::new(1, 1001, 43.0)];
 
         batch.extend(points);
         assert_eq!(batch.len(), 2);
@@ -380,10 +375,7 @@ mod tests {
 
     #[test]
     fn test_point_batch_take_points() {
-        let mut batch = PointBatch::new(
-            vec![DataPoint::new(1, 1000, 42.0)],
-            0,
-        );
+        let mut batch = PointBatch::new(vec![DataPoint::new(1, 1000, 42.0)], 0);
 
         let points = batch.take_points();
         assert_eq!(points.len(), 1);
@@ -411,11 +403,17 @@ mod tests {
         let batcher = Batcher::new(config, tx, metrics);
 
         // Add first point - should not flush
-        batcher.add_point(DataPoint::new(1, 1000, 42.0)).await.unwrap();
+        batcher
+            .add_point(DataPoint::new(1, 1000, 42.0))
+            .await
+            .unwrap();
         assert_eq!(batcher.pending_count().await, 1);
 
         // Add second point - should trigger flush
-        batcher.add_point(DataPoint::new(1, 1001, 43.0)).await.unwrap();
+        batcher
+            .add_point(DataPoint::new(1, 1001, 43.0))
+            .await
+            .unwrap();
         assert_eq!(batcher.pending_count().await, 0);
 
         // Should have received a batch
@@ -467,7 +465,10 @@ mod tests {
         let batcher = Batcher::new(config, tx, metrics);
 
         // Add single point
-        batcher.add_point(DataPoint::new(1, 1000, 42.0)).await.unwrap();
+        batcher
+            .add_point(DataPoint::new(1, 1000, 42.0))
+            .await
+            .unwrap();
         assert_eq!(batcher.pending_count().await, 1);
 
         // Manual flush

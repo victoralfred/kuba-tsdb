@@ -306,9 +306,10 @@ impl WriteBufferManager {
         let series_id = point.series_id;
 
         // Get or create buffer for this series
-        let mut buffer = self.buffers.entry(series_id).or_insert_with(|| {
-            SeriesBuffer::new(series_id)
-        });
+        let mut buffer = self
+            .buffers
+            .entry(series_id)
+            .or_insert_with(|| SeriesBuffer::new(series_id));
 
         let overwrite = buffer.add(point.timestamp, point.value);
 
@@ -334,7 +335,8 @@ impl WriteBufferManager {
         }
 
         // Update backpressure state
-        self.backpressure.update_memory_usage(self.memory_used.load(Ordering::Relaxed));
+        self.backpressure
+            .update_memory_usage(self.memory_used.load(Ordering::Relaxed));
 
         Ok(())
     }
@@ -410,10 +412,9 @@ impl WriteBufferManager {
             sequence,
         };
 
-        self.output
-            .send(batch)
-            .await
-            .map_err(|_| IngestionError::ChannelClosed("Write output channel closed".to_string()))?;
+        self.output.send(batch).await.map_err(|_| {
+            IngestionError::ChannelClosed("Write output channel closed".to_string())
+        })?;
 
         self.metrics.record_buffer_flushed(count);
 

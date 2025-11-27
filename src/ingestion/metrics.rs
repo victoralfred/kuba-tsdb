@@ -134,11 +134,13 @@ impl IngestionMetrics {
     /// Record a successful write
     #[inline]
     pub fn record_write(&self, point_count: u64, bytes: u64, latency: Duration) {
-        self.points_written.fetch_add(point_count, Ordering::Relaxed);
+        self.points_written
+            .fetch_add(point_count, Ordering::Relaxed);
         self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
 
         let latency_us = latency.as_micros() as u64;
-        self.write_latency_sum_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.write_latency_sum_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.write_latency_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -157,13 +159,15 @@ impl IngestionMetrics {
     /// Record backpressure activation
     #[inline]
     pub fn record_backpressure_activated(&self) {
-        self.backpressure_activations.fetch_add(1, Ordering::Relaxed);
+        self.backpressure_activations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record backpressure deactivation
     #[inline]
     pub fn record_backpressure_deactivated(&self) {
-        self.backpressure_deactivations.fetch_add(1, Ordering::Relaxed);
+        self.backpressure_deactivations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // === Query Methods ===
