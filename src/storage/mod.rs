@@ -23,6 +23,7 @@
 //!
 //! # Example
 //!
+<<<<<<< HEAD
 //! ```rust,no_run
 //! use gorilla_tsdb::storage::LocalDiskEngine;
 //! use gorilla_tsdb::engine::traits::StorageEngine;
@@ -33,10 +34,31 @@
 //!
 //! // Engine is ready for use
 //! assert_eq!(storage.engine_id(), "local-disk-v1");
+=======
+//! ```rust
+//! use gorilla_tsdb::storage::LocalDiskEngine;
+//! use gorilla_tsdb::types::DataPoint;
+//! use gorilla_tsdb::engine::traits::StorageEngine;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Create storage engine
+//! let storage = LocalDiskEngine::new("/data/tsdb".into())?;
+//!
+//! // Write data points
+//! let points = vec![
+//!     DataPoint::new(1, 1000, 42.5),
+//!     DataPoint::new(1, 1010, 43.1),
+//! ];
+//! storage.write(1, &points).await?;
+//!
+//! // Read data back
+//! let chunks = storage.list_chunks(1, 1000, 2000).await?;
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
 //! # Ok(())
 //! # }
 //! ```
 
+<<<<<<< HEAD
 /// Thread-safe active chunk implementation with concurrent write support
 pub mod active_chunk;
 /// Multi-tier cache management system for time-series data
@@ -195,3 +217,10 @@ pub mod security {
             .unwrap_or(false)
     }
 }
+=======
+pub mod chunk;
+pub mod local_disk;
+
+pub use chunk::*;
+pub use local_disk::LocalDiskEngine;
+>>>>>>> 3bce6da (Implement Phase 2 initial storage layer)
