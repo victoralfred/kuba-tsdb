@@ -125,8 +125,19 @@ impl DownsampleOperator {
         let n = self.collected.len();
         let target = self.target_points;
 
-        if n <= target {
+        // Handle edge cases (EDGE-002)
+        if n == 0 {
+            return Vec::new();
+        }
+
+        if n <= 2 || n <= target {
             return self.collected.clone();
+        }
+
+        // Need at least 3 points for LTTB algorithm and target > 2
+        if target <= 2 {
+            // Return first and last points only
+            return vec![self.collected[0], self.collected[n - 1]];
         }
 
         let mut result = Vec::with_capacity(target);
@@ -321,7 +332,16 @@ impl Operator for DownsampleOperator {
                     return Ok(None);
                 }
 
-                // Collect data points
+                // Memory limit check BEFORE allocating (SEC-002)
+                let additional_mem = batch.len() * 16; // 8 bytes timestamp + 8 bytes value
+                if !ctx.allocate_memory(additional_mem) {
+                    return Err(QueryError::resource_limit(
+                        "Memory limit exceeded during downsampling",
+                    ));
+                }
+
+                // Now safe to collect data points
+                self.collected.reserve(batch.len());
                 for i in 0..batch.len() {
                     self.collected.push((batch.timestamps[i], batch.values[i]));
                 }
@@ -333,14 +353,6 @@ impl Operator for DownsampleOperator {
                             self.series_id = Some(sids[0]);
                         }
                     }
-                }
-
-                // Memory limit check
-                let mem_size = self.collected.len() * 16; // 8 bytes timestamp + 8 bytes value
-                if !ctx.allocate_memory(mem_size) {
-                    return Err(QueryError::resource_limit(
-                        "Memory limit exceeded during downsampling",
-                    ));
                 }
             }
             self.input_exhausted = true;
@@ -397,7 +409,7 @@ mod tests {
     use crate::query::operators::scan::ScanOperator;
 
     fn all_series() -> SeriesSelector {
-        SeriesSelector::by_measurement("test")
+        SeriesSelector::by_measurement("test").unwrap()
     }
 
     fn create_test_data(n: usize) -> Vec<(i64, f64, u64)> {

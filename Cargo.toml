@@ -74,6 +74,7 @@ rayon = "1.8"
 
 # Security
 governor = "0.10.2"
+regex = "1.10"
 
 # TLS
 tokio-rustls = "0.26"

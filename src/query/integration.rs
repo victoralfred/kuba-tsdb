@@ -110,6 +110,7 @@ impl QueryEngine {
         // Execute and collect results
         let mut rows = Vec::new();
         let mut rows_scanned = 0u64;
+        let mut was_truncated = false;
 
         while let Some(batch) = operator.next_batch(&mut ctx)? {
             rows_scanned += batch.len() as u64;
@@ -117,6 +118,7 @@ impl QueryEngine {
             // Convert batch to result rows
             for i in 0..batch.len() {
                 if rows.len() >= self.config.max_result_rows {
+                    was_truncated = true;
                     break;
                 }
 
@@ -130,11 +132,21 @@ impl QueryEngine {
 
             // Check if we've hit the row limit
             if rows.len() >= self.config.max_result_rows {
+                was_truncated = true;
                 break;
             }
         }
 
-        Ok(QueryResult::new(rows).with_rows_scanned(rows_scanned))
+        // Build result with truncation flag (EDGE-009)
+        let mut result = QueryResult::new(rows).with_rows_scanned(rows_scanned);
+        if was_truncated {
+            result.metadata.truncated = true;
+            result.metadata.add_warning(format!(
+                "Results truncated to {} rows",
+                self.config.max_result_rows
+            ));
+        }
+        Ok(result)
     }
 
     /// Build an operator tree from a logical plan
@@ -182,16 +194,12 @@ impl QueryEngine {
                             .with_batch_size(self.config.batch_size),
                     ))
                 } else {
-                    // Multiple series - for now, use first one
-                    // TODO: Implement multi-series scan with union operator
-                    let mut scan_selector = selector.clone();
-                    scan_selector.series_id = Some(series_ids[0]);
-
-                    Ok(Box::new(
-                        StorageScanOperator::new(self.storage.clone(), scan_selector)
-                            .with_optional_time_range(*time_range)
-                            .with_batch_size(self.config.batch_size),
-                    ))
+                    // Multiple series - return error until union operator is implemented (EDGE-006)
+                    Err(QueryError::execution(format!(
+                        "Multi-series queries are not yet supported ({} series matched). \
+                         Please narrow your query to match a single series or use a direct series_id.",
+                        series_ids.len()
+                    )))
                 }
             }
 
@@ -314,8 +322,9 @@ impl QueryEngine {
             // Explain - doesn't execute, returns plan description
             LogicalPlan::Explain(_inner) => {
                 // Return empty scan - actual explain is handled at higher level
+                // Use a valid placeholder measurement name
                 Ok(Box::new(ScanOperator::new(
-                    SeriesSelector::by_measurement("*"),
+                    SeriesSelector::by_measurement("_explain")?,
                     None,
                 )))
             }
@@ -349,7 +358,15 @@ impl QueryEngine {
             return Ok(series_ids);
         }
 
-        // No Redis and no direct ID - return empty
+        // No Redis and no direct ID - return error (EDGE-005)
+        // Measurement-based queries require Redis index to be configured
+        if selector.measurement.is_some() {
+            return Err(QueryError::execution(
+                "Measurement-based queries require Redis index to be configured. \
+                 Either provide a direct series_id or configure Redis connection.",
+            ));
+        }
+
         Ok(Vec::new())
     }
 
@@ -471,11 +488,12 @@ mod tests {
         let (storage, _temp) = create_test_engine();
         let engine = QueryEngine::new(storage);
 
-        // Selector without ID and no Redis
-        let selector = SeriesSelector::by_measurement("cpu.usage");
-        let series = engine.resolve_series(&selector).await.unwrap();
+        // Selector without ID and no Redis - now returns error (EDGE-005)
+        let selector = SeriesSelector::by_measurement("cpu.usage").unwrap();
+        let result = engine.resolve_series(&selector).await;
 
-        assert!(series.is_empty());
+        // Should return error since Redis is not configured
+        assert!(result.is_err());
     }
 
     #[tokio::test]

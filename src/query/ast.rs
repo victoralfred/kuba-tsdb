@@ -21,6 +21,7 @@
 //! // Build a windowed average query
 //! let query = QueryBuilder::new()
 //!     .select_measurement("cpu")
+//!     .unwrap()
 //!     .with_tag("host", "server01")
 //!     .time_range(TimeRange { start: 0, end: 1000 })
 //!     .aggregate(AggregationFunction::Avg)
@@ -30,6 +31,7 @@
 //! ```
 
 use crate::types::{SeriesId, TagFilter, TimeRange};
+use regex::Regex;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -554,12 +556,65 @@ impl SeriesSelector {
     }
 
     /// Create a selector matching a measurement name
-    pub fn by_measurement(measurement: impl Into<String>) -> Self {
-        Self {
+    ///
+    /// Measurement names are validated to prevent injection attacks (SEC-006)
+    pub fn by_measurement(measurement: impl Into<String>) -> QueryResult<Self> {
+        let name = measurement.into();
+
+        // Validate measurement name (SEC-006)
+        Self::validate_identifier(&name, "Measurement name")?;
+
+        Ok(Self {
             series_id: None,
-            measurement: Some(measurement.into()),
+            measurement: Some(name),
             tag_filters: Vec::new(),
+        })
+    }
+
+    /// Validate an identifier (measurement name, tag key, etc.)
+    ///
+    /// Allows: alphanumeric, underscore, dot, hyphen
+    /// Disallows: spaces, special characters, path traversal patterns
+    fn validate_identifier(name: &str, field_name: &str) -> QueryResult<()> {
+        if name.is_empty() {
+            return Err(QueryError::validation(format!("{} cannot be empty", field_name)));
         }
+
+        if name.len() > 256 {
+            return Err(QueryError::validation(format!(
+                "{} exceeds maximum length of 256 characters",
+                field_name
+            )));
+        }
+
+        // Check for path traversal attempts
+        if name.contains("..") || name.contains('/') || name.contains('\\') {
+            return Err(QueryError::validation(format!(
+                "{} contains invalid path characters",
+                field_name
+            )));
+        }
+
+        // Only allow safe characters: alphanumeric, underscore, dot, hyphen
+        // First character must be alphanumeric or underscore
+        let first_char = name.chars().next().unwrap();
+        if !first_char.is_alphanumeric() && first_char != '_' {
+            return Err(QueryError::validation(format!(
+                "{} must start with an alphanumeric character or underscore",
+                field_name
+            )));
+        }
+
+        for c in name.chars() {
+            if !c.is_alphanumeric() && c != '_' && c != '.' && c != '-' {
+                return Err(QueryError::validation(format!(
+                    "{} contains invalid character: '{}'",
+                    field_name, c
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Add a tag filter
@@ -572,12 +627,38 @@ impl SeriesSelector {
     }
 
     /// Add a tag regex filter
-    pub fn with_tag_regex(mut self, key: impl Into<String>, pattern: impl Into<String>) -> Self {
+    ///
+    /// Returns an error if the regex pattern is invalid (SEC-003: validates regex to prevent ReDoS)
+    pub fn with_tag_regex(
+        mut self,
+        key: impl Into<String>,
+        pattern: impl Into<String>,
+    ) -> QueryResult<Self> {
+        let pattern_str = pattern.into();
+
+        // Validate regex pattern at construction time (SEC-003)
+        // This prevents ReDoS attacks by catching invalid patterns early
+        if let Err(e) = Regex::new(&pattern_str) {
+            return Err(QueryError::validation(format!(
+                "Invalid regex pattern '{}': {}",
+                pattern_str, e
+            )));
+        }
+
+        // Limit pattern length to prevent overly complex patterns
+        const MAX_PATTERN_LEN: usize = 1000;
+        if pattern_str.len() > MAX_PATTERN_LEN {
+            return Err(QueryError::validation(format!(
+                "Regex pattern exceeds maximum length of {} characters",
+                MAX_PATTERN_LEN
+            )));
+        }
+
         self.tag_filters.push(TagMatcher::Regex {
             key: key.into(),
-            pattern: pattern.into(),
+            pattern: pattern_str,
         });
-        self
+        Ok(self)
     }
 
     /// Check if this selector can match multiple series
@@ -866,9 +947,11 @@ impl QueryBuilder {
     }
 
     /// Select by measurement name
-    pub fn select_measurement(mut self, measurement: impl Into<String>) -> Self {
-        self.selector = Some(SeriesSelector::by_measurement(measurement));
-        self
+    ///
+    /// Returns an error if measurement name is invalid
+    pub fn select_measurement(mut self, measurement: impl Into<String>) -> QueryResult<Self> {
+        self.selector = Some(SeriesSelector::by_measurement(measurement)?);
+        Ok(self)
     }
 
     /// Add tag filter to selector
@@ -1043,6 +1126,7 @@ mod tests {
     fn test_aggregate_query_builder() {
         let query = QueryBuilder::new()
             .select_measurement("cpu")
+            .unwrap()
             .with_tag("host", "server01")
             .time_range(TimeRange {
                 start: 0,
@@ -1115,6 +1199,7 @@ mod tests {
     #[test]
     fn test_series_selector_tag_filter() {
         let selector = SeriesSelector::by_measurement("cpu")
+            .unwrap()
             .with_tag("host", "server01")
             .with_tag("region", "us-east");
 

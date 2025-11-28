@@ -181,8 +181,13 @@ impl AggregationState {
             (AggregationState::Rate { first, last }, AggregationFunction::Rate) => {
                 // Rate = (last_value - first_value) / time_delta_in_seconds
                 match (first, last) {
-                    (Some((t1, v1)), Some((t2, v2))) if t2 > t1 => {
-                        let time_delta_secs = (*t2 - *t1) as f64 / 1_000_000_000.0;
+                    (Some((t1, v1)), Some((t2, v2))) if *t2 > *t1 => {
+                        // Use saturating_sub to prevent overflow (SEC-005)
+                        let time_delta_nanos = t2.saturating_sub(*t1);
+                        if time_delta_nanos == 0 {
+                            return f64::NAN;
+                        }
+                        let time_delta_secs = time_delta_nanos as f64 / 1_000_000_000.0;
                         (v2 - v1) / time_delta_secs
                     }
                     _ => f64::NAN,
@@ -204,15 +209,28 @@ impl AggregationState {
             }
             (AggregationState::Distinct(set), _) => set.len() as f64,
             (AggregationState::Percentile { target, values }, _) => {
-                if values.is_empty() {
+                // Filter out NaN values before calculation (EDGE-004)
+                let mut valid_values: Vec<f64> = values.iter().filter(|v| !v.is_nan()).copied().collect();
+
+                // Handle empty input (EDGE-001)
+                if valid_values.is_empty() {
                     return f64::NAN;
                 }
-                let mut sorted = values.clone();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-                // Calculate percentile index
-                let idx = ((*target as f64 / 100.0) * (sorted.len() - 1) as f64).round() as usize;
-                sorted[idx.min(sorted.len() - 1)]
+                // Handle single value case
+                if valid_values.len() == 1 {
+                    return valid_values[0];
+                }
+
+                // Use O(n) selection algorithm instead of O(n log n) sort (PERF-003)
+                let idx = ((*target as f64 / 100.0) * (valid_values.len() - 1) as f64).round() as usize;
+                let idx = idx.min(valid_values.len().saturating_sub(1));
+
+                // select_nth_unstable partially sorts and returns the element at idx
+                let (_, percentile_value, _) = valid_values.select_nth_unstable_by(idx, |a, b| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                *percentile_value
             }
             _ => f64::NAN,
         }
@@ -418,6 +436,17 @@ impl Operator for AggregationOperator {
                     return Ok(None);
                 }
 
+                // Memory limit check for percentile aggregation (SEC-001)
+                // Percentile needs to store all values, so check memory before processing
+                if matches!(self.function, AggregationFunction::Percentile(_)) {
+                    let additional_mem = batch.len() * 8; // 8 bytes per f64 value
+                    if !ctx.allocate_memory(additional_mem) {
+                        return Err(QueryError::resource_limit(
+                            "Memory limit exceeded during percentile aggregation",
+                        ));
+                    }
+                }
+
                 self.process_batch(&batch);
             }
             self.input_exhausted = true;
@@ -493,12 +522,19 @@ impl WindowedAggregation {
 
     /// Initialize window boundaries based on first timestamp
     pub fn init_window(&mut self, timestamp: i64) {
-        let window_nanos = self.window.duration.as_nanos() as i64;
+        // Safely convert duration to nanoseconds (EDGE-011)
+        // Duration::as_nanos() returns u128, which can overflow i64 for durations > 292 years
+        let window_nanos = self.window.duration.as_nanos();
+        let window_nanos = if window_nanos > i64::MAX as u128 {
+            i64::MAX // Cap at max i64 for very long durations
+        } else {
+            window_nanos as i64
+        };
 
         if window_nanos > 0 {
             // Align to window boundary
             self.window_start = (timestamp / window_nanos) * window_nanos;
-            self.window_end = self.window_start + window_nanos;
+            self.window_end = self.window_start.saturating_add(window_nanos);
         }
     }
 
@@ -509,14 +545,23 @@ impl WindowedAggregation {
 
     /// Advance to next window
     pub fn advance_window(&mut self) {
-        let advance_nanos = match &self.window.window_type {
-            WindowType::Tumbling => self.window.duration.as_nanos() as i64,
-            WindowType::Sliding { slide } => slide.as_nanos() as i64,
-            WindowType::Session { .. } => self.window.duration.as_nanos() as i64,
+        // Helper to safely convert u128 nanos to i64 (EDGE-011)
+        let safe_nanos = |nanos: u128| -> i64 {
+            if nanos > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                nanos as i64
+            }
         };
 
-        self.window_start += advance_nanos;
-        self.window_end = self.window_start + self.window.duration.as_nanos() as i64;
+        let advance_nanos = match &self.window.window_type {
+            WindowType::Tumbling => safe_nanos(self.window.duration.as_nanos()),
+            WindowType::Sliding { slide } => safe_nanos(slide.as_nanos()),
+            WindowType::Session { .. } => safe_nanos(self.window.duration.as_nanos()),
+        };
+
+        self.window_start = self.window_start.saturating_add(advance_nanos);
+        self.window_end = self.window_start.saturating_add(safe_nanos(self.window.duration.as_nanos()));
 
         // Reset states for new window
         self.states = self.functions.iter().map(AggregationState::new).collect();
@@ -560,7 +605,7 @@ mod tests {
             .map(|i| (i as i64 * 1_000_000_000, i as f64, 1)) // 1-second intervals
             .collect();
 
-        ScanOperator::new(SeriesSelector::by_measurement("test"), None)
+        ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
             .with_mock_data(data)
             .with_batch_size(100)
     }
@@ -639,7 +684,7 @@ mod tests {
             (2_000_000_000, 30.0, 1), // 20 more increase over 1 second
         ];
 
-        let scan = ScanOperator::new(SeriesSelector::by_measurement("test"), None)
+        let scan = ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
             .with_mock_data(data)
             .with_batch_size(100);
 
@@ -659,7 +704,7 @@ mod tests {
         let data: Vec<(i64, f64, u64)> =
             vec![(0, 10.0, 1), (0, 20.0, 2), (1, 15.0, 1), (1, 25.0, 2)];
 
-        let scan = ScanOperator::new(SeriesSelector::by_measurement("test"), None)
+        let scan = ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
             .with_mock_data(data)
             .with_batch_size(100);
 

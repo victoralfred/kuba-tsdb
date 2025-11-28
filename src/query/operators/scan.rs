@@ -201,7 +201,7 @@ mod tests {
 
     /// Create a selector that matches all series (no specific ID filter)
     fn all_series() -> SeriesSelector {
-        SeriesSelector::by_measurement("test")
+        SeriesSelector::by_measurement("test").unwrap()
     }
 
     #[test]

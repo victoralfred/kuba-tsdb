@@ -208,8 +208,9 @@ impl QueryExecutor {
     pub fn execute(&mut self, query: Query) -> Result<QueryResult, QueryError> {
         let start = Instant::now();
 
-        // Check for timeout before starting
-        if self.config.timeout.as_secs() == 0 {
+        // Check for timeout before starting (EDGE-007)
+        // Use is_zero() to catch sub-second timeouts like Duration::from_nanos(1)
+        if self.config.timeout.is_zero() {
             return Err(QueryError::timeout("Query timeout is zero"));
         }
 
