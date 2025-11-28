@@ -207,7 +207,10 @@ impl StorageScanOperator {
 
         // Apply predicate filtering if present
         self.point_buffer = if let Some(ref pred) = self.predicate {
-            points.into_iter().filter(|p| pred.evaluate(p.value)).collect()
+            points
+                .into_iter()
+                .filter(|p| pred.evaluate(p.value))
+                .collect()
         } else {
             points
         };
@@ -243,15 +246,17 @@ impl StorageScanOperator {
         let reader = ChunkReader::new();
 
         let points = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                reader.read_chunk(&path, options).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { reader.read_chunk(&path, options).await })
         })
         .map_err(|e| QueryError::execution(format!("Failed to read chunk: {}", e)))?;
 
         // Apply predicate filtering if present
         self.point_buffer = if let Some(ref pred) = self.predicate {
-            points.into_iter().filter(|p| pred.evaluate(p.value)).collect()
+            points
+                .into_iter()
+                .filter(|p| pred.evaluate(p.value))
+                .collect()
         } else {
             points
         };
@@ -395,8 +400,12 @@ mod tests {
         let selector = SeriesSelector::by_id(1);
 
         // Query with time range
-        let scan = StorageScanOperator::new(storage.clone(), selector.clone())
-            .with_time_range(TimeRange { start: 100, end: 200 });
+        let scan = StorageScanOperator::new(storage.clone(), selector.clone()).with_time_range(
+            TimeRange {
+                start: 100,
+                end: 200,
+            },
+        );
 
         // Test chunk that overlaps
         let overlapping_chunk = ChunkMetadata {
