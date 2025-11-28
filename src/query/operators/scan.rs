@@ -11,7 +11,7 @@ use crate::query::ast::{Predicate, SeriesSelector};
 use crate::query::error::QueryError;
 use crate::query::executor::ExecutionContext;
 use crate::query::operators::{DataBatch, Operator};
-use crate::types::TimeRange;
+use crate::types::{SeriesId, TimeRange};
 
 /// Scan operator that reads from storage
 pub struct ScanOperator {
@@ -34,7 +34,8 @@ pub struct ScanOperator {
     exhausted: bool,
 
     /// Mock data for testing (will be replaced with actual storage access)
-    mock_data: Option<Vec<(i64, f64, u64)>>,
+    /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
+    mock_data: Option<Vec<(i64, f64, SeriesId)>>,
 }
 
 impl ScanOperator {
@@ -64,8 +65,9 @@ impl ScanOperator {
     }
 
     /// Set mock data for testing
+    /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
     #[cfg(test)]
-    pub fn with_mock_data(mut self, data: Vec<(i64, f64, u64)>) -> Self {
+    pub fn with_mock_data(mut self, data: Vec<(i64, f64, SeriesId)>) -> Self {
         self.mock_data = Some(data);
         self
     }
@@ -87,10 +89,10 @@ impl ScanOperator {
     }
 
     /// Check if a series ID matches the selector
-    fn matches_selector(&self, series_id: u64) -> bool {
+    fn matches_selector(&self, series_id: SeriesId) -> bool {
         match self.selector.series_id {
-            Some(id) => id == series_id as u128, // SeriesId is u128
-            None => true,                        // No specific series ID filter, match all
+            Some(id) => id == series_id, // Both are SeriesId (u128) now (TYPE-001)
+            None => true,                // No specific series ID filter, match all
         }
     }
 }
@@ -195,7 +197,7 @@ mod tests {
     use super::*;
     use crate::query::executor::ExecutorConfig;
 
-    fn create_test_data() -> Vec<(i64, f64, u64)> {
+    fn create_test_data() -> Vec<(i64, f64, SeriesId)> {
         (0..100).map(|i| (i as i64 * 1000, i as f64, 1)).collect()
     }
 

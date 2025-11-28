@@ -113,6 +113,15 @@ impl QueryPlanner {
         // Generate logical plan based on query type
         let logical_plan = self.create_logical_plan(query)?;
 
+        // Check plan complexity (SEC-008)
+        let node_count = self.count_plan_nodes(&logical_plan);
+        if node_count > self.config.max_plan_nodes {
+            return Err(QueryError::planning(format!(
+                "Query plan too complex: {} nodes exceeds maximum of {}",
+                node_count, self.config.max_plan_nodes
+            )));
+        }
+
         // Optimize the logical plan
         let optimized = self.optimize(logical_plan)?;
 
@@ -120,6 +129,30 @@ impl QueryPlanner {
         let physical_plan = self.create_physical_plan(optimized)?;
 
         Ok(physical_plan)
+    }
+
+    /// Count the number of nodes in a logical plan (SEC-008)
+    ///
+    /// This is a recursive function that traverses the plan tree.
+    /// Using &self to allow for future extensions (e.g., counting based on config).
+    #[allow(clippy::only_used_in_recursion)]
+    fn count_plan_nodes(&self, plan: &LogicalPlan) -> usize {
+        match plan {
+            // Leaf nodes - no children
+            LogicalPlan::Scan { .. }
+            | LogicalPlan::ScanWithPredicate { .. }
+            | LogicalPlan::Latest { .. } => 1,
+
+            // Single-child nodes
+            LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Aggregate { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Downsample { input, .. } => 1 + self.count_plan_nodes(input),
+
+            // Wrapper node
+            LogicalPlan::Explain(inner) => 1 + self.count_plan_nodes(inner),
+        }
     }
 
     /// Create initial logical plan from query AST

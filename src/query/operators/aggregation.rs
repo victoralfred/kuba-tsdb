@@ -16,6 +16,7 @@ use crate::query::error::QueryError;
 use crate::query::executor::ExecutionContext;
 use crate::query::operators::numeric::{KahanSum, WelfordState};
 use crate::query::operators::{simd, DataBatch, Operator};
+use crate::types::SeriesId;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -324,7 +325,12 @@ pub struct AggregationOperator {
     group_by_series: bool,
 
     /// States for each aggregation (keyed by series_id if grouping)
-    states: HashMap<u64, AggregationState>,
+    /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
+    states: HashMap<SeriesId, AggregationState>,
+
+    /// Reusable buffer for grouping data by series (PERF-006)
+    /// This avoids allocating a new HashMap for each batch
+    series_data_buffer: HashMap<SeriesId, (Vec<i64>, Vec<f64>)>,
 
     /// Whether we've consumed all input
     input_exhausted: bool,
@@ -342,6 +348,7 @@ impl AggregationOperator {
             window: None,
             group_by_series: false,
             states: HashMap::new(),
+            series_data_buffer: HashMap::new(),
             input_exhausted: false,
             results_emitted: false,
         }
@@ -361,7 +368,7 @@ impl AggregationOperator {
 
     /// Get or create state for a series (reserved for multi-series aggregation)
     #[allow(dead_code)]
-    fn get_state(&mut self, series_id: u64) -> &mut AggregationState {
+    fn get_state(&mut self, series_id: SeriesId) -> &mut AggregationState {
         let function = self.function;
         self.states
             .entry(series_id)
@@ -373,11 +380,17 @@ impl AggregationOperator {
         if self.group_by_series {
             // Group by series ID
             if let Some(ref series_ids) = batch.series_ids {
-                // Group data by series
-                let mut series_data: HashMap<u64, (Vec<i64>, Vec<f64>)> = HashMap::new();
+                // Reuse the series_data_buffer instead of allocating new (PERF-006)
+                // Clear vectors but keep HashMap allocation
+                for (_, (ts, vals)) in self.series_data_buffer.iter_mut() {
+                    ts.clear();
+                    vals.clear();
+                }
 
+                // Group data by series using the reusable buffer
                 for (i, &sid) in series_ids.iter().enumerate() {
-                    let entry = series_data
+                    let entry = self
+                        .series_data_buffer
                         .entry(sid)
                         .or_insert_with(|| (Vec::new(), Vec::new()));
                     entry.0.push(batch.timestamps[i]);
@@ -386,12 +399,14 @@ impl AggregationOperator {
 
                 // Update states for each series
                 let function = self.function;
-                for (sid, (timestamps, values)) in series_data {
-                    let state = self
-                        .states
-                        .entry(sid)
-                        .or_insert_with(|| AggregationState::new(&function));
-                    state.update_batch(&timestamps, &values);
+                for (sid, (timestamps, values)) in &self.series_data_buffer {
+                    if !timestamps.is_empty() {
+                        let state = self
+                            .states
+                            .entry(*sid)
+                            .or_insert_with(|| AggregationState::new(&function));
+                        state.update_batch(timestamps, values);
+                    }
                 }
             }
         } else {
@@ -601,7 +616,7 @@ mod tests {
     use crate::query::SeriesSelector;
 
     fn create_test_scan() -> ScanOperator {
-        let data: Vec<(i64, f64, u64)> = (0..100)
+        let data: Vec<(i64, f64, SeriesId)> = (0..100)
             .map(|i| (i as i64 * 1_000_000_000, i as f64, 1)) // 1-second intervals
             .collect();
 
@@ -678,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_rate_aggregation() {
-        let data: Vec<(i64, f64, u64)> = vec![
+        let data: Vec<(i64, f64, SeriesId)> = vec![
             (0, 0.0, 1),
             (1_000_000_000, 10.0, 1), // 10 increase over 1 second
             (2_000_000_000, 30.0, 1), // 20 more increase over 1 second
@@ -701,7 +716,7 @@ mod tests {
     #[test]
     fn test_group_by_series() {
         // Data from two series
-        let data: Vec<(i64, f64, u64)> =
+        let data: Vec<(i64, f64, SeriesId)> =
             vec![(0, 10.0, 1), (0, 20.0, 2), (1, 15.0, 1), (1, 25.0, 2)];
 
         let scan = ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)

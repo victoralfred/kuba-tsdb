@@ -223,10 +223,11 @@ impl StorageScanOperator {
         Ok(!self.point_buffer.is_empty())
     }
 
-    /// Load current chunk synchronously (blocks on async)
+    /// Load current chunk synchronously
     ///
-    /// This is needed because Operator trait is sync. In production,
-    /// consider making Operator async or using a runtime handle.
+    /// Uses spawn_blocking to avoid blocking the async runtime threadpool.
+    /// This is needed because Operator trait is sync, but chunk reading is async.
+    /// spawn_blocking moves the blocking work to a dedicated thread pool (PERF-002).
     fn load_current_chunk_sync(&mut self) -> Result<bool, QueryError> {
         if self.current_chunk_idx >= self.chunks.len() {
             return Ok(false);
@@ -242,16 +243,32 @@ impl StorageScanOperator {
             use_mmap: true,
         };
 
-        // Use tokio runtime to run async code
-        // This is a workaround since Operator trait is sync
+        // Clone data needed for the blocking task
         let path = chunk.path.clone();
-        let reader = ChunkReader::new();
 
+        // Use spawn_blocking to run async code on a dedicated blocking thread pool
+        // This avoids blocking the main async runtime threads (PERF-002)
         let points = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async { reader.read_chunk(&path, options).await })
-        })
-        .map_err(|e| QueryError::execution(format!("Failed to read chunk: {}", e)))?;
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(async {
+                // spawn_blocking moves the I/O work to a dedicated blocking pool
+                // The inner block_on runs the async chunk read
+                let read_result = tokio::task::spawn_blocking(move || {
+                    // Create a new runtime for the blocking thread to run async code
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create runtime for chunk read");
+
+                    let reader = ChunkReader::new();
+                    rt.block_on(reader.read_chunk(&path, options))
+                })
+                .await
+                .map_err(|e| QueryError::execution(format!("Task join error: {}", e)))?;
+
+                read_result.map_err(|e| QueryError::execution(format!("Failed to read chunk: {}", e)))
+            })
+        })?;
 
         // Apply predicate filtering if present
         self.point_buffer = if let Some(ref pred) = self.predicate {
@@ -276,7 +293,7 @@ impl StorageScanOperator {
 
         while self.buffer_position < self.point_buffer.len() && count < self.batch_size {
             let point = &self.point_buffer[self.buffer_position];
-            batch.push_with_series(point.timestamp, point.value, point.series_id as u64);
+            batch.push_with_series(point.timestamp, point.value, point.series_id);
             self.buffer_position += 1;
             count += 1;
         }

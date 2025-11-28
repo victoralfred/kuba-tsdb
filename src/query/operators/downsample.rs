@@ -18,6 +18,7 @@ use crate::query::ast::DownsampleMethod;
 use crate::query::error::QueryError;
 use crate::query::executor::ExecutionContext;
 use crate::query::operators::{DataBatch, Operator};
+use crate::types::SeriesId;
 
 /// Downsample operator that reduces data points for visualization
 pub struct DownsampleOperator {
@@ -34,7 +35,8 @@ pub struct DownsampleOperator {
     collected: Vec<(i64, f64)>,
 
     /// Series ID (if applicable)
-    series_id: Option<u64>,
+    /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
+    series_id: Option<SeriesId>,
 
     /// Whether we've consumed all input
     input_exhausted: bool,
@@ -412,7 +414,7 @@ mod tests {
         SeriesSelector::by_measurement("test").unwrap()
     }
 
-    fn create_test_data(n: usize) -> Vec<(i64, f64, u64)> {
+    fn create_test_data(n: usize) -> Vec<(i64, f64, SeriesId)> {
         (0..n)
             .map(|i| {
                 let ts = i as i64 * 1000;
@@ -497,7 +499,7 @@ mod tests {
     #[test]
     fn test_lttb_preserves_shape() {
         // Create data with clear peaks
-        let mut data: Vec<(i64, f64, u64)> = Vec::new();
+        let mut data: Vec<(i64, f64, SeriesId)> = Vec::new();
         for i in 0..100 {
             let val = if i == 25 || i == 75 {
                 1000.0 // Clear peaks
@@ -525,7 +527,7 @@ mod tests {
     #[test]
     fn test_m4_preserves_extremes() {
         // Create data with clear min/max
-        let mut data: Vec<(i64, f64, u64)> = Vec::new();
+        let mut data: Vec<(i64, f64, SeriesId)> = Vec::new();
         for i in 0..100 {
             let val = if i == 10 {
                 0.0 // Min

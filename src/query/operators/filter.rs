@@ -25,8 +25,24 @@ impl FilterOperator {
     }
 
     /// Apply filter to a batch, returning a new batch with matching rows
+    ///
+    /// Optimized to avoid copying when all rows match (PERF-005)
     fn filter_batch(&self, batch: DataBatch) -> DataBatch {
-        let mut result = DataBatch::with_capacity(batch.len());
+        // First pass: count matches to determine if we can avoid copying
+        let match_count = batch.values.iter().filter(|&&v| self.predicate.evaluate(v)).count();
+
+        // If all rows match, return original batch without copying (PERF-005)
+        if match_count == batch.len() {
+            return batch;
+        }
+
+        // If no rows match, return empty batch
+        if match_count == 0 {
+            return DataBatch::default();
+        }
+
+        // Selective copy: pre-allocate exact size needed
+        let mut result = DataBatch::with_capacity(match_count);
 
         for i in 0..batch.len() {
             let value = batch.values[i];
@@ -250,9 +266,11 @@ mod tests {
     use crate::query::ast::SeriesSelector;
     use crate::query::executor::ExecutorConfig;
     use crate::query::operators::scan::ScanOperator;
+    use crate::types::SeriesId;
 
     fn create_test_scan() -> ScanOperator {
-        let data: Vec<(i64, f64, u64)> = (0..100).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
+        let data: Vec<(i64, f64, SeriesId)> =
+            (0..100).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
 
         ScanOperator::new(SeriesSelector::by_id(1), None)
             .with_mock_data(data)

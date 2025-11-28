@@ -24,6 +24,7 @@ pub use storage_scan::{StorageQueryExt, StorageScanOperator};
 
 use crate::query::error::QueryError;
 use crate::query::executor::ExecutionContext;
+use crate::types::SeriesId;
 
 // ============================================================================
 // Data Batch
@@ -42,7 +43,8 @@ pub struct DataBatch {
     pub values: Vec<f64>,
 
     /// Series IDs (optional, for multi-series queries)
-    pub series_ids: Option<Vec<u64>>,
+    /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
+    pub series_ids: Option<Vec<SeriesId>>,
 
     /// Validity bitmap for null handling (1 bit per value)
     /// None means all values are valid
@@ -72,7 +74,7 @@ impl DataBatch {
     }
 
     /// Create a batch with series IDs
-    pub fn with_series(timestamps: Vec<i64>, values: Vec<f64>, series_ids: Vec<u64>) -> Self {
+    pub fn with_series(timestamps: Vec<i64>, values: Vec<f64>, series_ids: Vec<SeriesId>) -> Self {
         debug_assert_eq!(timestamps.len(), values.len());
         debug_assert_eq!(timestamps.len(), series_ids.len());
         Self {
@@ -98,7 +100,8 @@ impl DataBatch {
     /// Memory size in bytes
     pub fn memory_size(&self) -> usize {
         let base = self.timestamps.len() * 8 + self.values.len() * 8;
-        let series = self.series_ids.as_ref().map(|s| s.len() * 8).unwrap_or(0);
+        // SeriesId is u128, so 16 bytes each
+        let series = self.series_ids.as_ref().map(|s| s.len() * 16).unwrap_or(0);
         let validity = self.validity.as_ref().map(|v| v.len()).unwrap_or(0);
         base + series + validity
     }
@@ -126,7 +129,7 @@ impl DataBatch {
     }
 
     /// Add a row with series ID
-    pub fn push_with_series(&mut self, timestamp: i64, value: f64, series_id: u64) {
+    pub fn push_with_series(&mut self, timestamp: i64, value: f64, series_id: SeriesId) {
         self.timestamps.push(timestamp);
         self.values.push(value);
         if let Some(ref mut ids) = self.series_ids {

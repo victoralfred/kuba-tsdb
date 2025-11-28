@@ -125,7 +125,8 @@ impl QueryEngine {
                 rows.push(ResultRow {
                     timestamp: batch.timestamps[i],
                     value: batch.values[i],
-                    series_id: batch.series_ids.as_ref().map(|ids| ids[i] as u128),
+                    // SeriesId is already u128 (TYPE-001), no cast needed
+                    series_id: batch.series_ids.as_ref().map(|ids| ids[i]),
                     tags: HashMap::new(),
                 });
             }
