@@ -553,6 +553,7 @@ mod tests {
     use super::*;
     use crate::query::executor::ExecutorConfig;
     use crate::query::operators::scan::ScanOperator;
+    use crate::query::SeriesSelector;
 
     fn create_test_scan() -> ScanOperator {
         let data: Vec<(i64, f64, u64)> = (0..100)

@@ -390,6 +390,7 @@ impl StorageQueryExt for LocalDiskEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     // Tests require actual storage setup, so we use basic unit tests here
     // Integration tests would be in a separate test file
