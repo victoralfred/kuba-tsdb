@@ -65,6 +65,7 @@
 pub mod ast;
 pub mod error;
 pub mod executor;
+pub mod integration;
 pub mod operators;
 pub mod planner;
 pub mod result;
@@ -76,6 +77,7 @@ pub use ast::{
 };
 pub use error::{QueryError, QueryErrorKind};
 pub use executor::{ExecutorConfig, QueryExecutor};
+pub use integration::{QueryEngine, RedisQueryExt};
 pub use operators::{
     AggregationOperator, DataBatch, DownsampleOperator, FilterOperator, Operator, ScanOperator,
     StorageQueryExt, StorageScanOperator,

@@ -24,6 +24,11 @@ pub struct QueryResult {
 }
 
 impl QueryResult {
+    /// Create a new result from rows
+    pub fn new(rows: Vec<ResultRow>) -> Self {
+        Self::from_rows(rows)
+    }
+
     /// Create an empty result
     pub fn empty() -> Self {
         Self {
@@ -72,6 +77,12 @@ impl QueryResult {
     /// Set bytes scanned metadata
     pub fn with_bytes_scanned(mut self, bytes: usize) -> Self {
         self.metadata.bytes_scanned = bytes;
+        self
+    }
+
+    /// Set rows scanned metadata
+    pub fn with_rows_scanned(mut self, rows: u64) -> Self {
+        self.metadata.rows_scanned = rows as usize;
         self
     }
 
@@ -348,6 +359,11 @@ pub struct ResultMetadata {
     #[serde(skip_serializing_if = "is_zero")]
     #[serde(default)]
     pub chunks_pruned: usize,
+
+    /// Number of rows scanned during query
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(default)]
+    pub rows_scanned: usize,
 
     /// Whether result was served from cache
     #[serde(skip_serializing_if = "std::ops::Not::not")]
