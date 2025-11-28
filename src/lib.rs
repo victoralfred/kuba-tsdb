@@ -34,6 +34,10 @@ pub mod redis;
 /// Provides batching, buffering, parallel writes, and backpressure management
 pub mod ingestion;
 
+/// Query engine for time-series data retrieval and analysis
+/// Provides vectorized execution, parallel processing, aggregations, and downsampling
+pub mod query;
+
 // Re-export main types
 pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};

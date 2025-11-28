@@ -223,6 +223,42 @@ impl LocalDiskEngine {
         chunks.sort_by_key(|c| c.start_timestamp);
         Ok(chunks)
     }
+
+    /// Get chunk metadata for a series (for query engine integration)
+    ///
+    /// Returns internal ChunkMetadata which includes file paths needed
+    /// for direct chunk reading via ChunkReader.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - The series to get chunks for
+    ///
+    /// # Returns
+    ///
+    /// Vector of ChunkMetadata sorted by start timestamp
+    pub fn get_chunks_for_series(&self, series_id: SeriesId) -> Vec<ChunkMetadata> {
+        let index = self.chunk_index.read();
+        index.get(&series_id).cloned().unwrap_or_default()
+    }
+
+    /// Get all series IDs currently in storage
+    ///
+    /// Returns a list of all series IDs that have at least one chunk stored.
+    pub fn get_all_series_ids(&self) -> Vec<SeriesId> {
+        let index = self.chunk_index.read();
+        index.keys().copied().collect()
+    }
+
+    /// Get total chunk count across all series
+    pub fn total_chunk_count(&self) -> usize {
+        let index = self.chunk_index.read();
+        index.values().map(|v| v.len()).sum()
+    }
+
+    /// Get base path for this storage engine
+    pub fn base_path(&self) -> &PathBuf {
+        &self.base_path
+    }
 }
 
 #[async_trait]
