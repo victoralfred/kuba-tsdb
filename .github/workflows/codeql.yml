@@ -46,7 +46,7 @@ jobs:
         language: [ 'rust', 'actions' ]
         # Rust is a compiled language, but cargo handles the build process, so 'autobuild' 
         # is the most common and robust mode. 'none' works if no specific build steps are needed.
-        build-mode: [ 'autobuild', 'none' ] 
+        build-mode: [ 'none']
         # Create a single matrix item for Rust to avoid running twice unnecessarily
         include:
           - language: rust
