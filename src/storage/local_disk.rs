@@ -781,7 +781,7 @@ impl StorageEngine for LocalDiskEngine {
     ///
     /// # Returns
     ///
-    /// A [`MaintenanceReport`] containing:
+    /// A [`crate::engine::traits::MaintenanceReport`] containing:
     /// - `chunks_deleted`: Number of chunks removed
     /// - `bytes_freed`: Total bytes reclaimed
     /// - `chunks_compacted`: Always 0 (compaction not yet implemented)

@@ -75,7 +75,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// A string wrapper that prevents accidental logging of sensitive data
 ///
 /// This type is used to store credentials like AWS access keys. It implements
-/// Debug to print "[REDACTED]" instead of the actual value to prevent
+/// Debug to print `[REDACTED]` instead of the actual value to prevent
 /// credential leakage in logs.
 #[derive(Clone)]
 pub struct SecretString(String);
