@@ -49,7 +49,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
       # Corrected Caching: Using the explicit paths defined in env
@@ -89,8 +88,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
       # Removed caching for cargo-audit binary (simplifying)
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -133,8 +130,6 @@ jobs:
 
       - name: Install Rust ${{ matrix.rust }} toolchain
         uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -186,7 +181,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
@@ -227,8 +221,7 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
+
 
       - name: Run benchmarks
         run: cargo bench --no-fail-fast -- --output-format bencher | tee benchmark-results.txt
@@ -306,8 +299,7 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
+
 
       - name: Build release binary
         run: cargo build --release --locked
