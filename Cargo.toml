@@ -107,6 +107,9 @@ tdigest = "0.2"
 # Configuration
 toml = "0.9.8"
 
+# Query parsing
+nom = "8.0"
+
 # Dependencues
 protobuf = "4.33.1-release"
 

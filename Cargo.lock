@@ -679,6 +679,7 @@ dependencies = [
  "lru",
  "lz4_flex",
  "memmap2",
+ "nom",
  "num_cpus",
  "parking_lot",
  "prometheus",
@@ -1163,6 +1164,15 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

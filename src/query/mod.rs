@@ -69,6 +69,7 @@ pub mod error;
 pub mod executor;
 pub mod integration;
 pub mod operators;
+pub mod parser;
 pub mod planner;
 pub mod result;
 pub mod subscription;
@@ -93,3 +94,4 @@ pub use subscription::{
     QuerySubscription, SharedSubscriptionManager, SubscriptionConfig, SubscriptionManager,
     SubscriptionUpdate,
 };
+pub use parser::{parse_query, parse_promql, parse_sql};
