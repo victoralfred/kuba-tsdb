@@ -23,7 +23,8 @@
 pub mod string_intern;
 
 pub use string_intern::{
-    StringInterner, TagDictionary, TagDictionaryStats, TagKeyInterner, TagValueInterner,
+    InternError, StringInterner, TagDictionary, TagDictionaryStats, TagKeyInterner,
+    TagValueInterner, MAX_METRIC_NAME_LENGTH, MAX_TAG_KEY_LENGTH, MAX_TAG_VALUE_LENGTH,
 };
 
 // Re-export SeriesEntryResolved (defined below)

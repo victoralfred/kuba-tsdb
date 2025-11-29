@@ -639,3 +639,178 @@ fn test_large_time_range() {
         result.points.len()
     );
 }
+
+// ============================================================================
+// Additional Edge Case Tests (from code review suggestions)
+// ============================================================================
+
+#[test]
+fn test_bitmap_word_boundary() {
+    use gorilla_tsdb::aggregation::index::TagBitmap;
+
+    let mut bitmap = TagBitmap::new();
+
+    // Test bits at word boundaries (64-bit words)
+    bitmap.set(63); // Last bit of word 0
+    bitmap.set(64); // First bit of word 1
+    bitmap.set(127); // Last bit of word 1
+    bitmap.set(128); // First bit of word 2
+
+    assert!(bitmap.contains(63));
+    assert!(bitmap.contains(64));
+    assert!(bitmap.contains(127));
+    assert!(bitmap.contains(128));
+    assert_eq!(bitmap.cardinality(), 4);
+
+    // Test iteration across word boundaries
+    let ids: Vec<_> = bitmap.to_series_ids();
+    assert_eq!(ids, vec![63, 64, 127, 128]);
+}
+
+#[test]
+fn test_bitmap_duplicate_set() {
+    use gorilla_tsdb::aggregation::index::TagBitmap;
+
+    let mut bitmap = TagBitmap::new();
+
+    bitmap.set(100);
+    assert_eq!(bitmap.cardinality(), 1);
+
+    // Setting same bit again shouldn't change cardinality
+    bitmap.set(100);
+    assert_eq!(bitmap.cardinality(), 1);
+}
+
+#[test]
+fn test_tag_filter_display() {
+    use gorilla_tsdb::aggregation::data_model::{TagKeyId, TagValueId};
+    use gorilla_tsdb::aggregation::index::TagFilter;
+
+    let filter = TagFilter::All;
+    assert_eq!(filter.to_string(), "*");
+
+    let filter = TagFilter::exact(TagKeyId(1), TagValueId(2));
+    assert_eq!(filter.to_string(), "tag[1]=2");
+
+    let filter = TagFilter::has_key(TagKeyId(5));
+    assert_eq!(filter.to_string(), "tag[5]=*");
+
+    let filter = TagFilter::and(vec![
+        TagFilter::exact(TagKeyId(1), TagValueId(1)),
+        TagFilter::exact(TagKeyId(2), TagValueId(2)),
+    ]);
+    assert!(filter.to_string().contains("AND"));
+
+    let filter = TagFilter::negate(TagFilter::exact(TagKeyId(1), TagValueId(1)));
+    assert!(filter.to_string().starts_with("NOT"));
+}
+
+#[test]
+fn test_kmv_estimator_duplicates() {
+    use gorilla_tsdb::aggregation::cardinality::CardinalityEstimator;
+
+    let mut estimator = CardinalityEstimator::new(256);
+
+    // Add same item multiple times
+    for _ in 0..1000 {
+        estimator.add("duplicate_item");
+    }
+
+    // Should estimate cardinality as 1
+    assert_eq!(estimator.estimate(), 1);
+}
+
+#[test]
+fn test_kmv_estimator_exact_when_under_k() {
+    use gorilla_tsdb::aggregation::cardinality::CardinalityEstimator;
+
+    let mut estimator = CardinalityEstimator::new(256);
+
+    // Add fewer items than k
+    for i in 0..100 {
+        estimator.add(&format!("item_{}", i));
+    }
+
+    // Should return exact count when under k
+    assert_eq!(estimator.estimate(), 100);
+}
+
+#[test]
+fn test_kmv_estimator_merge_error() {
+    use gorilla_tsdb::aggregation::cardinality::{CardinalityEstimator, CardinalityMergeError};
+
+    let mut est1 = CardinalityEstimator::new(64);
+    let est2 = CardinalityEstimator::new(128);
+
+    // Different k values should error
+    let result = est1.merge(&est2);
+    assert!(result.is_err());
+
+    match result {
+        Err(CardinalityMergeError::MismatchedK { self_k, other_k }) => {
+            assert_eq!(self_k, 64);
+            assert_eq!(other_k, 128);
+        }
+        Ok(_) => panic!("Expected merge to fail with mismatched k"),
+    }
+}
+
+#[test]
+fn test_moving_functions_edge_cases() {
+    use gorilla_tsdb::aggregation::functions::{moving_avg, moving_max, moving_min, moving_sum};
+
+    // Empty input
+    let empty: Vec<f64> = vec![];
+    assert!(moving_avg(&empty, 5).is_empty());
+    assert!(moving_sum(&empty, 5).is_empty());
+    assert!(moving_min(&empty, 5).is_empty());
+    assert!(moving_max(&empty, 5).is_empty());
+
+    // Window size 0
+    let values = vec![1.0, 2.0, 3.0];
+    assert!(moving_avg(&values, 0).is_empty());
+    assert!(moving_sum(&values, 0).is_empty());
+
+    // Window larger than MAX_WINDOW_SIZE
+    use gorilla_tsdb::aggregation::functions::MAX_WINDOW_SIZE;
+    assert!(moving_avg(&values, MAX_WINDOW_SIZE + 1).is_empty());
+}
+
+#[test]
+fn test_time_functions_negative_timestamps() {
+    use gorilla_tsdb::aggregation::functions::{day_of_month, day_of_week, hour, minute};
+
+    // Negative timestamps should return None
+    assert!(hour(-1000).is_none());
+    assert!(minute(-1000).is_none());
+    assert!(day_of_week(-1000).is_none());
+    assert!(day_of_month(-1000).is_none());
+
+    // Positive timestamps should work
+    assert!(hour(0).is_some());
+    assert_eq!(hour(0), Some(0)); // Midnight UTC
+}
+
+#[test]
+fn test_string_length_validation() {
+    use gorilla_tsdb::aggregation::metadata::{
+        InternError, TagDictionary, MAX_TAG_KEY_LENGTH, MAX_TAG_VALUE_LENGTH,
+    };
+
+    let dict = TagDictionary::new();
+
+    // Key too long
+    let long_key = "k".repeat(MAX_TAG_KEY_LENGTH + 1);
+    let result = dict.try_intern_key(&long_key);
+    assert!(matches!(result, Err(InternError::StringTooLong { .. })));
+
+    // Value too long
+    let key_id = dict.intern_key("test");
+    let long_value = "v".repeat(MAX_TAG_VALUE_LENGTH + 1);
+    let result = dict.try_intern_value(key_id, &long_value);
+    assert!(matches!(result, Err(InternError::StringTooLong { .. })));
+
+    // Valid lengths should work
+    let valid_key = "k".repeat(MAX_TAG_KEY_LENGTH);
+    assert!(dict.try_intern_key(&valid_key).is_ok());
+}

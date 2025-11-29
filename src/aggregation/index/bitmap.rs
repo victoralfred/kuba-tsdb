@@ -576,6 +576,33 @@ impl TagFilter {
     }
 }
 
+impl std::fmt::Display for TagFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TagFilter::All => write!(f, "*"),
+            TagFilter::Exact(k, v) => write!(f, "tag[{}]={}", k.0, v.0),
+            TagFilter::And(filters) => {
+                if filters.is_empty() {
+                    write!(f, "(empty AND)")
+                } else {
+                    let parts: Vec<_> = filters.iter().map(|flt| flt.to_string()).collect();
+                    write!(f, "({})", parts.join(" AND "))
+                }
+            }
+            TagFilter::Or(filters) => {
+                if filters.is_empty() {
+                    write!(f, "(empty OR)")
+                } else {
+                    let parts: Vec<_> = filters.iter().map(|flt| flt.to_string()).collect();
+                    write!(f, "({})", parts.join(" OR "))
+                }
+            }
+            TagFilter::Not(inner) => write!(f, "NOT {}", inner),
+            TagFilter::HasKey(k) => write!(f, "tag[{}]=*", k.0),
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

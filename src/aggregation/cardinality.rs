@@ -215,6 +215,26 @@ pub struct CardinalityStats {
     pub memory_bytes: usize,
 }
 
+impl std::fmt::Display for CardinalityStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Cardinality Statistics:")?;
+        writeln!(f, "  Active series: {}", self.active_series)?;
+        writeln!(f, "  Series this window: {}", self.series_this_window)?;
+        writeln!(f, "  Tracked labels: {}", self.tracked_labels)?;
+        writeln!(f, "  Rejected series: {}", self.rejected_series)?;
+        writeln!(f, "  Dropped labels: {}", self.dropped_labels)?;
+        writeln!(f, "  Rate limit hits: {}", self.rate_limit_hits)?;
+        writeln!(f, "  Memory: {} bytes", self.memory_bytes)?;
+        if !self.high_cardinality_labels.is_empty() {
+            writeln!(f, "  High cardinality labels:")?;
+            for (label, count) in &self.high_cardinality_labels {
+                writeln!(f, "    - {}: {} values", label, count)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Label Cardinality Tracker
 // ============================================================================

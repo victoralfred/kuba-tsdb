@@ -49,11 +49,7 @@ impl std::fmt::Display for InternError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InternError::StringTooLong { actual, max } => {
-                write!(
-                    f,
-                    "String too long: {} bytes (max: {} bytes)",
-                    actual, max
-                )
+                write!(f, "String too long: {} bytes (max: {} bytes)", actual, max)
             }
         }
     }
@@ -443,7 +439,11 @@ impl TagDictionary {
     /// Try to intern a tag value with length validation
     ///
     /// VAL-003: Returns error if value exceeds MAX_TAG_VALUE_LENGTH
-    pub fn try_intern_value(&self, key_id: TagKeyId, value: &str) -> Result<TagValueId, InternError> {
+    pub fn try_intern_value(
+        &self,
+        key_id: TagKeyId,
+        value: &str,
+    ) -> Result<TagValueId, InternError> {
         if value.len() > MAX_TAG_VALUE_LENGTH {
             return Err(InternError::StringTooLong {
                 actual: value.len(),
@@ -463,7 +463,11 @@ impl TagDictionary {
     /// Try to intern a complete tag with length validation
     ///
     /// VAL-003: Returns error if key or value exceeds limits
-    pub fn try_intern_tag(&self, key: &str, value: &str) -> Result<(TagKeyId, TagValueId), InternError> {
+    pub fn try_intern_tag(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<(TagKeyId, TagValueId), InternError> {
         let key_id = self.try_intern_key(key)?;
         let value_id = self.try_intern_value(key_id, value)?;
         Ok((key_id, value_id))
