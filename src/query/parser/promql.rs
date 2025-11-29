@@ -24,13 +24,13 @@
 //! ```
 
 use nom::{
-    IResult, Parser,
     branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1, take_while},
+    bytes::complete::{tag, tag_no_case, take_while, take_while1},
     character::complete::{char, digit1, multispace0},
     combinator::{map, opt, value},
     multi::separated_list0,
     sequence::{delimited, preceded},
+    IResult, Parser,
 };
 
 use crate::query::ast::{
@@ -68,7 +68,8 @@ fn parse_promql_internal(input: &str) -> IResult<&str, Query> {
         parse_aggregation_expr,
         parse_rate_expr,
         parse_vector_selector,
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 // ============================================================================
@@ -92,13 +93,15 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
     let (input, group_by) = opt(preceded(
         (multispace0, tag_no_case("by"), multispace0),
         parse_label_list,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional offset
     let (input, _offset) = opt(preceded(
         (multispace1, tag_no_case("offset"), multispace1),
         parse_duration,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Build time range
     let now = current_time_nanos();
@@ -120,19 +123,22 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
         offset: None,
     });
 
-    Ok((input, Query::Aggregate(AggregateQuery {
-        selector,
-        time_range,
-        aggregation: Aggregation {
-            function: func,
-            window,
-            group_by: group_by.unwrap_or_default(),
-            fill: FillStrategy::None,
-        },
-        predicates: vec![],
-        order_by: None,
-        limit: None,
-    })))
+    Ok((
+        input,
+        Query::Aggregate(AggregateQuery {
+            selector,
+            time_range,
+            aggregation: Aggregation {
+                function: func,
+                window,
+                group_by: group_by.unwrap_or_default(),
+                fill: FillStrategy::None,
+            },
+            predicates: vec![],
+            order_by: None,
+            limit: None,
+        }),
+    ))
 }
 
 /// Parse aggregation function name
@@ -146,8 +152,12 @@ fn parse_agg_function(input: &str) -> IResult<&str, AggregationFunction> {
         value(AggregationFunction::StdDev, tag_no_case("stddev")),
         value(AggregationFunction::Variance, tag_no_case("stdvar")),
         value(AggregationFunction::Median, tag_no_case("median")),
-        value(AggregationFunction::CountDistinct, tag_no_case("count_values")),
-    )).parse(input)
+        value(
+            AggregationFunction::CountDistinct,
+            tag_no_case("count_values"),
+        ),
+    ))
+    .parse(input)
 }
 
 // ============================================================================
@@ -184,19 +194,22 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
         offset: None,
     };
 
-    Ok((input, Query::Aggregate(AggregateQuery {
-        selector,
-        time_range,
-        aggregation: Aggregation {
-            function: func,
-            window: Some(window),
-            group_by: vec![],
-            fill: FillStrategy::None,
-        },
-        predicates: vec![],
-        order_by: None,
-        limit: None,
-    })))
+    Ok((
+        input,
+        Query::Aggregate(AggregateQuery {
+            selector,
+            time_range,
+            aggregation: Aggregation {
+                function: func,
+                window: Some(window),
+                group_by: vec![],
+                fill: FillStrategy::None,
+            },
+            predicates: vec![],
+            order_by: None,
+            limit: None,
+        }),
+    ))
 }
 
 /// Parse rate function name
@@ -206,7 +219,8 @@ fn parse_rate_function(input: &str) -> IResult<&str, AggregationFunction> {
         value(AggregationFunction::Increase, tag_no_case("increase")),
         value(AggregationFunction::Delta, tag_no_case("delta")),
         value(AggregationFunction::Delta, tag_no_case("idelta")),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 // ============================================================================
@@ -221,7 +235,8 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
     let (input, offset) = opt(preceded(
         (multispace1, tag_no_case("offset"), multispace1),
         parse_duration,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     let now = current_time_nanos();
 
@@ -245,19 +260,26 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
         }
     };
 
-    Ok((input, Query::Select(SelectQuery {
-        selector,
-        time_range,
-        predicates: vec![],
-        projections: vec![],
-        order_by: None,
-        limit: None,
-        offset: None,
-    })))
+    Ok((
+        input,
+        Query::Select(SelectQuery {
+            selector,
+            time_range,
+            predicates: vec![],
+            projections: vec![],
+            order_by: None,
+            limit: None,
+            offset: None,
+        }),
+    ))
 }
 
+/// Parsed vector selector result type
+type VectorSelectorResult = (SeriesSelector, Option<Duration>, Vec<(String, String)>);
+
 /// Parse vector selector components
-fn parse_vector_selector_inner(input: &str) -> IResult<&str, (SeriesSelector, Option<Duration>, Vec<(String, String)>)> {
+#[allow(clippy::type_complexity)]
+fn parse_vector_selector_inner(input: &str) -> IResult<&str, VectorSelectorResult> {
     // Parse metric name
     let (input, metric_name) = parse_metric_name(input)?;
 
@@ -269,8 +291,9 @@ fn parse_vector_selector_inner(input: &str) -> IResult<&str, (SeriesSelector, Op
     let (input, range) = opt(parse_range).parse(input)?;
 
     // Build selector
-    let selector = SeriesSelector::by_measurement(metric_name)
-        .map_err(|_| nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail)))?;
+    let selector = SeriesSelector::by_measurement(metric_name).map_err(|_| {
+        nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
+    })?;
 
     Ok((input, (selector, range, labels)))
 }
@@ -284,12 +307,10 @@ fn parse_metric_name(input: &str) -> IResult<&str, &str> {
 fn parse_label_matchers(input: &str) -> IResult<&str, Vec<(String, String)>> {
     delimited(
         (multispace0, char('{')),
-        separated_list0(
-            (multispace0, char(','), multispace0),
-            parse_label_matcher,
-        ),
+        separated_list0((multispace0, char(','), multispace0), parse_label_matcher),
         (multispace0, char('}')),
-    ).parse(input)
+    )
+    .parse(input)
 }
 
 /// Parse single label matcher
@@ -299,12 +320,7 @@ fn parse_label_matcher(input: &str) -> IResult<&str, (String, String)> {
     let (input, _) = multispace0(input)?;
 
     // Parse operator
-    let (input, _op) = alt((
-        tag("=~"),
-        tag("!~"),
-        tag("!="),
-        tag("="),
-    )).parse(input)?;
+    let (input, _op) = alt((tag("=~"), tag("!~"), tag("!="), tag("="))).parse(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, val) = parse_string_value(input)?;
@@ -322,7 +338,8 @@ fn parse_string_value(input: &str) -> IResult<&str, &str> {
     alt((
         delimited(char('"'), take_while(|c| c != '"'), char('"')),
         delimited(char('\''), take_while(|c| c != '\''), char('\'')),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse range: [5m]
@@ -331,7 +348,8 @@ fn parse_range(input: &str) -> IResult<&str, Duration> {
         (multispace0, char('[')),
         parse_duration,
         (multispace0, char(']')),
-    ).parse(input)
+    )
+    .parse(input)
 }
 
 /// Parse label list for BY clause
@@ -343,7 +361,8 @@ fn parse_label_list(input: &str) -> IResult<&str, Vec<String>> {
             map(parse_label_name, String::from),
         ),
         (multispace0, char(')')),
-    ).parse(input)
+    )
+    .parse(input)
 }
 
 // ============================================================================
@@ -361,7 +380,8 @@ fn parse_duration(input: &str) -> IResult<&str, Duration> {
         tag("d"),
         tag("w"),
         tag("y"),
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     let num: u64 = num_str.parse().unwrap_or(0);
     let duration = match unit {
@@ -503,7 +523,10 @@ mod tests {
         assert!(result.is_ok());
         match result.unwrap() {
             Query::Aggregate(q) => {
-                assert!(matches!(q.aggregation.function, AggregationFunction::Increase));
+                assert!(matches!(
+                    q.aggregation.function,
+                    AggregationFunction::Increase
+                ));
             }
             _ => panic!("Expected Aggregate query"),
         }

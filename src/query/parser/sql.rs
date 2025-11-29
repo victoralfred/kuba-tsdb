@@ -28,13 +28,13 @@
 //! ```
 
 use nom::{
-    IResult, Parser,
     branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1, take_while},
+    bytes::complete::{tag, tag_no_case, take_while, take_while1},
     character::complete::{char, digit1, multispace0, multispace1},
     combinator::{map, opt, value},
     multi::separated_list0,
     sequence::{delimited, preceded},
+    IResult, Parser,
 };
 
 use crate::query::ast::{
@@ -99,41 +99,60 @@ fn parse_select_query(input: &str) -> IResult<&str, Query> {
     let (input, where_clause) = opt(preceded(
         (multispace1, tag_no_case("WHERE"), multispace1),
         parse_where_clause,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional GROUP BY clause
     let (input, group_by) = opt(preceded(
-        (multispace1, tag_no_case("GROUP"), multispace1, tag_no_case("BY"), multispace1),
+        (
+            multispace1,
+            tag_no_case("GROUP"),
+            multispace1,
+            tag_no_case("BY"),
+            multispace1,
+        ),
         parse_group_by,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional DOWNSAMPLE clause
     let (input, downsample) = opt(preceded(
         (multispace1, tag_no_case("DOWNSAMPLE"), multispace1),
         parse_downsample_clause,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional ORDER BY clause
     let (input, order_by) = opt(preceded(
-        (multispace1, tag_no_case("ORDER"), multispace1, tag_no_case("BY"), multispace1),
+        (
+            multispace1,
+            tag_no_case("ORDER"),
+            multispace1,
+            tag_no_case("BY"),
+            multispace1,
+        ),
         parse_order_by,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional LIMIT
     let (input, limit) = opt(preceded(
         (multispace1, tag_no_case("LIMIT"), multispace1),
         parse_number,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Parse optional OFFSET
     let (input, offset) = opt(preceded(
         (multispace1, tag_no_case("OFFSET"), multispace1),
         parse_number,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     // Build selector
-    let selector = SeriesSelector::by_measurement(measurement)
-        .map_err(|_| nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail)))?;
+    let selector = SeriesSelector::by_measurement(measurement).map_err(|_| {
+        nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
+    })?;
 
     // Extract time range and predicates
     let (time_range, predicates) = if let Some((tr, preds)) = where_clause {
@@ -146,50 +165,69 @@ fn parse_select_query(input: &str) -> IResult<&str, Query> {
     if let Some((agg_funcs, _)) = extract_aggregations(&columns) {
         let window = group_by;
         let aggregation = Aggregation {
-            function: agg_funcs[0].clone(),
+            function: agg_funcs[0],
             window,
             group_by: vec![],
             fill: FillStrategy::None,
         };
 
-        return Ok((input, Query::Aggregate(AggregateQuery {
-            selector,
-            time_range,
-            aggregation,
-            predicates,
-            order_by,
-            limit,
-        })));
+        return Ok((
+            input,
+            Query::Aggregate(AggregateQuery {
+                selector,
+                time_range,
+                aggregation,
+                predicates,
+                order_by,
+                limit,
+            }),
+        ));
     }
 
     // Check for DOWNSAMPLE
     if let Some((target_points, method)) = downsample {
-        return Ok((input, Query::Downsample(DownsampleQuery {
-            selector,
-            time_range,
-            target_points,
-            method,
-        })));
+        return Ok((
+            input,
+            Query::Downsample(DownsampleQuery {
+                selector,
+                time_range,
+                target_points,
+                method,
+            }),
+        ));
     }
 
     // Check for LATEST
-    if columns.iter().any(|c| c.to_uppercase() == "LATEST" || c.to_uppercase() == "LAST") {
-        return Ok((input, Query::Latest(LatestQuery {
-            selector,
-            count: limit.unwrap_or(1),
-        })));
+    if columns
+        .iter()
+        .any(|c| c.to_uppercase() == "LATEST" || c.to_uppercase() == "LAST")
+    {
+        return Ok((
+            input,
+            Query::Latest(LatestQuery {
+                selector,
+                count: limit.unwrap_or(1),
+            }),
+        ));
     }
 
     // Default: basic SELECT query
-    Ok((input, Query::Select(SelectQuery {
-        selector,
-        time_range,
-        predicates,
-        projections: if columns.iter().any(|c| c == "*") { vec![] } else { columns },
-        order_by,
-        limit,
-        offset,
-    })))
+    Ok((
+        input,
+        Query::Select(SelectQuery {
+            selector,
+            time_range,
+            predicates,
+            projections: if columns.iter().any(|c| c == "*") {
+                vec![]
+            } else {
+                columns
+            },
+            order_by,
+            limit,
+            offset,
+        }),
+    ))
 }
 
 // ============================================================================
@@ -200,19 +238,14 @@ fn parse_select_query(input: &str) -> IResult<&str, Query> {
 fn parse_column_list(input: &str) -> IResult<&str, Vec<String>> {
     alt((
         map(char('*'), |_| vec!["*".to_string()]),
-        separated_list0(
-            (multispace0, char(','), multispace0),
-            parse_column_item,
-        ),
-    )).parse(input)
+        separated_list0((multispace0, char(','), multispace0), parse_column_item),
+    ))
+    .parse(input)
 }
 
 /// Parse a single column item
 fn parse_column_item(input: &str) -> IResult<&str, String> {
-    alt((
-        parse_aggregation_call,
-        map(parse_identifier, String::from),
-    )).parse(input)
+    alt((parse_aggregation_call, map(parse_identifier, String::from))).parse(input)
 }
 
 /// Parse aggregation function call like avg(value)
@@ -230,7 +263,8 @@ fn parse_aggregation_call(input: &str) -> IResult<&str, String> {
         tag_no_case("last"),
         tag_no_case("rate"),
         tag_no_case("percentile"),
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = char('(')(input)?;
@@ -242,7 +276,9 @@ fn parse_aggregation_call(input: &str) -> IResult<&str, String> {
 }
 
 /// Extract aggregation functions from column list
-fn extract_aggregations(columns: &[String]) -> Option<(Vec<AggregationFunction>, Option<WindowSpec>)> {
+fn extract_aggregations(
+    columns: &[String],
+) -> Option<(Vec<AggregationFunction>, Option<WindowSpec>)> {
     let mut agg_funcs = Vec::new();
 
     for col in columns {
@@ -288,7 +324,8 @@ fn parse_where_clause(input: &str) -> IResult<&str, (TimeRange, Vec<Predicate>)>
     let (input, conditions) = separated_list0(
         (multispace1, tag_no_case("AND"), multispace1),
         parse_condition,
-    ).parse(input)?;
+    )
+    .parse(input)?;
 
     let mut start_time: Option<i64> = None;
     let mut end_time: Option<i64> = None;
@@ -329,20 +366,15 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
         parse_time_condition,
         parse_value_predicate,
         parse_tag_condition,
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse time condition
 fn parse_time_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = tag_no_case("time").parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, op) = alt((
-        tag(">="),
-        tag(">"),
-        tag("<="),
-        tag("<"),
-        tag("="),
-    )).parse(input)?;
+    let (input, op) = alt((tag(">="), tag(">"), tag("<="), tag("<"), tag("="))).parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, time_value) = parse_time_expression(input)?;
 
@@ -369,7 +401,8 @@ fn parse_relative_time(input: &str) -> IResult<&str, i64> {
     let (input, offset) = opt(preceded(
         (multispace0, char('-'), multispace0),
         parse_duration,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     let now = current_time_nanos();
     let result = if let Some(duration) = offset {
@@ -393,7 +426,8 @@ fn parse_duration(input: &str) -> IResult<&str, Duration> {
         tag_no_case("h"),
         tag_no_case("d"),
         tag_no_case("w"),
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     let num: u64 = num_str.parse().unwrap_or(0);
     let duration = match unit.to_lowercase().as_str() {
@@ -426,11 +460,14 @@ fn parse_value_predicate(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, val) = parse_number_f64(input)?;
 
-    Ok((input, Condition::Predicate(Predicate {
-        field: "value".to_string(),
-        op,
-        value: PredicateValue::Float(val),
-    })))
+    Ok((
+        input,
+        Condition::Predicate(Predicate {
+            field: "value".to_string(),
+            op,
+            value: PredicateValue::Float(val),
+        }),
+    ))
 }
 
 /// Parse predicate operator
@@ -443,7 +480,8 @@ fn parse_predicate_op(input: &str) -> IResult<&str, PredicateOp> {
         value(PredicateOp::Eq, tag("=")),
         value(PredicateOp::Ne, tag("!=")),
         value(PredicateOp::Ne, tag("<>")),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse tag condition
@@ -454,11 +492,14 @@ fn parse_tag_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, tag_value) = parse_string_literal(input)?;
 
-    Ok((input, Condition::Predicate(Predicate {
-        field: tag_name.to_string(),
-        op: PredicateOp::Eq,
-        value: PredicateValue::String(tag_value.to_string()),
-    })))
+    Ok((
+        input,
+        Condition::Predicate(Predicate {
+            field: tag_name.to_string(),
+            op: PredicateOp::Eq,
+            value: PredicateValue::String(tag_value.to_string()),
+        }),
+    ))
 }
 
 // ============================================================================
@@ -475,11 +516,14 @@ fn parse_group_by(input: &str) -> IResult<&str, WindowSpec> {
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
 
-    Ok((input, WindowSpec {
-        duration,
-        window_type: WindowType::Tumbling,
-        offset: None,
-    }))
+    Ok((
+        input,
+        WindowSpec {
+            duration,
+            window_type: WindowType::Tumbling,
+            offset: None,
+        },
+    ))
 }
 
 // ============================================================================
@@ -494,7 +538,8 @@ fn parse_downsample_clause(input: &str) -> IResult<&str, (usize, DownsampleMetho
     let (input, method) = opt(preceded(
         (multispace1, tag_no_case("USING"), multispace1),
         parse_downsample_method,
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
     Ok((input, (target, method.unwrap_or(DownsampleMethod::Lttb))))
 }
@@ -506,7 +551,8 @@ fn parse_downsample_method(input: &str) -> IResult<&str, DownsampleMethod> {
         value(DownsampleMethod::M4, tag_no_case("m4")),
         value(DownsampleMethod::Average, tag_no_case("average")),
         value(DownsampleMethod::Average, tag_no_case("avg")),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 // ============================================================================
@@ -522,12 +568,16 @@ fn parse_order_by(input: &str) -> IResult<&str, OrderBy> {
             value(OrderDirection::Asc, tag_no_case("ASC")),
             value(OrderDirection::Desc, tag_no_case("DESC")),
         )),
-    )).parse(input)?;
+    ))
+    .parse(input)?;
 
-    Ok((input, OrderBy {
-        field: OrderField::Timestamp,
-        direction: direction.unwrap_or(OrderDirection::Asc),
-    }))
+    Ok((
+        input,
+        OrderBy {
+            field: OrderField::Timestamp,
+            direction: direction.unwrap_or(OrderDirection::Asc),
+        },
+    ))
 }
 
 /// Parse LIMIT number
@@ -571,7 +621,8 @@ fn parse_string_literal(input: &str) -> IResult<&str, &str> {
     alt((
         delimited(char('\''), take_while(|c| c != '\''), char('\'')),
         delimited(char('"'), take_while(|c| c != '"'), char('"')),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Get current time in nanoseconds
@@ -701,7 +752,10 @@ mod tests {
         match result.unwrap() {
             Query::Select(q) => {
                 assert!(q.order_by.is_some());
-                assert!(matches!(q.order_by.unwrap().direction, OrderDirection::Desc));
+                assert!(matches!(
+                    q.order_by.unwrap().direction,
+                    OrderDirection::Desc
+                ));
             }
             _ => panic!("Expected Select query"),
         }

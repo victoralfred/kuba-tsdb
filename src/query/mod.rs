@@ -88,10 +88,10 @@ pub use operators::{
     AggregationOperator, DataBatch, DownsampleOperator, FilterOperator, Operator, ScanOperator,
     StorageQueryExt, StorageScanOperator,
 };
+pub use parser::{parse_promql, parse_query, parse_sql};
 pub use planner::{QueryPlan, QueryPlanner};
 pub use result::{QueryResult, ResultFormat, ResultRow};
 pub use subscription::{
     QuerySubscription, SharedSubscriptionManager, SubscriptionConfig, SubscriptionManager,
     SubscriptionUpdate,
 };
-pub use parser::{parse_query, parse_promql, parse_sql};
