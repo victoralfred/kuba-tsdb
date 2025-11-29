@@ -2,21 +2,21 @@
 # These owners will be requested for review when someone opens a pull request
 
 # Default owners for everything in the repo
-* @voseghale
+* @victoralfred
 
 # Core compression and storage modules - require careful review
-/src/compression/ @voseghale
-/src/storage/ @voseghale
+/src/compression/ @victoralfred
+/src/storage/ @victoralfred
 
 # Security-sensitive code
-/src/security.rs @voseghale
-/src/ingestion/network/ @voseghale
+/src/security.rs @victoralfred
+/src/ingestion/network/ @victoralfred
 
 # CI/CD and infrastructure
-/.github/ @voseghale
-/Dockerfile @voseghale
-/docker-compose.yml @voseghale
+/.github/ @victoralfred
+/Dockerfile @victoralfred
+/docker-compose.yml @victoralfred
 
 # Documentation
-/docs/ @voseghale
-*.md @voseghale
+/docs/ @victoralfred
+*.md @victoralfred
