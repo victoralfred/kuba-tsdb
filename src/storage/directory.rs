@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
+#[cfg(not(unix))]
+use tokio::io::AsyncWriteExt;
 
 /// Series metadata stored in metadata.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,7 +295,13 @@ impl WriteLock {
             None => return Ok(()), // Malformed, can't validate
         };
 
+        #[cfg(unix)]
         let (pid, timestamp) = match (pid_str.parse::<u32>(), timestamp_str.parse::<i64>()) {
+            (Ok(p), Ok(t)) => (p, t),
+            _ => return Ok(()), // Can't parse, leave it alone
+        };
+        #[cfg(not(unix))]
+        let (_, timestamp) = match (pid_str.parse::<u32>(), timestamp_str.parse::<i64>()) {
             (Ok(p), Ok(t)) => (p, t),
             _ => return Ok(()), // Can't parse, leave it alone
         };

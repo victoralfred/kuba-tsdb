@@ -126,6 +126,7 @@ impl TcpListener {
     /// Configures the socket with:
     /// - SO_REUSEADDR for quick restart after crash
     /// - SO_REUSEPORT for multi-threaded accept (if enabled)
+    #[allow(unused_variables)]
     fn create_socket(addr: SocketAddr, config: &ConnectionConfig) -> Result<Socket, NetworkError> {
         // Determine domain based on address family
         let domain = if addr.is_ipv4() {
