@@ -3,18 +3,31 @@
 //! Provides persistent storage for time-series data using the local filesystem.
 //! Data is organized into series directories with compressed chunk files.
 
-use crate::engine::traits::{StorageEngine, StorageStats};
+use crate::engine::traits::{SeriesMetadata, StorageEngine, StorageStats};
 use crate::error::StorageError;
 use crate::storage::chunk::{ChunkMetadata, CompressionType};
 use crate::types::{ChunkId, SeriesId};
 use async_trait::async_trait;
 use futures::StreamExt;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
-use tracing::warn;
+use tokio::io::AsyncWriteExt;
+use tracing::{info, warn};
+
+/// Persisted series metadata entry
+/// Contains all information needed to reconstruct the in-memory index on startup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSeriesEntry {
+    series_id: SeriesId,
+    metric_name: String,
+    tags: HashMap<String, String>,
+    created_at: i64,
+    retention_days: Option<u32>,
+}
 
 /// Local disk storage engine
 ///
@@ -50,6 +63,10 @@ pub struct LocalDiskEngine {
     /// In-memory index of chunks by series
     /// Maps series_id -> `Vec<ChunkMetadata>`
     chunk_index: Arc<RwLock<HashMap<SeriesId, Vec<ChunkMetadata>>>>,
+
+    /// In-memory series metadata (metric_name, tags, etc.)
+    /// Maps series_id -> PersistedSeriesEntry
+    series_metadata: Arc<RwLock<HashMap<SeriesId, PersistedSeriesEntry>>>,
 
     /// Storage statistics
     stats: Arc<RwLock<StorageStats>>,
@@ -87,6 +104,7 @@ impl LocalDiskEngine {
         Ok(Self {
             base_path,
             chunk_index: Arc::new(RwLock::new(HashMap::new())),
+            series_metadata: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(StorageStats::default())),
         })
     }
@@ -114,10 +132,14 @@ impl LocalDiskEngine {
             .join(format!("chunk_{}.{}", chunk_id, extension))
     }
 
-    /// Load chunk index from disk on startup
+    /// Load chunk index and series metadata from disk on startup
     ///
     /// Scans the storage directory and builds an in-memory index of all chunks.
+    /// Also loads persisted series metadata (metric names, tags).
     pub async fn load_index(&self) -> Result<(), StorageError> {
+        // First, load series metadata
+        self.load_series_metadata().await?;
+
         // Read all series directories (without holding lock)
         let mut entries = fs::read_dir(&self.base_path).await?;
         let mut series_to_load = Vec::new();
@@ -133,20 +155,45 @@ impl LocalDiskEngine {
                 if let Some(id_str) = dir_name.strip_prefix("series_") {
                     if let Ok(series_id) = id_str.parse::<SeriesId>() {
                         series_to_load.push(series_id);
+                    } else {
+                        warn!("Failed to parse series_id from directory name: {}", dir_name);
                     }
                 }
             }
         }
 
+        info!("Found {} series directories to load", series_to_load.len());
+
         // Load chunks for each series (still without lock)
-        for series_id in series_to_load {
-            let chunks = self.load_series_chunks(series_id).await?;
+        let mut total_chunks_loaded = 0usize;
+        for series_id in &series_to_load {
+            let chunks = self.load_series_chunks(*series_id).await?;
+            let chunk_count = chunks.len();
             if !chunks.is_empty() {
                 // Now acquire lock briefly to insert
                 let mut index = self.chunk_index.write();
-                index.insert(series_id, chunks);
+                index.insert(*series_id, chunks);
                 // Lock dropped here
+                total_chunks_loaded += chunk_count;
             }
+        }
+
+        info!(
+            "Loaded {} total chunks from {} series directories",
+            total_chunks_loaded, series_to_load.len()
+        );
+
+        // Update stats to reflect loaded chunks
+        if total_chunks_loaded > 0 {
+            let mut stats = self.stats.write();
+            stats.total_chunks = total_chunks_loaded as u64;
+            // Calculate total bytes from the loaded chunks
+            let index = self.chunk_index.read();
+            let total_bytes: u64 = index.values()
+                .flat_map(|chunks| chunks.iter())
+                .map(|c| c.size_bytes)
+                .sum();
+            stats.total_bytes = total_bytes;
         }
 
         Ok(())
@@ -167,29 +214,47 @@ impl LocalDiskEngine {
 
         let mut chunks = Vec::new();
         let mut entries = fs::read_dir(&series_dir).await?;
+        let mut files_checked = 0u32;
+        let mut skipped_open = 0u32;
+        let mut skipped_read = 0u32;
+        let mut skipped_parse = 0u32;
+        let mut skipped_validate = 0u32;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("gor") {
+                files_checked += 1;
                 // Read chunk header to get metadata
                 let mut file = match fs::File::open(&path).await {
                     Ok(f) => f,
-                    Err(_) => continue, // Skip files we can't open
+                    Err(e) => {
+                        skipped_open += 1;
+                        warn!("Failed to open chunk file {:?}: {}", path, e);
+                        continue;
+                    }
                 };
 
                 let mut header_bytes = [0u8; 64];
-                if file.read_exact(&mut header_bytes).await.is_err() {
-                    continue; // Skip corrupted files
+                if let Err(e) = file.read_exact(&mut header_bytes).await {
+                    skipped_read += 1;
+                    warn!("Failed to read header from {:?}: {}", path, e);
+                    continue;
                 }
 
                 let header = match ChunkHeader::from_bytes(&header_bytes) {
                     Ok(h) => h,
-                    Err(_) => continue, // Skip invalid headers
+                    Err(e) => {
+                        skipped_parse += 1;
+                        warn!("Failed to parse header from {:?}: {}", path, e);
+                        continue;
+                    }
                 };
 
                 // Validate header before adding to index
-                if header.validate().is_err() {
-                    continue; // Skip invalid chunks
+                if let Err(e) = header.validate() {
+                    skipped_validate += 1;
+                    warn!("Invalid header in {:?}: {}", path, e);
+                    continue;
                 }
 
                 let file_metadata = fs::metadata(&path).await?;
@@ -221,6 +286,20 @@ impl LocalDiskEngine {
                     last_accessed: chrono::Utc::now().timestamp_millis(),
                 });
             }
+        }
+
+        // Log skipped chunks if any
+        if skipped_open + skipped_read + skipped_parse + skipped_validate > 0 {
+            warn!(
+                series_id = series_id,
+                files_checked = files_checked,
+                loaded = chunks.len(),
+                skipped_open = skipped_open,
+                skipped_read = skipped_read,
+                skipped_parse = skipped_parse,
+                skipped_validate = skipped_validate,
+                "Some chunk files were skipped during load"
+            );
         }
 
         chunks.sort_by_key(|c| c.start_timestamp);
@@ -261,6 +340,115 @@ impl LocalDiskEngine {
     /// Get base path for this storage engine
     pub fn base_path(&self) -> &PathBuf {
         &self.base_path
+    }
+
+    /// Get the path for the series metadata file
+    fn series_metadata_path(&self) -> PathBuf {
+        self.base_path.join("series_metadata.json")
+    }
+
+    /// Save series metadata to disk
+    ///
+    /// Persists all series metadata to a JSON file for recovery on restart.
+    async fn save_series_metadata(&self) -> Result<(), StorageError> {
+        // Collect entries in a sync block to avoid holding RwLock across await
+        // The lock guard must not exist across await points for the future to be Send
+        let entries: Vec<PersistedSeriesEntry> = {
+            let metadata = self.series_metadata.read();
+            metadata.values().cloned().collect()
+        }; // Guard dropped here before any await
+
+        let json = serde_json::to_string_pretty(&entries)
+            .map_err(|e| StorageError::CorruptedData(format!("Failed to serialize metadata: {}", e)))?;
+
+        let path = self.series_metadata_path();
+        let mut file = fs::File::create(&path).await?;
+        file.write_all(json.as_bytes()).await?;
+        file.sync_all().await?;
+
+        Ok(())
+    }
+
+    /// Load series metadata from disk
+    ///
+    /// Loads persisted series metadata from JSON file on startup.
+    async fn load_series_metadata(&self) -> Result<(), StorageError> {
+        let path = self.series_metadata_path();
+        if !path.exists() {
+            return Ok(()); // No metadata file yet, that's fine
+        }
+
+        let json = fs::read_to_string(&path).await?;
+        let entries: Vec<PersistedSeriesEntry> = serde_json::from_str(&json)
+            .map_err(|e| StorageError::CorruptedData(format!("Failed to parse metadata: {}", e)))?;
+
+        let mut metadata = self.series_metadata.write();
+        for entry in entries {
+            metadata.insert(entry.series_id, entry);
+        }
+
+        info!(
+            series_count = metadata.len(),
+            "Loaded series metadata from disk"
+        );
+
+        Ok(())
+    }
+
+    /// Register a series and persist its metadata
+    ///
+    /// Called when a new series is created. Saves the metric name and tags
+    /// so they can be recovered on restart.
+    pub async fn register_series_metadata(
+        &self,
+        series_id: SeriesId,
+        metric_name: &str,
+        tags: HashMap<String, String>,
+        retention_days: Option<u32>,
+    ) -> Result<(), StorageError> {
+        let entry = PersistedSeriesEntry {
+            series_id,
+            metric_name: metric_name.to_string(),
+            tags,
+            created_at: chrono::Utc::now().timestamp_millis(),
+            retention_days,
+        };
+
+        // Add to in-memory map
+        {
+            let mut metadata = self.series_metadata.write();
+            if metadata.contains_key(&series_id) {
+                return Ok(()); // Already registered
+            }
+            metadata.insert(series_id, entry);
+        }
+
+        // Persist to disk
+        self.save_series_metadata().await?;
+
+        Ok(())
+    }
+
+    /// Get all registered series metadata
+    ///
+    /// Returns a vector of (series_id, SeriesMetadata) tuples for rebuilding
+    /// the in-memory index on startup.
+    pub fn get_all_series_metadata(&self) -> Vec<(SeriesId, SeriesMetadata)> {
+        let metadata = self.series_metadata.read();
+        metadata
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    *id,
+                    SeriesMetadata {
+                        metric_name: entry.metric_name.clone(),
+                        tags: entry.tags.clone(),
+                        created_at: entry.created_at,
+                        retention_days: entry.retention_days,
+                    },
+                )
+            })
+            .collect()
     }
 }
 

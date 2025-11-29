@@ -103,16 +103,17 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
     ))
     .parse(input)?;
 
-    // Build time range
-    let now = current_time_nanos();
+    // Build time range (using milliseconds to match database timestamp format)
+    let now = current_time_millis();
     let time_range = if let Some(duration) = range {
         TimeRange {
-            start: now - (duration.as_nanos() as i64),
+            start: now - (duration.as_millis() as i64),
             end: now,
         }
     } else {
+        // Default: 1 hour lookback in milliseconds
         TimeRange {
-            start: now - 3_600_000_000_000,
+            start: now - 3_600_000,
             end: now,
         }
     };
@@ -182,9 +183,10 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
     })?;
 
-    let now = current_time_nanos();
+    // Build time range (using milliseconds to match database timestamp format)
+    let now = current_time_millis();
     let time_range = TimeRange {
-        start: now - (range.as_nanos() as i64),
+        start: now - (range.as_millis() as i64),
         end: now,
     };
 
@@ -238,11 +240,12 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
     ))
     .parse(input)?;
 
-    let now = current_time_nanos();
+    // Build time range (using milliseconds to match database timestamp format)
+    let now = current_time_millis();
 
     // Apply offset if present
     let adjusted_now = if let Some(off) = offset {
-        now - (off.as_nanos() as i64)
+        now - (off.as_millis() as i64)
     } else {
         now
     };
@@ -250,12 +253,13 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
     // Build time range
     let time_range = if let Some(duration) = range {
         TimeRange {
-            start: adjusted_now - (duration.as_nanos() as i64),
+            start: adjusted_now - (duration.as_millis() as i64),
             end: adjusted_now,
         }
     } else {
+        // Default: 1 hour lookback in milliseconds
         TimeRange {
-            start: adjusted_now - 3_600_000_000_000,
+            start: adjusted_now - 3_600_000,
             end: adjusted_now,
         }
     };
@@ -407,12 +411,12 @@ fn multispace1(input: &str) -> IResult<&str, &str> {
 // Utility Functions
 // ============================================================================
 
-/// Get current time in nanoseconds
-fn current_time_nanos() -> i64 {
+/// Get current time in milliseconds (matching database timestamp format)
+fn current_time_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as i64
+        .as_millis() as i64
 }
 
 // ============================================================================

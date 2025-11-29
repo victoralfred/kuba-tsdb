@@ -100,6 +100,15 @@ impl TimeSeriesDBBuilder {
         self
     }
 
+    /// Set a custom storage engine implementation from an existing Arc
+    ///
+    /// Use this when you need to retain a reference to the storage engine
+    /// for direct operations (e.g., persisting series metadata).
+    pub fn with_storage_arc(mut self, storage: Arc<dyn StorageEngine + Send + Sync>) -> Self {
+        self.storage = Some(storage);
+        self
+    }
+
     /// Set a custom time index implementation
     pub fn with_index<I>(mut self, index: I) -> Self
     where
@@ -517,6 +526,54 @@ impl TimeSeriesDB {
             read_ops: storage_stats.read_ops,
             compression_ratio: compression_stats.average_ratio,
         }
+    }
+
+    /// Rebuild the time index from storage
+    ///
+    /// This method scans the storage engine for all chunks and adds them to the
+    /// time index. This is useful for restoring the index after a server restart
+    /// when using an in-memory index.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_ids` - List of series IDs to rebuild index for
+    ///
+    /// # Returns
+    ///
+    /// Number of chunks added to the index
+    pub async fn rebuild_index_for_series(&self, series_ids: &[SeriesId]) -> Result<usize> {
+        let mut total_chunks = 0;
+
+        for &series_id in series_ids {
+            // Get all chunks for this series from storage
+            let chunks = self
+                .storage
+                .list_chunks(series_id, None)
+                .await
+                .map_err(Error::Storage)?;
+
+            // Add each chunk to the index
+            for chunk_meta in chunks {
+                self.index
+                    .add_chunk(
+                        series_id,
+                        chunk_meta.chunk_id,
+                        chunk_meta.time_range,
+                        chunk_meta.location,
+                    )
+                    .await
+                    .map_err(Error::Index)?;
+                total_chunks += 1;
+            }
+        }
+
+        info!(
+            series_count = series_ids.len(),
+            chunks_indexed = total_chunks,
+            "Index rebuilt from storage"
+        );
+
+        Ok(total_chunks)
     }
 }
 
