@@ -1522,7 +1522,7 @@ async fn execute_sql_promql_query(
 
 /// Initialize the database
 ///
-/// Returns a tuple of (TimeSeriesDB, Arc<LocalDiskEngine>) so that the server
+/// Returns a tuple of (TimeSeriesDB, `Arc<LocalDiskEngine>`) so that the server
 /// can persist series metadata directly to the storage engine.
 async fn init_database(
     config: &ServerConfig,
