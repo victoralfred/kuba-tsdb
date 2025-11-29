@@ -294,7 +294,9 @@ impl ChunkIndex {
         for indexed in chunks.values() {
             // Level 1: Bloom filter pruning - skip if NONE of the series might be present
             if self.config.enable_bloom_pruning {
-                let any_match = series_ids.iter().any(|&sid| indexed.may_contain_series(sid));
+                let any_match = series_ids
+                    .iter()
+                    .any(|&sid| indexed.may_contain_series(sid));
                 if !any_match {
                     bloom_pruned += 1;
                     continue;
@@ -502,7 +504,10 @@ mod tests {
         index.add_series_to_chunk(&chunk_id, 1);
 
         // Query overlapping time range should find chunk
-        let range = TimeRange { start: 150, end: 250 };
+        let range = TimeRange {
+            start: 150,
+            end: 250,
+        };
         let results = index.find_chunks(1, Some(&range));
         assert_eq!(results.len(), 1);
 
@@ -553,7 +558,13 @@ mod tests {
         index.add_series_to_chunk(&chunk_id, 1);
 
         // With pruning disabled, queries should return all chunks
-        let results = index.find_chunks(2, Some(&TimeRange { start: 300, end: 400 }));
+        let results = index.find_chunks(
+            2,
+            Some(&TimeRange {
+                start: 300,
+                end: 400,
+            }),
+        );
         assert_eq!(results.len(), 1); // No pruning applied
     }
 

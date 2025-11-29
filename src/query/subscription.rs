@@ -192,7 +192,9 @@ impl SubscriptionUpdate {
     /// Convert to streaming result for client delivery
     pub fn to_streaming_result(&self, stream_id: &str) -> StreamingResult {
         let rows = match &self.data {
-            UpdateData::Point(p) => vec![ResultRow::new(p.timestamp, p.value).with_series(p.series_id)],
+            UpdateData::Point(p) => {
+                vec![ResultRow::new(p.timestamp, p.value).with_series(p.series_id)]
+            }
             UpdateData::Points(pts) => pts
                 .iter()
                 .map(|p| ResultRow::new(p.timestamp, p.value).with_series(p.series_id))
@@ -247,7 +249,10 @@ impl SeriesSubscription {
     }
 
     /// Send an update to all subscribers
-    fn notify(&self, mut update: SubscriptionUpdate) -> Result<usize, broadcast::error::SendError<SubscriptionUpdate>> {
+    fn notify(
+        &self,
+        mut update: SubscriptionUpdate,
+    ) -> Result<usize, broadcast::error::SendError<SubscriptionUpdate>> {
         // Assign sequence number
         update.sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
 
@@ -318,7 +323,10 @@ impl SubscriptionManager {
     ///
     /// Returns a receiver that will receive updates when data is written
     /// to the specified series.
-    pub fn subscribe(&self, series_id: SeriesId) -> Option<broadcast::Receiver<SubscriptionUpdate>> {
+    pub fn subscribe(
+        &self,
+        series_id: SeriesId,
+    ) -> Option<broadcast::Receiver<SubscriptionUpdate>> {
         if !self.config.enabled {
             return None;
         }
@@ -336,7 +344,9 @@ impl SubscriptionManager {
             return None;
         }
 
-        self.stats.subscriptions_created.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .subscriptions_created
+            .fetch_add(1, Ordering::Relaxed);
         Some(sub.subscribe())
     }
 
@@ -374,7 +384,9 @@ impl SubscriptionManager {
             let update = SubscriptionUpdate::point(series_id, point, 0);
             match sub.notify(update) {
                 Ok(count) => {
-                    self.stats.updates_sent.fetch_add(count as u64, Ordering::Relaxed);
+                    self.stats
+                        .updates_sent
+                        .fetch_add(count as u64, Ordering::Relaxed);
                 }
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
@@ -394,7 +406,9 @@ impl SubscriptionManager {
             let update = SubscriptionUpdate::points(series_id, points, 0);
             match sub.notify(update) {
                 Ok(count) => {
-                    self.stats.updates_sent.fetch_add(count as u64, Ordering::Relaxed);
+                    self.stats
+                        .updates_sent
+                        .fetch_add(count as u64, Ordering::Relaxed);
                 }
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
@@ -417,10 +431,13 @@ impl SubscriptionManager {
 
         let subs = self.subscriptions.read();
         if let Some(sub) = subs.get(&series_id) {
-            let update = SubscriptionUpdate::window_result(series_id, window_start, window_end, value, 0);
+            let update =
+                SubscriptionUpdate::window_result(series_id, window_start, window_end, value, 0);
             match sub.notify(update) {
                 Ok(count) => {
-                    self.stats.updates_sent.fetch_add(count as u64, Ordering::Relaxed);
+                    self.stats
+                        .updates_sent
+                        .fetch_add(count as u64, Ordering::Relaxed);
                 }
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
@@ -457,7 +474,9 @@ impl SubscriptionManager {
         subs.retain(|_, sub| sub.subscriber_count() > 0);
         let removed = before - subs.len();
         if removed > 0 {
-            self.stats.active_series.fetch_sub(removed as u64, Ordering::Relaxed);
+            self.stats
+                .active_series
+                .fetch_sub(removed as u64, Ordering::Relaxed);
         }
     }
 

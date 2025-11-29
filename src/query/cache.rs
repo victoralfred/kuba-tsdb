@@ -295,7 +295,8 @@ impl QueryCache {
             }
         }
 
-        self.current_size.fetch_add(entry_size as u64, Ordering::Relaxed);
+        self.current_size
+            .fetch_add(entry_size as u64, Ordering::Relaxed);
         entries.insert(key, entry);
     }
 
@@ -361,7 +362,8 @@ impl QueryCache {
     fn invalidate_key(&self, key: CacheKey) {
         let mut entries = self.entries.write();
         if let Some(entry) = entries.remove(&key) {
-            self.current_size.fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
+            self.current_size
+                .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
             self.stats.invalidations.fetch_add(1, Ordering::Relaxed);
 
             // Remove from series index
@@ -439,7 +441,8 @@ impl QueryCache {
 
         if let Some(key) = lru_key {
             if let Some(entry) = entries.remove(&key) {
-                self.current_size.fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
+                self.current_size
+                    .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
                 self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -462,7 +465,10 @@ mod tests {
     fn make_select_query(series_id: u128) -> Query {
         Query::Select(SelectQuery::new(
             SeriesSelector::by_id(series_id),
-            TimeRange { start: 0, end: 1000 },
+            TimeRange {
+                start: 0,
+                end: 1000,
+            },
         ))
     }
 

@@ -262,7 +262,11 @@ impl ParallelScanner {
                     let mut current_batch = DataBatch::with_capacity(batch_size);
 
                     for point in filtered {
-                        current_batch.push_with_series(point.timestamp, point.value, point.series_id);
+                        current_batch.push_with_series(
+                            point.timestamp,
+                            point.value,
+                            point.series_id,
+                        );
 
                         if current_batch.len() >= batch_size {
                             batches.push(std::mem::replace(
@@ -309,7 +313,11 @@ impl ParallelScanner {
                     let mut current_batch = DataBatch::with_capacity(batch_size);
 
                     for point in filtered {
-                        current_batch.push_with_series(point.timestamp, point.value, point.series_id);
+                        current_batch.push_with_series(
+                            point.timestamp,
+                            point.value,
+                            point.series_id,
+                        );
                         if current_batch.len() >= batch_size {
                             batches.push(std::mem::replace(
                                 &mut current_batch,
@@ -686,27 +694,23 @@ impl ParallelAggregator {
     fn finalize_state_static(state: &AggregationState, function: AggregationFunction) -> f64 {
         match state {
             AggregationState::Sum(kahan) => kahan.sum(),
-            AggregationState::Stats(welford) => {
-                match function {
-                    AggregationFunction::Avg => welford.mean(),
-                    AggregationFunction::StdDev => welford.stddev_population(),
-                    AggregationFunction::Variance => welford.variance_population(),
-                    _ => welford.mean(),
-                }
-            }
+            AggregationState::Stats(welford) => match function {
+                AggregationFunction::Avg => welford.mean(),
+                AggregationFunction::StdDev => welford.stddev_population(),
+                AggregationFunction::Variance => welford.variance_population(),
+                _ => welford.mean(),
+            },
             AggregationState::Min(min) => min.unwrap_or(f64::NAN),
             AggregationState::Max(max) => max.unwrap_or(f64::NAN),
             AggregationState::Count(c) => *c as f64,
             AggregationState::First(opt) => opt.map(|(_, v)| v).unwrap_or(f64::NAN),
             AggregationState::Last(opt) => opt.map(|(_, v)| v).unwrap_or(f64::NAN),
-            AggregationState::Rate { first, last } => {
-                match (first, last) {
-                    (Some((t1, v1)), Some((t2, v2))) if t2 > t1 => {
-                        (v2 - v1) / ((t2 - t1) as f64 / 1_000_000_000.0)
-                    }
-                    _ => f64::NAN,
+            AggregationState::Rate { first, last } => match (first, last) {
+                (Some((t1, v1)), Some((t2, v2))) if t2 > t1 => {
+                    (v2 - v1) / ((t2 - t1) as f64 / 1_000_000_000.0)
                 }
-            }
+                _ => f64::NAN,
+            },
             AggregationState::Distinct(set) => set.len() as f64,
             AggregationState::PercentileExact { target, values } => {
                 if values.is_empty() {
@@ -716,7 +720,9 @@ impl ParallelAggregator {
                 let idx = ((*target as f64 / 100.0) * (sorted.len() - 1) as f64).round() as usize;
                 let idx = idx.min(sorted.len() - 1);
                 // Use select_nth_unstable_by with partial_cmp for f64
-                sorted.select_nth_unstable_by(idx, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sorted.select_nth_unstable_by(idx, |a, b| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                });
                 sorted[idx]
             }
             AggregationState::PercentileTDigest { target, digest } => {
@@ -734,36 +740,37 @@ impl ParallelAggregator {
         match (target, source) {
             (AggregationState::Sum(a), AggregationState::Sum(b)) => a.merge(b),
             (AggregationState::Stats(a), AggregationState::Stats(b)) => a.merge(b),
-            (AggregationState::Min(a), AggregationState::Min(b)) => {
-                match (*a, *b) {
-                    (Some(av), Some(bv)) => *a = Some(av.min(bv)),
-                    (None, Some(bv)) => *a = Some(bv),
-                    _ => {}
-                }
-            }
-            (AggregationState::Max(a), AggregationState::Max(b)) => {
-                match (*a, *b) {
-                    (Some(av), Some(bv)) => *a = Some(av.max(bv)),
-                    (None, Some(bv)) => *a = Some(bv),
-                    _ => {}
-                }
-            }
+            (AggregationState::Min(a), AggregationState::Min(b)) => match (*a, *b) {
+                (Some(av), Some(bv)) => *a = Some(av.min(bv)),
+                (None, Some(bv)) => *a = Some(bv),
+                _ => {}
+            },
+            (AggregationState::Max(a), AggregationState::Max(b)) => match (*a, *b) {
+                (Some(av), Some(bv)) => *a = Some(av.max(bv)),
+                (None, Some(bv)) => *a = Some(bv),
+                _ => {}
+            },
             (AggregationState::Count(a), AggregationState::Count(b)) => *a += b,
-            (AggregationState::First(a), AggregationState::First(b)) => {
-                match (*a, *b) {
-                    (Some((at, _)), Some((bt, bv))) if bt < at => *a = Some((bt, bv)),
-                    (None, Some(bv)) => *a = Some(bv),
-                    _ => {}
-                }
-            }
-            (AggregationState::Last(a), AggregationState::Last(b)) => {
-                match (*a, *b) {
-                    (Some((at, _)), Some((bt, bv))) if bt > at => *a = Some((bt, bv)),
-                    (None, Some(bv)) => *a = Some(bv),
-                    _ => {}
-                }
-            }
-            (AggregationState::Rate { first: af, last: al }, AggregationState::Rate { first: bf, last: bl }) => {
+            (AggregationState::First(a), AggregationState::First(b)) => match (*a, *b) {
+                (Some((at, _)), Some((bt, bv))) if bt < at => *a = Some((bt, bv)),
+                (None, Some(bv)) => *a = Some(bv),
+                _ => {}
+            },
+            (AggregationState::Last(a), AggregationState::Last(b)) => match (*a, *b) {
+                (Some((at, _)), Some((bt, bv))) if bt > at => *a = Some((bt, bv)),
+                (None, Some(bv)) => *a = Some(bv),
+                _ => {}
+            },
+            (
+                AggregationState::Rate {
+                    first: af,
+                    last: al,
+                },
+                AggregationState::Rate {
+                    first: bf,
+                    last: bl,
+                },
+            ) => {
                 match (*af, *bf) {
                     (Some((at, _)), Some((bt, bv))) if bt < at => *af = Some((bt, bv)),
                     (None, Some(bv)) => *af = Some(bv),
@@ -863,8 +870,7 @@ mod tests {
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(1000);
-        let mut agg =
-            ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
 
         let exec_config = ExecutorConfig::default();
         let mut ctx = ExecutionContext::new(&exec_config);
@@ -884,8 +890,7 @@ mod tests {
             .with_batch_size(4096);
 
         let config = ParallelConfig::default().with_threshold(10000);
-        let mut agg =
-            ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
 
         let exec_config = ExecutorConfig::default();
         let mut ctx = ExecutionContext::new(&exec_config);
@@ -905,8 +910,7 @@ mod tests {
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(500);
-        let mut agg =
-            ParallelAggregator::new(Box::new(scan), AggregationFunction::Avg, config);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Avg, config);
 
         let exec_config = ExecutorConfig::default();
         let mut ctx = ExecutionContext::new(&exec_config);
@@ -940,7 +944,8 @@ mod tests {
             .with_mock_data(data)
             .with_batch_size(500);
 
-        let mut max_agg = ParallelAggregator::new(Box::new(scan2), AggregationFunction::Max, config);
+        let mut max_agg =
+            ParallelAggregator::new(Box::new(scan2), AggregationFunction::Max, config);
 
         let mut ctx2 = ExecutionContext::new(&exec_config);
         let result = max_agg.next_batch(&mut ctx2).unwrap().unwrap();
