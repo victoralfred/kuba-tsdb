@@ -208,13 +208,13 @@ struct WriteResponse {
 /// Query parameters
 ///
 /// Supports querying by:
-/// 1. Explicit `series_id`
+/// 1. Explicit `series_id` (as string, since u128 isn't supported in query strings)
 /// 2. `metric` name and optional `tags` (looks up or generates series ID)
 #[derive(Debug, Deserialize)]
 struct QueryParams {
-    /// Explicit series ID to query
+    /// Explicit series ID to query (as string)
     #[serde(default)]
-    series_id: Option<SeriesId>,
+    series_id: Option<String>,
     /// Metric name (alternative to series_id)
     #[serde(default)]
     metric: Option<String>,
@@ -483,8 +483,24 @@ async fn query_points(
     }
 
     // Determine series ID
-    let series_id = match params.series_id {
-        Some(id) => id,
+    let series_id = match &params.series_id {
+        Some(id_str) => {
+            // Parse series_id from string
+            match id_str.parse::<SeriesId>() {
+                Ok(id) => id,
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(QueryResponse {
+                            success: false,
+                            series_id: None,
+                            points: vec![],
+                            error: Some(format!("Invalid series_id: {}", id_str)),
+                        }),
+                    );
+                }
+            }
+        }
         None => {
             // Try to derive from metric + tags
             match &params.metric {
