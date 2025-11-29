@@ -42,6 +42,10 @@ pub mod query;
 /// Provides service lifecycle management, graceful shutdown, and dependency ordering
 pub mod services;
 
+/// Multi-dimensional aggregation engine for space-time aggregation
+/// Provides string interning, series registry, and tag-based lookups
+pub mod aggregation;
+
 // Re-export main types
 pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};
