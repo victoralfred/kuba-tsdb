@@ -75,22 +75,61 @@ impl ChunkId {
         Self(uuid::Uuid::new_v4().to_string())
     }
 
-    /// Create a chunk ID from an existing string
+    /// Create a chunk ID from an existing string with validation
     ///
-    /// This is useful when deserializing IDs from storage or wire formats.
+    /// This validates the input to prevent path traversal attacks.
+    /// The string must be a valid UUID format and cannot contain
+    /// path traversal characters.
     ///
     /// # Arguments
     ///
-    /// * `s` - String representation of the chunk ID
+    /// * `s` - String representation of the chunk ID (must be valid UUID)
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(ChunkId)` if the string is valid, or `Err` with description.
     ///
     /// # Example
     ///
     /// ```rust
     /// use gorilla_tsdb::types::ChunkId;
     ///
-    /// let id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000");
+    /// // Valid UUID
+    /// let id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    ///
+    /// // Invalid: contains path traversal
+    /// assert!(ChunkId::from_string("../malicious").is_err());
     /// ```
-    pub fn from_string(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Result<Self, String> {
+        // Check for path traversal characters
+        if s.contains('/') || s.contains('\\') || s.contains("..") || s.contains('\0') {
+            return Err("Invalid chunk ID: contains path traversal characters".to_string());
+        }
+
+        // Validate UUID format for extra safety
+        if uuid::Uuid::parse_str(s).is_err() {
+            return Err(format!(
+                "Invalid chunk ID: '{}' is not a valid UUID format",
+                s
+            ));
+        }
+
+        Ok(Self(s.to_string()))
+    }
+
+    /// Create a chunk ID from an existing string without validation
+    ///
+    /// # Safety
+    ///
+    /// This method should only be used when the input is known to be safe,
+    /// such as when reading from trusted internal storage. For external input,
+    /// always use `from_string()` which performs validation.
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - String representation of the chunk ID
+    #[allow(dead_code)]
+    pub(crate) fn from_string_unchecked(s: &str) -> Self {
         Self(s.to_string())
     }
 }
@@ -104,6 +143,73 @@ impl Default for ChunkId {
 impl fmt::Display for ChunkId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// Error type for ChunkId parsing failures
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkIdError {
+    /// The input contains path traversal characters
+    PathTraversalAttempt,
+    /// The input is not a valid UUID format
+    InvalidFormat(String),
+}
+
+impl fmt::Display for ChunkIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChunkIdError::PathTraversalAttempt => {
+                write!(f, "Invalid chunk ID: contains path traversal characters")
+            }
+            ChunkIdError::InvalidFormat(s) => {
+                write!(f, "Invalid chunk ID: '{}' is not a valid UUID format", s)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChunkIdError {}
+
+/// TryFrom implementation for creating ChunkId from string references
+///
+/// This provides idiomatic Rust conversion with proper error handling.
+///
+/// # Example
+///
+/// ```rust
+/// use gorilla_tsdb::types::ChunkId;
+/// use std::convert::TryFrom;
+///
+/// // Valid UUID
+/// let id = ChunkId::try_from("550e8400-e29b-41d4-a716-446655440000").unwrap();
+///
+/// // Invalid: path traversal
+/// assert!(ChunkId::try_from("../malicious").is_err());
+/// ```
+impl TryFrom<&str> for ChunkId {
+    type Error = ChunkIdError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // Check for path traversal characters
+        if s.contains('/') || s.contains('\\') || s.contains("..") || s.contains('\0') {
+            return Err(ChunkIdError::PathTraversalAttempt);
+        }
+
+        // Validate UUID format for extra safety
+        if uuid::Uuid::parse_str(s).is_err() {
+            return Err(ChunkIdError::InvalidFormat(s.to_string()));
+        }
+
+        Ok(Self(s.to_string()))
+    }
+}
+
+/// TryFrom implementation for creating ChunkId from owned strings
+impl TryFrom<String> for ChunkId {
+    type Error = ChunkIdError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        ChunkId::try_from(s.as_str())
     }
 }
 
@@ -537,5 +643,70 @@ mod tests {
         filter_tags.insert("host".to_string(), "server2".to_string());
         let filter = TagFilter::Exact(filter_tags);
         assert!(!filter.matches(&tags));
+    }
+
+    #[test]
+    fn test_chunk_id_try_from_valid() {
+        use std::convert::TryFrom;
+
+        // Valid UUID should succeed
+        let id = ChunkId::try_from("550e8400-e29b-41d4-a716-446655440000");
+        assert!(id.is_ok());
+        assert_eq!(
+            id.unwrap().to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
+    fn test_chunk_id_try_from_path_traversal() {
+        use std::convert::TryFrom;
+
+        // Path traversal attempts should fail
+        assert!(matches!(
+            ChunkId::try_from("../malicious"),
+            Err(ChunkIdError::PathTraversalAttempt)
+        ));
+        assert!(matches!(
+            ChunkId::try_from("..\\windows\\system32"),
+            Err(ChunkIdError::PathTraversalAttempt)
+        ));
+        assert!(matches!(
+            ChunkId::try_from("/etc/passwd"),
+            Err(ChunkIdError::PathTraversalAttempt)
+        ));
+        assert!(matches!(
+            ChunkId::try_from("chunk\0null"),
+            Err(ChunkIdError::PathTraversalAttempt)
+        ));
+    }
+
+    #[test]
+    fn test_chunk_id_try_from_invalid_format() {
+        use std::convert::TryFrom;
+
+        // Invalid UUID format should fail
+        assert!(matches!(
+            ChunkId::try_from("not-a-uuid"),
+            Err(ChunkIdError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            ChunkId::try_from("abc-123"),
+            Err(ChunkIdError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            ChunkId::try_from(""),
+            Err(ChunkIdError::InvalidFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_chunk_id_error_display() {
+        let err = ChunkIdError::PathTraversalAttempt;
+        assert!(err.to_string().contains("path traversal"));
+
+        let err = ChunkIdError::InvalidFormat("bad".to_string());
+        assert!(err.to_string().contains("bad"));
+        assert!(err.to_string().contains("UUID"));
     }
 }

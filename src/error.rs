@@ -125,6 +125,10 @@ pub enum IndexError {
     #[error("Series not found: {0}")]
     SeriesNotFound(String),
 
+    /// Requested chunk not found
+    #[error("Chunk not found: {0}")]
+    ChunkNotFound(String),
+
     /// Index data is corrupted
     #[error("Index corrupted: {0}")]
     IndexCorrupted(String),

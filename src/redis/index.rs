@@ -555,9 +555,10 @@ impl TimeIndex for RedisTimeIndex {
         }
 
         // Step 2: Build chunk keys for pipeline batch fetch
+        // Use unchecked since these are internal IDs from Redis
         let chunk_keys: Vec<String> = chunk_ids
             .iter()
-            .map(|id| Self::chunk_key(&ChunkId::from_string(id)))
+            .map(|id| Self::chunk_key(&ChunkId::from_string_unchecked(id)))
             .collect();
 
         // Step 3: Fetch all metadata in batches using pipelines (avoids N+1 problem)
@@ -604,7 +605,8 @@ impl TimeIndex for RedisTimeIndex {
                     };
 
                     references.push(ChunkReference {
-                        chunk_id: ChunkId::from_string(chunk_id_str),
+                        // Use unchecked since these are internal IDs from Redis
+                        chunk_id: ChunkId::from_string_unchecked(chunk_id_str),
                         location: ChunkLocation {
                             engine_id: "local-disk-v1".to_string(),
                             path: metadata.path,
@@ -813,10 +815,27 @@ mod tests {
     fn test_key_generation() {
         assert_eq!(RedisTimeIndex::series_index_key(123), "ts:series:123:index");
         assert_eq!(RedisTimeIndex::series_meta_key(456), "ts:series:456:meta");
+        // Use valid UUID for chunk_id
+        let chunk_id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(
-            RedisTimeIndex::chunk_key(&ChunkId::from_string("abc-123")),
-            "ts:chunks:abc-123"
+            RedisTimeIndex::chunk_key(&chunk_id),
+            "ts:chunks:550e8400-e29b-41d4-a716-446655440000"
         );
+    }
+
+    #[test]
+    fn test_chunk_id_validation() {
+        // Valid UUIDs should pass
+        assert!(ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").is_ok());
+
+        // Path traversal should fail
+        assert!(ChunkId::from_string("../malicious").is_err());
+        assert!(ChunkId::from_string("..\\malicious").is_err());
+        assert!(ChunkId::from_string("/etc/passwd").is_err());
+
+        // Invalid UUIDs should fail
+        assert!(ChunkId::from_string("not-a-uuid").is_err());
+        assert!(ChunkId::from_string("abc-123").is_err());
     }
 
     #[test]

@@ -946,12 +946,14 @@ impl Chunk {
 
         // Create chunk in Sealed state
         let now = chrono::Utc::now().timestamp_millis();
-        let chunk_id = ChunkId::from_string(
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.strip_prefix("chunk_"))
-                .unwrap_or("00000000-0000-0000-0000-000000000000"),
-        );
+        // Extract chunk ID from filename, falling back to a default UUID if parsing fails
+        let chunk_id_str = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("chunk_"))
+            .unwrap_or("00000000-0000-0000-0000-000000000000");
+        // Use unchecked since this is internal trusted storage
+        let chunk_id = ChunkId::from_string_unchecked(chunk_id_str);
 
         Ok(Self {
             metadata: ChunkMetadata {

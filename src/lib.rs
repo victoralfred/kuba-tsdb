@@ -49,7 +49,7 @@ pub mod aggregation;
 // Re-export main types
 pub use engine::{DatabaseConfig, TimeSeriesDB, TimeSeriesDBBuilder};
 pub use error::{Error, Result};
-pub use types::{DataPoint, SeriesId, TimeRange};
+pub use types::{ChunkId, ChunkIdError, DataPoint, SeriesId, TimeRange};
 
 #[cfg(test)]
 mod tests {

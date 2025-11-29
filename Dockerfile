@@ -2,7 +2,7 @@
 # Optimized for production deployment with minimal image size
 
 # Stage 1: Builder
-FROM rust:1.75-slim as builder
+FROM rust:slim-buster AS BUILDER
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -22,8 +22,7 @@ RUN mkdir src && \
     echo "pub fn dummy() {}" > src/lib.rs
 
 # Build dependencies (cached layer)
-RUN cargo build --release && \
-    rm -rf src target/release/.fingerprint/gorilla-tsdb-*
+RUN cargo build --release &&  rm -rf src target/release/.fingerprint/gorilla-tsdb-*
 
 # Copy actual source code
 COPY . .
