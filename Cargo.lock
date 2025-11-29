@@ -692,7 +692,7 @@ dependencies = [
  "prometheus",
  "proptest",
  "prost",
- "protobuf 4.33.1-release",
+ "protobuf",
  "rand",
  "rayon",
  "redis",
@@ -1286,12 +1286,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1405,7 +1399,7 @@ dependencies = [
  "memchr",
  "parking_lot",
  "procfs",
- "protobuf 3.7.2",
+ "protobuf",
  "thiserror 2.0.17",
 ]
 
@@ -1460,27 +1454,6 @@ dependencies = [
  "once_cell",
  "protobuf-support",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "protobuf"
-version = "4.33.1-release"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaa2100a0b097716858b927a50e6338693e01372f9cca8b6e6d9b4338588202e"
-dependencies = [
- "cc",
- "paste",
- "protobuf-macros",
-]
-
-[[package]]
-name = "protobuf-macros"
-version = "4.33.1-release"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e86f741d290f294e329a0233e4a034a7026e456788a5e50792bdadab90d006a"
-dependencies = [
- "quote",
- "syn",
 ]
 
 [[package]]

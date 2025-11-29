@@ -62,17 +62,17 @@ impl LuaScripts {
     /// Atomically add a chunk to the series time index
     ///
     /// # Keys
-    /// - KEYS[1]: Series index key (ts:series:{id}:index)
-    /// - KEYS[2]: Chunk metadata key (ts:chunks:{chunk_id})
-    /// - KEYS[3]: Series registry key (ts:registry)
-    /// - KEYS[4]: Series metadata key (ts:series:{id}:meta)
+    /// - `KEYS[1]`: Series index key (ts:series:{id}:index)
+    /// - `KEYS[2]`: Chunk metadata key (ts:chunks:{chunk_id})
+    /// - `KEYS[3]`: Series registry key (ts:registry)
+    /// - `KEYS[4]`: Series metadata key (ts:series:{id}:meta)
     ///
     /// # Arguments
-    /// - ARGV[1]: Start timestamp (score for ZSET)
-    /// - ARGV[2]: Chunk ID
-    /// - ARGV[3]: Series ID (for registry)
-    /// - ARGV[4]: Chunk metadata JSON
-    /// - ARGV[5]: Current timestamp (for last_write)
+    /// - `ARGV[1]`: Start timestamp (score for ZSET)
+    /// - `ARGV[2]`: Chunk ID
+    /// - `ARGV[3]`: Series ID (for registry)
+    /// - `ARGV[4]`: Chunk metadata JSON
+    /// - `ARGV[5]`: Current timestamp (for last_write)
     ///
     /// # Returns
     /// - 1 on success
@@ -120,11 +120,11 @@ impl LuaScripts {
     /// Update chunk status atomically
     ///
     /// # Keys
-    /// - KEYS[1]: Chunk metadata key (ts:chunks:{chunk_id})
+    /// - `KEYS[1]`: Chunk metadata key (ts:chunks:{chunk_id})
     ///
     /// # Arguments
-    /// - ARGV[1]: New status (active|sealed|compressed|archived|deleted)
-    /// - ARGV[2]: Current timestamp
+    /// - `ARGV[1]`: New status (active|sealed|compressed|archived|deleted)
+    /// - `ARGV[2]`: Current timestamp
     ///
     /// # Returns
     /// - 1 on success
@@ -165,15 +165,15 @@ impl LuaScripts {
     /// - `ts:tag:{key}:{value}:series` - SET of series_ids with this tag k/v pair
     ///
     /// # Keys
-    /// - KEYS[1]: Series registry key (ts:registry)
-    /// - KEYS[2]: Series metadata key (ts:series:{id}:meta)
+    /// - `KEYS[1]`: Series registry key (ts:registry)
+    /// - `KEYS[2]`: Series metadata key (ts:series:{id}:meta)
     ///
     /// # Arguments
-    /// - ARGV[1]: Series ID
-    /// - ARGV[2]: Current timestamp (created_at)
-    /// - ARGV[3]: Metric name
-    /// - ARGV[4]: Tags JSON (object with string keys and values)
-    /// - ARGV[5]: Retention days (optional, 0 for none)
+    /// - `ARGV[1]`: Series ID
+    /// - `ARGV[2]`: Current timestamp (created_at)
+    /// - `ARGV[3]`: Metric name
+    /// - `ARGV[4]`: Tags JSON (object with string keys and values)
+    /// - `ARGV[5]`: Retention days (optional, 0 for none)
     ///
     /// # Returns
     /// - 1 if series was created
@@ -234,13 +234,13 @@ impl LuaScripts {
     /// 4. Removes series from main registry
     ///
     /// # Keys
-    /// - KEYS[1]: Series registry key (ts:registry)
-    /// - KEYS[2]: Series index key (ts:series:{id}:index)
-    /// - KEYS[3]: Series metadata key (ts:series:{id}:meta)
+    /// - `KEYS[1]`: Series registry key (ts:registry)
+    /// - `KEYS[2]`: Series index key (ts:series:{id}:index)
+    /// - `KEYS[3]`: Series metadata key (ts:series:{id}:meta)
     ///
     /// # Arguments
-    /// - ARGV[1]: Series ID
-    /// - ARGV[2]: Chunk key prefix (ts:chunks:)
+    /// - `ARGV[1]`: Series ID
+    /// - `ARGV[2]`: Chunk key prefix (ts:chunks:)
     ///
     /// # Returns
     /// - Number of chunks deleted
@@ -299,11 +299,11 @@ impl LuaScripts {
     /// Cleanup expired chunks from a series
     ///
     /// # Keys
-    /// - KEYS[1]: Series index key (ts:series:{id}:index)
+    /// - `KEYS[1]`: Series index key (ts:series:{id}:index)
     ///
     /// # Arguments
-    /// - ARGV[1]: Cutoff timestamp (remove chunks older than this)
-    /// - ARGV[2]: Chunk key prefix (ts:chunks:)
+    /// - `ARGV[1]`: Cutoff timestamp (remove chunks older than this)
+    /// - `ARGV[2]`: Chunk key prefix (ts:chunks:)
     ///
     /// # Returns
     /// - Number of chunks removed
@@ -337,12 +337,12 @@ impl LuaScripts {
     /// Find chunks in a time range
     ///
     /// # Keys
-    /// - KEYS[1]: Series index key (ts:series:{id}:index)
+    /// - `KEYS[1]`: Series index key (ts:series:{id}:index)
     ///
     /// # Arguments
-    /// - ARGV[1]: Start timestamp
-    /// - ARGV[2]: End timestamp
-    /// - ARGV[3]: Limit (0 for no limit)
+    /// - `ARGV[1]`: Start timestamp
+    /// - `ARGV[2]`: End timestamp
+    /// - `ARGV[3]`: Limit (0 for no limit)
     ///
     /// # Returns
     /// - Array of chunk IDs
@@ -372,13 +372,13 @@ impl LuaScripts {
     /// Batch add points to the series buffer
     ///
     /// # Keys
-    /// - KEYS[1]: Series buffer key (ts:series:{id}:buffer)
-    /// - KEYS[2]: Series metadata key (ts:series:{id}:meta)
+    /// - `KEYS[1]`: Series buffer key (ts:series:{id}:buffer)
+    /// - `KEYS[2]`: Series metadata key (ts:series:{id}:meta)
     ///
     /// # Arguments
-    /// - ARGV[1]: Serialized points (JSON array)
-    /// - ARGV[2]: Current timestamp
-    /// - ARGV[3]: Max buffer size
+    /// - `ARGV[1]`: Serialized points (JSON array)
+    /// - `ARGV[2]`: Current timestamp
+    /// - `ARGV[3]`: Max buffer size
     ///
     /// # Returns
     /// - Number of points added (may be less if buffer is full)
@@ -413,7 +413,7 @@ impl LuaScripts {
     /// Flush and get all buffered points
     ///
     /// # Keys
-    /// - KEYS[1]: Series buffer key (ts:series:{id}:buffer)
+    /// - `KEYS[1]`: Series buffer key (ts:series:{id}:buffer)
     ///
     /// # Arguments
     /// None
@@ -440,11 +440,11 @@ impl LuaScripts {
     /// Update series statistics
     ///
     /// # Keys
-    /// - KEYS[1]: Series metadata key (ts:series:{id}:meta)
+    /// - `KEYS[1]`: Series metadata key (ts:series:{id}:meta)
     ///
     /// # Arguments
-    /// - ARGV[1]: Points to add to total
-    /// - ARGV[2]: Current timestamp
+    /// - `ARGV[1]`: Points to add to total
+    /// - `ARGV[2]`: Current timestamp
     ///
     /// # Returns
     /// - New total points count

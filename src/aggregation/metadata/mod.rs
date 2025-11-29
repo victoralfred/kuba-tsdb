@@ -106,7 +106,7 @@ impl SeriesEntry {
 ///
 /// Maintains bidirectional mappings:
 /// - series_id → SeriesEntry
-/// - metric_id → [series_ids]
+/// - metric_id → series_ids list
 /// - (metric_id, tag_hash) → series_id
 #[derive(Debug)]
 pub struct SeriesRegistry {

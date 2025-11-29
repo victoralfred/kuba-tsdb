@@ -461,7 +461,7 @@ pub mod simd {
 
     /// Generate a boolean mask for values matching a predicate
     ///
-    /// Returns a Vec<bool> where true indicates the value matches.
+    /// Returns a `Vec<bool>` where true indicates the value matches.
     /// Useful for filter operations.
     #[inline]
     pub fn generate_mask<F>(values: &[f64], predicate: F) -> Vec<bool>
@@ -473,7 +473,7 @@ pub mod simd {
 
     /// Apply mask to select values (scatter operation)
     ///
-    /// Returns values where mask[i] is true.
+    /// Returns values where `mask[i]` is true.
     #[inline]
     pub fn apply_mask(values: &[f64], mask: &[bool]) -> Vec<f64> {
         values

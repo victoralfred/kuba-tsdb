@@ -382,7 +382,7 @@ pub struct TagDictionary {
     key_interner: TagKeyInterner,
 
     /// Interners for tag values, one per key
-    /// Using RwLock<HashMap> because new keys can be added dynamically
+    /// Using `RwLock<HashMap>` because new keys can be added dynamically
     value_interners: RwLock<HashMap<TagKeyId, TagValueInterner>>,
 
     /// Interner for metric names

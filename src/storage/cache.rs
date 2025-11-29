@@ -165,7 +165,7 @@ impl EntryMetadata {
     ///
     /// # Memory Ordering
     ///
-    /// Uses `Relaxed` ordering - see [`record_access`] for rationale.
+    /// Uses `Relaxed` ordering - see `record_access` for rationale.
     pub fn seconds_since_access(&self) -> u64 {
         let now_micros = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -180,7 +180,7 @@ impl EntryMetadata {
     ///
     /// # Memory Ordering
     ///
-    /// Uses `Relaxed` ordering - see [`record_access`] for rationale.
+    /// Uses `Relaxed` ordering - see `record_access` for rationale.
     pub fn access_count(&self) -> u64 {
         self.access_count.load(Ordering::Relaxed)
     }
@@ -189,7 +189,7 @@ impl EntryMetadata {
     ///
     /// # Memory Ordering
     ///
-    /// Uses `Relaxed` ordering - see [`record_access`] for rationale.
+    /// Uses `Relaxed` ordering - see `record_access` for rationale.
     pub fn priority(&self) -> i32 {
         self.priority.load(Ordering::Relaxed)
     }
@@ -198,7 +198,7 @@ impl EntryMetadata {
     ///
     /// # Memory Ordering
     ///
-    /// Uses `Relaxed` ordering - see [`record_access`] for rationale.
+    /// Uses `Relaxed` ordering - see `record_access` for rationale.
     pub fn set_priority(&self, priority: i32) {
         self.priority.store(priority, Ordering::Relaxed);
     }

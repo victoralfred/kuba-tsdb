@@ -164,7 +164,7 @@ fn parse_agg_function(input: &str) -> IResult<&str, AggregationFunction> {
 // Rate Functions
 // ============================================================================
 
-/// Parse rate expression like: rate(http_requests_total[5m])
+/// Parse rate expression like: `rate(http_requests_total[5m])`
 fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
     let (input, func) = parse_rate_function(input)?;
     let (input, _) = multispace0(input)?;
@@ -227,7 +227,7 @@ fn parse_rate_function(input: &str) -> IResult<&str, AggregationFunction> {
 // Vector Selectors
 // ============================================================================
 
-/// Parse vector selector: metric_name{labels}[range]
+/// Parse vector selector: `metric_name{labels}[range]`
 fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
     let (input, (selector, range, _labels)) = parse_vector_selector_inner(input)?;
 
@@ -342,7 +342,7 @@ fn parse_string_value(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-/// Parse range: [5m]
+/// Parse range: `[5m]`
 fn parse_range(input: &str) -> IResult<&str, Duration> {
     delimited(
         (multispace0, char('[')),
