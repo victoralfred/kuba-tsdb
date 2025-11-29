@@ -10,7 +10,10 @@
 //!
 //! ## Query
 //! - `GET /api/v1/query` - Query data points
-//! - `POST /api/v1/query` - Query with complex parameters
+//!
+//! ## Series Management
+//! - `POST /api/v1/series` - Register a new series
+//! - `GET /api/v1/series/find` - Find series by metric and tags
 //!
 //! ## Admin
 //! - `GET /health` - Health check
@@ -24,7 +27,7 @@
 //! 2. `./tsdb.toml` in current directory
 //! 3. Default configuration
 //!
-//! # Example
+//! # Example Usage
 //!
 //! ```bash
 //! # Start server with default config
@@ -33,13 +36,33 @@
 //! # Start with custom config
 //! TSDB_CONFIG=/etc/tsdb.toml ./server
 //!
-//! # Write data
+//! # Write data using metric name (recommended - series ID auto-generated)
 //! curl -X POST http://localhost:8080/api/v1/write \
 //!   -H "Content-Type: application/json" \
-//!   -d '{"series_id": 1, "points": [{"timestamp": 1000, "value": 42.5}]}'
+//!   -d '{
+//!     "metric": "cpu.usage",
+//!     "tags": {"host": "server1", "region": "us-east"},
+//!     "points": [{"timestamp": 1700000000000, "value": 42.5}]
+//!   }'
 //!
-//! # Query data
-//! curl "http://localhost:8080/api/v1/query?series_id=1&start=0&end=10000"
+//! # Write data using explicit series_id (advanced)
+//! curl -X POST http://localhost:8080/api/v1/write \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"series_id": 12345, "points": [{"timestamp": 1700000000000, "value": 42.5}]}'
+//!
+//! # Query data by metric name
+//! curl "http://localhost:8080/api/v1/query?metric=cpu.usage&tags={\"host\":\"server1\"}&start=0&end=2000000000000"
+//!
+//! # Query data by series_id
+//! curl "http://localhost:8080/api/v1/query?series_id=12345&start=0&end=2000000000000"
+//!
+//! # Register a series explicitly
+//! curl -X POST http://localhost:8080/api/v1/series \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"metric_name": "memory.bytes", "tags": {"host": "server1"}}'
+//!
+//! # Find series by metric name
+//! curl "http://localhost:8080/api/v1/series/find?metric_name=cpu.usage"
 //! ```
 
 use axum::{
@@ -140,10 +163,23 @@ struct AppState {
 // =============================================================================
 
 /// Write request body
+///
+/// Users can identify the series in two ways:
+/// 1. By explicit `series_id` (for advanced use cases)
+/// 2. By `metric` name and `tags` (recommended - series ID is auto-generated)
+///
+/// If both are provided, `series_id` takes precedence.
 #[derive(Debug, Deserialize)]
 struct WriteRequest {
-    /// Series ID to write to
-    series_id: SeriesId,
+    /// Explicit series ID (optional - use metric+tags instead for auto-generation)
+    #[serde(default)]
+    series_id: Option<SeriesId>,
+    /// Metric name (e.g., "cpu.usage", "memory.bytes")
+    #[serde(default)]
+    metric: Option<String>,
+    /// Tags for the series (e.g., {"host": "server1", "region": "us-east"})
+    #[serde(default)]
+    tags: HashMap<String, String>,
     /// Data points to write
     points: Vec<WritePoint>,
 }
@@ -159,6 +195,9 @@ struct WritePoint {
 #[derive(Debug, Serialize)]
 struct WriteResponse {
     success: bool,
+    /// The series ID that was written to (useful when auto-generated)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_id: Option<SeriesId>,
     points_written: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     chunk_id: Option<String>,
@@ -167,10 +206,21 @@ struct WriteResponse {
 }
 
 /// Query parameters
+///
+/// Supports querying by:
+/// 1. Explicit `series_id`
+/// 2. `metric` name and optional `tags` (looks up or generates series ID)
 #[derive(Debug, Deserialize)]
 struct QueryParams {
-    /// Series ID to query
-    series_id: SeriesId,
+    /// Explicit series ID to query
+    #[serde(default)]
+    series_id: Option<SeriesId>,
+    /// Metric name (alternative to series_id)
+    #[serde(default)]
+    metric: Option<String>,
+    /// Tags to filter by (used with metric name)
+    #[serde(default)]
+    tags: Option<String>, // JSON-encoded tags, e.g., {"host":"server1"}
     /// Start timestamp (inclusive)
     start: i64,
     /// End timestamp (inclusive)
@@ -188,7 +238,8 @@ fn default_limit() -> usize {
 #[derive(Debug, Serialize)]
 struct QueryResponse {
     success: bool,
-    series_id: SeriesId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_id: Option<SeriesId>,
     points: Vec<QueryPoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -202,9 +253,13 @@ struct QueryPoint {
 }
 
 /// Register series request
+///
+/// If `series_id` is not provided, it will be auto-generated from metric_name + tags.
 #[derive(Debug, Deserialize)]
 struct RegisterSeriesRequest {
-    series_id: SeriesId,
+    /// Explicit series ID (optional - auto-generated if not provided)
+    #[serde(default)]
+    series_id: Option<SeriesId>,
     metric_name: String,
     #[serde(default)]
     tags: HashMap<String, String>,
@@ -270,7 +325,32 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// Generate a deterministic series ID from metric name and tags
+///
+/// This creates a stable hash so the same metric+tags always maps to the same ID.
+fn generate_series_id(metric: &str, tags: &HashMap<String, String>) -> SeriesId {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+
+    // Use BTreeMap for consistent ordering
+    let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metric.hash(&mut hasher);
+    for (k, v) in sorted_tags {
+        k.hash(&mut hasher);
+        v.hash(&mut hasher);
+    }
+
+    // Use lower 64 bits as series ID (SeriesId is u128)
+    hasher.finish() as SeriesId
+}
+
 /// Write data points
+///
+/// Supports two modes:
+/// 1. Explicit series_id: `{"series_id": 123, "points": [...]}`
+/// 2. Metric + tags (auto-generates ID): `{"metric": "cpu.usage", "tags": {"host": "server1"}, "points": [...]}`
 async fn write_points(
     State(state): State<Arc<AppState>>,
     Json(req): Json<WriteRequest>,
@@ -281,6 +361,7 @@ async fn write_points(
             StatusCode::BAD_REQUEST,
             Json(WriteResponse {
                 success: false,
+                series_id: None,
                 points_written: 0,
                 chunk_id: None,
                 error: Some("No points provided".to_string()),
@@ -293,6 +374,7 @@ async fn write_points(
             StatusCode::BAD_REQUEST,
             Json(WriteResponse {
                 success: false,
+                series_id: None,
                 points_written: 0,
                 chunk_id: None,
                 error: Some(format!(
@@ -304,30 +386,71 @@ async fn write_points(
         );
     }
 
+    // Determine series ID: explicit or auto-generated from metric+tags
+    let series_id = match req.series_id {
+        Some(id) => id,
+        None => {
+            // Must have metric name for auto-generation
+            match &req.metric {
+                Some(metric) => {
+                    let id = generate_series_id(metric, &req.tags);
+
+                    // Auto-register the series if metric name provided
+                    if let Err(e) = state
+                        .db
+                        .register_series(id, metric, req.tags.clone())
+                        .await
+                    {
+                        // Log but don't fail - series might already exist
+                        warn!(error = %e, metric = %metric, "Series registration (may already exist)");
+                    }
+
+                    id
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(WriteResponse {
+                            success: false,
+                            series_id: None,
+                            points_written: 0,
+                            chunk_id: None,
+                            error: Some(
+                                "Must provide either 'series_id' or 'metric' name".to_string(),
+                            ),
+                        }),
+                    );
+                }
+            }
+        }
+    };
+
     // Convert to DataPoints
     let points: Vec<DataPoint> = req
         .points
         .iter()
-        .map(|p| DataPoint::new(req.series_id, p.timestamp, p.value))
+        .map(|p| DataPoint::new(series_id, p.timestamp, p.value))
         .collect();
 
     // Write to database
-    match state.db.write(req.series_id, points.clone()).await {
+    match state.db.write(series_id, points.clone()).await {
         Ok(chunk_id) => (
             StatusCode::OK,
             Json(WriteResponse {
                 success: true,
+                series_id: Some(series_id),
                 points_written: points.len(),
                 chunk_id: Some(chunk_id.to_string()),
                 error: None,
             }),
         ),
         Err(e) => {
-            error!(error = %e, series_id = req.series_id, "Write failed");
+            error!(error = %e, series_id = series_id, "Write failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(WriteResponse {
                     success: false,
+                    series_id: Some(series_id),
                     points_written: 0,
                     chunk_id: None,
                     error: Some(e.to_string()),
@@ -338,6 +461,10 @@ async fn write_points(
 }
 
 /// Query data points
+///
+/// Supports querying by:
+/// 1. Explicit series_id: `?series_id=123&start=0&end=1000`
+/// 2. Metric + tags: `?metric=cpu.usage&tags={"host":"server1"}&start=0&end=1000`
 async fn query_points(
     State(state): State<Arc<AppState>>,
     Query(params): Query<QueryParams>,
@@ -348,17 +475,48 @@ async fn query_points(
             StatusCode::BAD_REQUEST,
             Json(QueryResponse {
                 success: false,
-                series_id: params.series_id,
+                series_id: None,
                 points: vec![],
                 error: Some("start must be <= end".to_string()),
             }),
         );
     }
 
+    // Determine series ID
+    let series_id = match params.series_id {
+        Some(id) => id,
+        None => {
+            // Try to derive from metric + tags
+            match &params.metric {
+                Some(metric) => {
+                    // Parse tags if provided
+                    let tags: HashMap<String, String> = match &params.tags {
+                        Some(tags_str) => serde_json::from_str(tags_str).unwrap_or_default(),
+                        None => HashMap::new(),
+                    };
+                    generate_series_id(metric, &tags)
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(QueryResponse {
+                            success: false,
+                            series_id: None,
+                            points: vec![],
+                            error: Some(
+                                "Must provide either 'series_id' or 'metric' name".to_string(),
+                            ),
+                        }),
+                    );
+                }
+            }
+        }
+    };
+
     let time_range = TimeRange::new_unchecked(params.start, params.end);
 
     // Query database
-    match state.db.query(params.series_id, time_range).await {
+    match state.db.query(series_id, time_range).await {
         Ok(points) => {
             let response_points: Vec<QueryPoint> = points
                 .into_iter()
@@ -373,19 +531,19 @@ async fn query_points(
                 StatusCode::OK,
                 Json(QueryResponse {
                     success: true,
-                    series_id: params.series_id,
+                    series_id: Some(series_id),
                     points: response_points,
                     error: None,
                 }),
             )
         }
         Err(e) => {
-            error!(error = %e, series_id = params.series_id, "Query failed");
+            error!(error = %e, series_id = series_id, "Query failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(QueryResponse {
                     success: false,
-                    series_id: params.series_id,
+                    series_id: Some(series_id),
                     points: vec![],
                     error: Some(e.to_string()),
                 }),
@@ -395,28 +553,36 @@ async fn query_points(
 }
 
 /// Register a new series
+///
+/// If series_id is not provided, it will be auto-generated from metric_name + tags.
 async fn register_series(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterSeriesRequest>,
 ) -> impl IntoResponse {
+    // Use provided series_id or auto-generate from metric + tags
+    let series_id = req
+        .series_id
+        .unwrap_or_else(|| generate_series_id(&req.metric_name, &req.tags));
+
     match state
         .db
-        .register_series(req.series_id, &req.metric_name, req.tags)
+        .register_series(series_id, &req.metric_name, req.tags)
         .await
     {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "success": true,
-                "series_id": req.series_id
+                "series_id": series_id
             })),
         ),
         Err(e) => {
-            error!(error = %e, series_id = req.series_id, "Register series failed");
+            error!(error = %e, series_id = series_id, "Register series failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "success": false,
+                    "series_id": series_id,
                     "error": e.to_string()
                 })),
             )
