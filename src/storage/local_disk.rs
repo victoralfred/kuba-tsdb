@@ -156,7 +156,10 @@ impl LocalDiskEngine {
                     if let Ok(series_id) = id_str.parse::<SeriesId>() {
                         series_to_load.push(series_id);
                     } else {
-                        warn!("Failed to parse series_id from directory name: {}", dir_name);
+                        warn!(
+                            "Failed to parse series_id from directory name: {}",
+                            dir_name
+                        );
                     }
                 }
             }
@@ -180,7 +183,8 @@ impl LocalDiskEngine {
 
         info!(
             "Loaded {} total chunks from {} series directories",
-            total_chunks_loaded, series_to_load.len()
+            total_chunks_loaded,
+            series_to_load.len()
         );
 
         // Update stats to reflect loaded chunks
@@ -189,7 +193,8 @@ impl LocalDiskEngine {
             stats.total_chunks = total_chunks_loaded as u64;
             // Calculate total bytes from the loaded chunks
             let index = self.chunk_index.read();
-            let total_bytes: u64 = index.values()
+            let total_bytes: u64 = index
+                .values()
                 .flat_map(|chunks| chunks.iter())
                 .map(|c| c.size_bytes)
                 .sum();
@@ -358,8 +363,9 @@ impl LocalDiskEngine {
             metadata.values().cloned().collect()
         }; // Guard dropped here before any await
 
-        let json = serde_json::to_string_pretty(&entries)
-            .map_err(|e| StorageError::CorruptedData(format!("Failed to serialize metadata: {}", e)))?;
+        let json = serde_json::to_string_pretty(&entries).map_err(|e| {
+            StorageError::CorruptedData(format!("Failed to serialize metadata: {}", e))
+        })?;
 
         let path = self.series_metadata_path();
         let mut file = fs::File::create(&path).await?;

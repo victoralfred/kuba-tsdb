@@ -331,7 +331,11 @@ impl TimeSeriesDB {
     /// let range = TimeRange::new(0, 3600000)?;
     /// let points = db.query(1, range).await?;
     /// ```
-    pub async fn query(&self, series_id: SeriesId, time_range: TimeRange) -> Result<Vec<DataPoint>> {
+    pub async fn query(
+        &self,
+        series_id: SeriesId,
+        time_range: TimeRange,
+    ) -> Result<Vec<DataPoint>> {
         debug!(
             series_id = series_id,
             start = time_range.start,

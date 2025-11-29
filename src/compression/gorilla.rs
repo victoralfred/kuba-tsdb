@@ -837,7 +837,9 @@ impl Compressor for GorillaCompressor {
             Ok(points)
         })
         .await
-        .map_err(|e| CompressionError::InvalidData(format!("Decompression task panicked: {}", e)))??;
+        .map_err(|e| {
+            CompressionError::InvalidData(format!("Decompression task panicked: {}", e))
+        })??;
 
         Ok(points)
     }

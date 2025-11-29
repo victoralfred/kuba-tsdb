@@ -76,8 +76,7 @@ use gorilla_tsdb::{
     compression::gorilla::GorillaCompressor,
     engine::{DatabaseConfig, DatabaseStats, InMemoryTimeIndex, TimeSeriesDB, TimeSeriesDBBuilder},
     query::{
-        parse_sql, parse_promql,
-        Query as ParsedQuery, AggregationFunction as QueryAggFunction,
+        parse_promql, parse_sql, AggregationFunction as QueryAggFunction, Query as ParsedQuery,
     },
     storage::LocalDiskEngine,
     types::{DataPoint, SeriesId, TagFilter, TimeRange},
@@ -441,9 +440,7 @@ struct SqlAggregationResult {
 /// methods to retrieve and aggregate data.
 mod query_router {
     use super::*;
-    use gorilla_tsdb::query::ast::{
-        SelectQuery, AggregateQuery, DownsampleQuery, LatestQuery,
-    };
+    use gorilla_tsdb::query::ast::{AggregateQuery, DownsampleQuery, LatestQuery, SelectQuery};
 
     /// Detected query language
     #[derive(Debug, Clone, Copy)]
@@ -476,7 +473,8 @@ mod query_router {
                 (q, QueryLanguage::Sql)
             }
             "promql" => {
-                let q = parse_promql(query_str).map_err(|e| format!("PromQL parse error: {}", e))?;
+                let q =
+                    parse_promql(query_str).map_err(|e| format!("PromQL parse error: {}", e))?;
                 (q, QueryLanguage::PromQL)
             }
             _ => {
@@ -486,7 +484,8 @@ mod query_router {
                     let q = parse_sql(query_str).map_err(|e| format!("SQL parse error: {}", e))?;
                     (q, QueryLanguage::Sql)
                 } else {
-                    let q = parse_promql(query_str).map_err(|e| format!("PromQL parse error: {}", e))?;
+                    let q = parse_promql(query_str)
+                        .map_err(|e| format!("PromQL parse error: {}", e))?;
                     (q, QueryLanguage::PromQL)
                 }
             }
@@ -504,7 +503,10 @@ mod query_router {
             }
             ParsedQuery::Stream(_) => {
                 // Stream queries are not supported via HTTP (requires WebSocket)
-                Err("Stream queries are not supported via HTTP. Use WebSocket for streaming.".to_string())
+                Err(
+                    "Stream queries are not supported via HTTP. Use WebSocket for streaming."
+                        .to_string(),
+                )
             }
         }
     }
@@ -584,10 +586,15 @@ mod query_router {
         };
 
         if series_ids.is_empty() {
-            return Ok((lang, "aggregate".to_string(), vec![], Some((
-                format!("{:?}", q.aggregation.function).to_lowercase(),
-                f64::NAN,
-            ))));
+            return Ok((
+                lang,
+                "aggregate".to_string(),
+                vec![],
+                Some((
+                    format!("{:?}", q.aggregation.function).to_lowercase(),
+                    f64::NAN,
+                )),
+            ));
         }
 
         // Query all matching series and merge results for aggregation
@@ -602,10 +609,15 @@ mod query_router {
         }
 
         if all_points.is_empty() {
-            return Ok((lang, "aggregate".to_string(), vec![], Some((
-                format!("{:?}", q.aggregation.function).to_lowercase(),
-                f64::NAN,
-            ))));
+            return Ok((
+                lang,
+                "aggregate".to_string(),
+                vec![],
+                Some((
+                    format!("{:?}", q.aggregation.function).to_lowercase(),
+                    f64::NAN,
+                )),
+            ));
         }
 
         // Sort for consistent aggregation order
@@ -614,7 +626,12 @@ mod query_router {
         // Apply aggregation function across ALL series data
         let (func_name, value) = compute_aggregation_from_ast(&q.aggregation.function, &all_points);
 
-        Ok((lang, "aggregate".to_string(), vec![], Some((func_name, value))))
+        Ok((
+            lang,
+            "aggregate".to_string(),
+            vec![],
+            Some((func_name, value)),
+        ))
     }
 
     /// Execute a DOWNSAMPLE query
@@ -721,7 +738,10 @@ mod query_router {
     }
 
     /// Compute aggregation from AST function enum
-    fn compute_aggregation_from_ast(func: &QueryAggFunction, points: &[DataPoint]) -> (String, f64) {
+    fn compute_aggregation_from_ast(
+        func: &QueryAggFunction,
+        points: &[DataPoint],
+    ) -> (String, f64) {
         let func_name = format!("{:?}", func).to_lowercase();
 
         if points.is_empty() {
@@ -743,7 +763,10 @@ mod query_router {
                 sum
             }
             QueryAggFunction::Min => points.iter().map(|p| p.value).fold(f64::INFINITY, f64::min),
-            QueryAggFunction::Max => points.iter().map(|p| p.value).fold(f64::NEG_INFINITY, f64::max),
+            QueryAggFunction::Max => points
+                .iter()
+                .map(|p| p.value)
+                .fold(f64::NEG_INFINITY, f64::max),
             QueryAggFunction::Avg => {
                 // Welford's algorithm
                 let mut mean = 0.0f64;
@@ -808,7 +831,11 @@ mod query_router {
                 let last = points.last().unwrap();
                 let value_diff = last.value - first.value;
                 let time_diff = (last.timestamp - first.timestamp) as f64 / 1000.0; // seconds
-                if time_diff > 0.0 { value_diff / time_diff } else { 0.0 }
+                if time_diff > 0.0 {
+                    value_diff / time_diff
+                } else {
+                    0.0
+                }
             }
             QueryAggFunction::Increase => {
                 if points.len() < 2 {
@@ -848,8 +875,7 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-/// Generate a deterministic series ID from metric name and tags
-///
+/// Generate a deterministic series ID from metric name and tags.
 /// This creates a stable hash so the same metric+tags always maps to the same ID.
 fn generate_series_id(metric: &str, tags: &HashMap<String, String>) -> SeriesId {
     use std::collections::BTreeMap;
@@ -935,11 +961,7 @@ async fn write_points(
                     }
 
                     // Then register with in-memory index for query lookups
-                    if let Err(e) = state
-                        .db
-                        .register_series(id, metric, req.tags.clone())
-                        .await
-                    {
+                    if let Err(e) = state.db.register_series(id, metric, req.tags.clone()).await {
                         // Log but don't fail - series might already exist
                         warn!(error = %e, metric = %metric, "Series index registration (may already exist)");
                     }
@@ -1030,12 +1052,14 @@ fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> {
             }
             Some(sum)
         }
-        "min" => points.iter().map(|p| p.value).fold(None, |min, v| {
-            Some(min.map_or(v, |m: f64| m.min(v)))
-        }),
-        "max" => points.iter().map(|p| p.value).fold(None, |max, v| {
-            Some(max.map_or(v, |m: f64| m.max(v)))
-        }),
+        "min" => points
+            .iter()
+            .map(|p| p.value)
+            .fold(None, |min, v| Some(min.map_or(v, |m: f64| m.min(v)))),
+        "max" => points
+            .iter()
+            .map(|p| p.value)
+            .fold(None, |max, v| Some(max.map_or(v, |m: f64| m.max(v)))),
         "avg" | "mean" => {
             // Welford's algorithm for numerical stability
             let mut mean = 0.0f64;
@@ -1500,7 +1524,9 @@ async fn execute_sql_promql_query(
 ///
 /// Returns a tuple of (TimeSeriesDB, Arc<LocalDiskEngine>) so that the server
 /// can persist series metadata directly to the storage engine.
-async fn init_database(config: &ServerConfig) -> Result<(TimeSeriesDB, Arc<LocalDiskEngine>), Box<dyn std::error::Error>> {
+async fn init_database(
+    config: &ServerConfig,
+) -> Result<(TimeSeriesDB, Arc<LocalDiskEngine>), Box<dyn std::error::Error>> {
     // Create data directory
     std::fs::create_dir_all(&config.data_dir)?;
 
@@ -1524,7 +1550,10 @@ async fn init_database(config: &ServerConfig) -> Result<(TimeSeriesDB, Arc<Local
     let series_metadata = storage.get_all_series_metadata();
     let metadata_count = series_metadata.len();
     if metadata_count > 0 {
-        info!("Loaded {} series metadata entries from disk", metadata_count);
+        info!(
+            "Loaded {} series metadata entries from disk",
+            metadata_count
+        );
     }
 
     // Create in-memory index (production would use Redis)
@@ -1544,7 +1573,8 @@ async fn init_database(config: &ServerConfig) -> Result<(TimeSeriesDB, Arc<Local
 
     // Build database - use with_storage_arc to share the Arc with AppState
     // Coerce Arc<LocalDiskEngine> to Arc<dyn StorageEngine + Send + Sync>
-    let storage_dyn: Arc<dyn gorilla_tsdb::engine::traits::StorageEngine + Send + Sync> = storage.clone();
+    let storage_dyn: Arc<dyn gorilla_tsdb::engine::traits::StorageEngine + Send + Sync> =
+        storage.clone();
     let db = TimeSeriesDBBuilder::new()
         .with_config(db_config)
         .with_compressor(compressor)
@@ -1566,7 +1596,10 @@ async fn init_database(config: &ServerConfig) -> Result<(TimeSeriesDB, Arc<Local
     // Restore series metadata to the in-memory index
     // This is critical for metric-based queries (e.g., SELECT * FROM temperature)
     for (series_id, metadata) in series_metadata {
-        if let Err(e) = db.register_series(series_id, &metadata.metric_name, metadata.tags.clone()).await {
+        if let Err(e) = db
+            .register_series(series_id, &metadata.metric_name, metadata.tags.clone())
+            .await
+        {
             warn!(
                 series_id = series_id,
                 metric_name = %metadata.metric_name,

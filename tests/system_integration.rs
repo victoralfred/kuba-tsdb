@@ -537,10 +537,7 @@ async fn test_series_deletion() {
 
     // Verify data exists
     let time_range = TimeRange::new(0, 100_000).expect("Invalid range");
-    let before_delete = db
-        .query(series_id, time_range)
-        .await
-        .expect("Query failed");
+    let before_delete = db.query(series_id, time_range).await.expect("Query failed");
     assert_eq!(before_delete.len(), 100);
 
     // Delete series
@@ -705,7 +702,9 @@ async fn test_full_workflow() {
     db.write(1, cpu_data.clone())
         .await
         .expect("Write CPU failed");
-    db.write(2, mem_data.clone()).await.expect("Write mem failed");
+    db.write(2, mem_data.clone())
+        .await
+        .expect("Write mem failed");
 
     // === Step 3: Query recent data ===
     let recent_range = TimeRange::new(now + 900_000, now + 999_999).expect("Invalid range");
@@ -779,8 +778,14 @@ async fn test_performance_baseline() {
     let query_rate = 50_000.0 / query_duration.as_secs_f64();
 
     println!("Performance baseline:");
-    println!("  Write: {:.0} points/sec ({:?})", write_rate, write_duration);
-    println!("  Query: {:.0} points/sec ({:?})", query_rate, query_duration);
+    println!(
+        "  Write: {:.0} points/sec ({:?})",
+        write_rate, write_duration
+    );
+    println!(
+        "  Query: {:.0} points/sec ({:?})",
+        query_rate, query_duration
+    );
 
     // Minimum acceptable performance (very conservative for CI)
     assert!(
