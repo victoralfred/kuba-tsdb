@@ -1,0 +1,95 @@
+# .github/workflows/codeql-analysis.yml
+
+# Provides Static Analysis Security Testing (SAST) using GitHub's CodeQL Engine.
+# Scans for vulnerabilities, security flaws, and common bugs.
+
+name: "CodeQL Analysis"
+
+on:
+  push:
+    # Trigger on the main development branch (main/develop)
+    branches: [ "main", "develop" ]
+  pull_request:
+    # Run against the PR branch when targeting main/develop
+    branches: [ "main", "develop" ]
+    # Optional: You can specify paths here to only run CodeQL when source code changes
+    # paths:
+    #   - 'src/**'
+    #   - 'Cargo.toml'
+    #   - 'Cargo.lock'
+  schedule:
+    # Run weekly scan outside of peak hours (e.g., 3:07 AM UTC on Wednesday)
+    - cron: '07 3 * * 3' 
+  # Optional: Allows manual triggering of the scan
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    
+    # Use Ubuntu for Rust analysis
+    runs-on: ubuntu-latest
+    
+    permissions:
+      # required for reporting results
+      security-events: write
+      # required to fetch the repository code
+      contents: read
+      # Required if fetching internal CodeQL packs (optional)
+      packages: read
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        # **FIXED & TAILORED MATRIX:** Focus on Rust and optionally GitHub Actions
+        language: [ 'rust', 'actions' ]
+        # Rust is a compiled language, but cargo handles the build process, so 'autobuild' 
+        # is the most common and robust mode. 'none' works if no specific build steps are needed.
+        build-mode: [ 'autobuild', 'none' ] 
+        # Create a single matrix item for Rust to avoid running twice unnecessarily
+        include:
+          - language: rust
+            build-mode: none 
+          - language: actions
+            build-mode: none
+          # Removed the default, non-relevant languages (swift, c-cpp, etc.)
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        # Fetch depth 0 is needed if CodeQL is used in conjunction with deep git history checks
+        fetch-depth: 0 
+        
+    # --- RUST TOOLCHAIN SETUP (CRITICAL FOR RUST) ---
+    # CodeQL needs the environment set up before initialization.
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      
+    # Initializes the CodeQL tools for scanning.
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+        # Set build-mode to 'manual' if CodeQL fails to detect cargo build steps
+        build-mode: ${{ matrix.build-mode }}
+        
+        # **RECOMMENDED IMPROVEMENT:** Use the security-and-quality query pack 
+        # for a better balance between speed and coverage.
+        queries: security-and-quality
+
+    # --- RUST BUILD STEP (REQUIRED FOR COMPILED CODE) ---
+    # This step is where CodeQL intercepts the compiler calls (cargo build/test).
+    # Since Rust is a compiled language, this step is essential for accurate data flow analysis.
+    - name: Perform Rust build (CodeQL Capture)
+      if: matrix.language == 'rust' && matrix.build-mode == 'none' # Or 'autobuild' is often fine
+      run: |
+        # Use cargo test to ensure all modules are compiled
+        cargo test --workspace --no-run --locked || true
+
+    # Performs the actual CodeQL analysis.
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        # Use category to uniquely identify the scan result (optional but good practice)
+        category: "/language:${{matrix.language}}"
