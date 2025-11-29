@@ -30,12 +30,15 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust
 //! use gorilla_tsdb::ingestion::protocol::{ProtobufParser, ProtocolParser};
 //!
 //! let parser = ProtobufParser::new();
-//! let input = /* protobuf bytes */;
-//! let points = parser.parse(&input)?;
+//!
+//! // Empty input returns empty result (valid protobuf with no data)
+//! let empty_bytes: &[u8] = &[];
+//! let result = parser.parse(empty_bytes);
+//! // Note: parsing empty protobuf may succeed or fail depending on schema
 //! ```
 
 use std::borrow::Cow;

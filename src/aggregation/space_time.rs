@@ -39,20 +39,37 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::{SpaceTimeAggregator, AggregateFunction};
+//! ```rust
+//! use gorilla_tsdb::aggregation::{
+//!     SpaceTimeAggregator, AggregateFunction, AggregateQuery, InMemoryDataSource
+//! };
+//! use gorilla_tsdb::aggregation::index::TagMatcher;
+//! use gorilla_tsdb::types::{DataPoint, TimeRange};
 //! use std::time::Duration;
 //!
-//! let aggregator = SpaceTimeAggregator::new(storage);
+//! // Create in-memory data source with sample data
+//! let mut data_source = InMemoryDataSource::new();
+//! data_source.add_series(1, vec![
+//!     DataPoint::new(1, 1000, 10.0),
+//!     DataPoint::new(1, 2000, 20.0),
+//!     DataPoint::new(1, 3000, 30.0),
+//! ]);
 //!
-//! // Query: avg(cpu_usage{dc="us-east"}) over 5m windows
-//! let result = aggregator.aggregate(AggregateQuery {
-//!     metric: "cpu_usage",
-//!     tags: vec![("dc", "us-east")],
-//!     time_range: TimeRange::new(start, end),
-//!     window: Duration::from_secs(300),
+//! let aggregator = SpaceTimeAggregator::new(data_source);
+//!
+//! // Query: avg over the time range
+//! let query = AggregateQuery {
+//!     matcher: TagMatcher::new(),
+//!     time_range: TimeRange::new(0, 4000).unwrap(),
+//!     window: Some(Duration::from_millis(4000)),
 //!     function: AggregateFunction::Avg,
-//! }).await?;
+//!     step: None,
+//!     offset: None,
+//!     limit: None,
+//! };
+//!
+//! let result = aggregator.aggregate(&[1], &query).unwrap();
+//! assert!(!result.points.is_empty());
 //! ```
 
 use std::collections::{BTreeMap, HashMap};
@@ -64,6 +81,27 @@ use crate::types::{DataPoint, SeriesId, TimeRange};
 
 use super::data_model::{AggregatedPoint, AggregationMetadata, UnifiedTimeSeries};
 use super::index::TagMatcher;
+
+// ============================================================================
+// Timestamp Validation Constants (SEC-009)
+// ============================================================================
+
+/// Minimum valid timestamp: January 1, 2000 00:00:00 UTC (in milliseconds)
+/// This prevents accidental use of timestamps that are clearly invalid.
+pub const MIN_VALID_TIMESTAMP_MS: i64 = 946_684_800_000;
+
+/// Maximum valid timestamp: January 1, 2100 00:00:00 UTC (in milliseconds)
+/// This prevents timestamps far in the future that could cause issues.
+pub const MAX_VALID_TIMESTAMP_MS: i64 = 4_102_444_800_000;
+
+/// SEC-009: Validate that a timestamp is within reasonable bounds
+///
+/// Returns true if the timestamp is between year 2000 and 2100.
+/// This helps catch obviously invalid timestamps that could cause issues.
+#[must_use]
+pub fn is_valid_timestamp(timestamp_ms: i64) -> bool {
+    (MIN_VALID_TIMESTAMP_MS..=MAX_VALID_TIMESTAMP_MS).contains(&timestamp_ms)
+}
 
 // ============================================================================
 // Internal Data Structures
@@ -526,14 +564,68 @@ pub struct WindowIterator {
     step_ms: i64,
 }
 
+/// Error type for window iterator creation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowIteratorError {
+    /// Start timestamp out of valid range
+    InvalidStartTimestamp(i64),
+    /// End timestamp out of valid range
+    InvalidEndTimestamp(i64),
+    /// Start timestamp after end timestamp
+    StartAfterEnd {
+        /// The start timestamp provided
+        start: i64,
+        /// The end timestamp provided
+        end: i64,
+    },
+    /// Window size is zero or negative
+    InvalidWindowSize,
+}
+
+impl std::fmt::Display for WindowIteratorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WindowIteratorError::InvalidStartTimestamp(ts) => {
+                write!(
+                    f,
+                    "Start timestamp {} is outside valid range (2000-2100)",
+                    ts
+                )
+            }
+            WindowIteratorError::InvalidEndTimestamp(ts) => {
+                write!(f, "End timestamp {} is outside valid range (2000-2100)", ts)
+            }
+            WindowIteratorError::StartAfterEnd { start, end } => {
+                write!(
+                    f,
+                    "Start timestamp {} is after end timestamp {}",
+                    start, end
+                )
+            }
+            WindowIteratorError::InvalidWindowSize => {
+                write!(f, "Window size must be positive")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WindowIteratorError {}
+
 impl WindowIterator {
     /// Create a new window iterator
+    ///
+    /// Note: This constructor does not validate timestamps.
+    /// Use `try_new` for validated construction.
     pub fn new(start: i64, end: i64, window: Duration, step: Option<Duration>) -> Self {
         let window_ms = window.as_millis() as i64;
         let step_ms = step.map(|s| s.as_millis() as i64).unwrap_or(window_ms);
 
         // Align start to window boundary
-        let aligned_start = (start / window_ms) * window_ms;
+        let aligned_start = if window_ms > 0 {
+            (start / window_ms) * window_ms
+        } else {
+            start
+        };
 
         Self {
             current: aligned_start,
@@ -541,6 +633,32 @@ impl WindowIterator {
             window_ms,
             step_ms,
         }
+    }
+
+    /// Create a new window iterator with timestamp validation
+    ///
+    /// SEC-009: Validates timestamps are within reasonable bounds (2000-2100).
+    pub fn try_new(
+        start: i64,
+        end: i64,
+        window: Duration,
+        step: Option<Duration>,
+    ) -> std::result::Result<Self, WindowIteratorError> {
+        // SEC-009: Validate timestamp ranges
+        if !is_valid_timestamp(start) {
+            return Err(WindowIteratorError::InvalidStartTimestamp(start));
+        }
+        if !is_valid_timestamp(end) {
+            return Err(WindowIteratorError::InvalidEndTimestamp(end));
+        }
+        if start > end {
+            return Err(WindowIteratorError::StartAfterEnd { start, end });
+        }
+        if window.is_zero() {
+            return Err(WindowIteratorError::InvalidWindowSize);
+        }
+
+        Ok(Self::new(start, end, window, step))
     }
 }
 

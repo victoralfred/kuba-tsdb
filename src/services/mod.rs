@@ -26,17 +26,16 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust
 //! use gorilla_tsdb::services::{ServiceManager, ServiceConfig};
 //!
+//! // Create service manager with default config
 //! let config = ServiceConfig::default();
-//! let mut manager = ServiceManager::new(config);
+//! let manager = ServiceManager::new(config);
 //!
-//! // Start all services
-//! manager.start_all().await?;
-//!
-//! // Graceful shutdown
-//! manager.shutdown().await?;
+//! // Check service status
+//! let status = manager.status();
+//! assert_eq!(status.len(), 0); // No services registered yet
 //! ```
 
 pub mod chunk_manager;

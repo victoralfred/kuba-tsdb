@@ -9,13 +9,19 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use gorilla_tsdb::query::operators::StorageScanOperator;
+//! use gorilla_tsdb::query::SeriesSelector;
 //! use gorilla_tsdb::storage::LocalDiskEngine;
+//! use gorilla_tsdb::types::TimeRange;
+//! use std::sync::Arc;
 //!
-//! let engine = LocalDiskEngine::new("/data/tsdb".into())?;
-//! let scan = StorageScanOperator::new(engine, series_id)
-//!     .with_time_range(start, end)
+//! // Create storage engine (requires actual directory)
+//! let engine = Arc::new(LocalDiskEngine::new("/data/tsdb".into()).unwrap());
+//! // Create a series selector for series ID 1
+//! let selector = SeriesSelector::by_id(1);
+//! let scan = StorageScanOperator::new(engine, selector)
+//!     .with_time_range(TimeRange::new(0, 3600000).unwrap())
 //!     .with_batch_size(4096);
 //! ```
 

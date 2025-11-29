@@ -168,7 +168,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GITHUBX_TOKEN }}
 
       - name: Extract metadata for Docker
         id: meta
@@ -261,7 +261,7 @@ jobs:
           prerelease: ${{ needs.validate.outputs.is_prerelease == 'true' }}
           generate_release_notes: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUBX_TOKEN: ${{ secrets.GITHUBX_TOKEN }}
 
   # ============================================================
   # Post-Release Notifications

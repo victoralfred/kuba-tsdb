@@ -26,21 +26,23 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```rust
 //! use gorilla_tsdb::query::subscription::{SubscriptionManager, SubscriptionConfig};
+//! use gorilla_tsdb::types::DataPoint;
 //!
-//! let manager = SubscriptionManager::new(SubscriptionConfig::default());
+//! let config = SubscriptionConfig::default();
+//! let manager = SubscriptionManager::new(config);
 //!
 //! // Subscribe to series updates
-//! let mut rx = manager.subscribe(series_id);
+//! let _rx = manager.subscribe(1);
 //!
 //! // When data arrives, notify subscribers
-//! manager.notify(series_id, data_point);
+//! let point = DataPoint::new(1, 1000, 42.0);
+//! manager.notify(1, point);
 //!
-//! // Subscribers receive updates via the channel
-//! while let Ok(update) = rx.recv().await {
-//!     process(update);
-//! }
+//! // Check stats - subscriptions_created tracks total subscriptions made
+//! let stats = manager.stats();
+//! assert_eq!(stats.subscriptions_created, 1);
 //! ```
 
 use crate::query::ast::{Aggregation, StreamMode, StreamQuery};

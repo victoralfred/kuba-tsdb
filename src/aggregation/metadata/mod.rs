@@ -158,9 +158,10 @@ impl SeriesRegistry {
         }
 
         // Create new series
+        // PERF-009: Relaxed is sufficient - we only need uniqueness, not ordering
         let series_id = self
             .next_series_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst) as SeriesId;
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed) as SeriesId;
         let entry = SeriesEntry::new(series_id, metric_id, tags);
 
         // Update all indexes
@@ -266,8 +267,9 @@ impl SeriesRegistry {
         }
 
         // Update next_series_id to be after the highest loaded ID
+        // PERF-009: Release is sufficient - just ensure the write is visible to future reads
         self.next_series_id
-            .store(max_id + 1, std::sync::atomic::Ordering::SeqCst);
+            .store(max_id + 1, std::sync::atomic::Ordering::Release);
     }
 }
 

@@ -14,17 +14,14 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::query::operators::{ParallelScanner, ParallelConfig};
+//! ```rust
+//! use gorilla_tsdb::query::operators::ParallelConfig;
 //!
+//! // Use default configuration for parallel execution
 //! let config = ParallelConfig::default();
-//! let scanner = ParallelScanner::new(chunks, config)
-//!     .with_time_range(start, end);
 //!
-//! // Scanner reads chunks in parallel, outputs batches serially
-//! while let Some(batch) = scanner.next_batch(&mut ctx)? {
-//!     process(batch);
-//! }
+//! assert!(config.num_workers > 0);
+//! assert!(config.morsel_size > 0);
 //! ```
 
 use crate::query::ast::{AggregationFunction, Predicate, SeriesSelector};

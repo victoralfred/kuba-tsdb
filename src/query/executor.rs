@@ -199,13 +199,18 @@ impl QueryExecutor {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let executor = QueryExecutor::new();
+    /// ```rust
+    /// use gorilla_tsdb::query::{QueryExecutor, QueryBuilder, ExecutorConfig};
+    /// use gorilla_tsdb::types::TimeRange;
+    ///
+    /// // Create executor with config using with_config method
+    /// let mut executor = QueryExecutor::with_config(ExecutorConfig::default());
     /// let query = QueryBuilder::new()
     ///     .select_series(1)
-    ///     .time_range(TimeRange::last_hours(1))
-    ///     .build()?;
-    /// let result = executor.execute(query)?;
+    ///     .time_range(TimeRange::new(0, 3600000).unwrap())
+    ///     .build()
+    ///     .unwrap();
+    /// let result = executor.execute(query);
     /// ```
     pub fn execute(&mut self, query: Query) -> Result<QueryResult, QueryError> {
         let start = Instant::now();

@@ -21,14 +21,20 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::query::parser::{parse_sql, parse_promql};
+//! ```rust
+//! use gorilla_tsdb::query::parser::{parse_sql, parse_promql, parse_query};
 //!
 //! // Parse SQL query
-//! let query = parse_sql("SELECT * FROM cpu WHERE time >= now() - 1h")?;
+//! let query = parse_sql("SELECT * FROM cpu WHERE time >= 0");
+//! assert!(query.is_ok());
 //!
 //! // Parse PromQL query
-//! let query = parse_promql("cpu_usage{host=\"server01\"}[5m]")?;
+//! let query = parse_promql("cpu_usage{host=\"server01\"}[5m]");
+//! assert!(query.is_ok());
+//!
+//! // Auto-detect query language
+//! let query = parse_query("SELECT * FROM metrics");
+//! assert!(query.is_ok());
 //! ```
 
 pub mod promql;

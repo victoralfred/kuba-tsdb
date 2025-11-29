@@ -45,21 +45,17 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::query::{QueryBuilder, QueryEngine};
+//! ```rust
+//! use gorilla_tsdb::query::{QueryBuilder, AggregationFunction};
 //! use gorilla_tsdb::types::TimeRange;
+//! use std::time::Duration;
 //!
-//! // Build a query
+//! // Build a simple select query
 //! let query = QueryBuilder::new()
-//!     .select_series(series_id)
-//!     .time_range(TimeRange::last_hours(1))
-//!     .aggregate(Aggregation::Avg)
-//!     .window(Duration::from_secs(60))
-//!     .build()?;
-//!
-//! // Execute
-//! let engine = QueryEngine::new(config);
-//! let results = engine.execute(query).await?;
+//!     .select_series(1)
+//!     .time_range(TimeRange::new(0, 3600000).unwrap())
+//!     .build()
+//!     .unwrap();
 //! ```
 
 pub mod ast;

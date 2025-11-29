@@ -12,25 +12,24 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::index::{BitmapIndex, TagBitmap};
+//! ```rust
+//! use gorilla_tsdb::aggregation::index::{BitmapIndex, TagFilter};
+//! use gorilla_tsdb::aggregation::data_model::{TagKeyId, TagValueId};
 //!
-//! let mut index = BitmapIndex::new();
+//! let index = BitmapIndex::new();
 //!
-//! // Register series with tags
-//! index.add_series(series_id_1, &[("host", "server1"), ("dc", "us-east")]);
-//! index.add_series(series_id_2, &[("host", "server2"), ("dc", "us-east")]);
-//! index.add_series(series_id_3, &[("host", "server1"), ("dc", "us-west")]);
+//! // Register series with tags (using tag IDs)
+//! let host_key = TagKeyId(1);
+//! let dc_key = TagKeyId(2);
+//! let server1_val = TagValueId(1);
+//! let us_east_val = TagValueId(2);
 //!
-//! // Query: all series with dc=us-east
-//! let bitmap = index.get_bitmap("dc", "us-east");
-//! // Returns bitmap with bits 1 and 2 set
+//! index.add_series(1, &[(host_key, server1_val), (dc_key, us_east_val)]);
 //!
-//! // Query: all series with host=server1 AND dc=us-east
-//! let host_bitmap = index.get_bitmap("host", "server1");
-//! let dc_bitmap = index.get_bitmap("dc", "us-east");
-//! let result = host_bitmap.and(&dc_bitmap);
-//! // Returns bitmap with only bit 1 set
+//! // Query using TagFilter
+//! let filter = TagFilter::exact(dc_key, us_east_val);
+//! let bitmap = index.query(&filter);
+//! assert!(bitmap.contains(1));
 //! ```
 
 use std::collections::HashMap;
@@ -321,7 +320,7 @@ impl BitmapIndex {
             bitmap.set(series_id);
 
             // PERF-003: Also add to key-level bitmap for O(1) HasKey lookups
-            let key_bitmap = key_bitmaps.entry(*key_id).or_insert_with(TagBitmap::new);
+            let key_bitmap = key_bitmaps.entry(*key_id).or_default();
             key_bitmap.set(series_id);
         }
 
@@ -511,50 +510,72 @@ impl TagFilter {
         TagFilter::Exact(key_id, value_id)
     }
 
-    /// Create an AND filter
+    /// Create an AND filter from an iterator
     ///
+    /// PERF-007: Accepts iterator to avoid pre-allocation for single-element cases
     /// API-003: Returns `TagFilter::All` if filters is empty (neutral element for AND)
     #[must_use]
-    pub fn and(filters: Vec<TagFilter>) -> Self {
-        match filters.len() {
-            0 => TagFilter::All, // Empty AND = match all (neutral element)
-            1 => filters.into_iter().next().unwrap(),
-            _ => TagFilter::And(filters),
-        }
+    pub fn and<I: IntoIterator<Item = TagFilter>>(filters: I) -> Self {
+        let mut iter = filters.into_iter();
+        let first = match iter.next() {
+            None => return TagFilter::All, // Empty AND = match all (neutral element)
+            Some(f) => f,
+        };
+        let second = match iter.next() {
+            None => return first, // Single element - no allocation needed
+            Some(s) => s,
+        };
+        // Multiple elements - now we need to allocate
+        let mut vec = Vec::with_capacity(iter.size_hint().0 + 2);
+        vec.push(first);
+        vec.push(second);
+        vec.extend(iter);
+        TagFilter::And(vec)
     }
 
     /// Create an AND filter, returning None if filters is empty
     ///
+    /// PERF-007: Accepts iterator to avoid pre-allocation
     /// API-003: Explicit handling of empty case
     #[must_use]
-    pub fn try_and(filters: Vec<TagFilter>) -> Option<Self> {
-        if filters.is_empty() {
-            return None;
-        }
-        Some(Self::and(filters))
+    pub fn try_and<I: IntoIterator<Item = TagFilter>>(filters: I) -> Option<Self> {
+        let mut iter = filters.into_iter().peekable();
+        iter.peek()?;
+        Some(Self::and(iter))
     }
 
-    /// Create an OR filter
+    /// Create an OR filter from an iterator
     ///
+    /// PERF-007: Accepts iterator to avoid pre-allocation for single-element cases
     /// API-003: Returns empty bitmap equivalent if filters is empty
     #[must_use]
-    pub fn or(filters: Vec<TagFilter>) -> Self {
-        match filters.len() {
-            0 => TagFilter::Or(vec![]), // Empty OR = match none
-            1 => filters.into_iter().next().unwrap(),
-            _ => TagFilter::Or(filters),
-        }
+    pub fn or<I: IntoIterator<Item = TagFilter>>(filters: I) -> Self {
+        let mut iter = filters.into_iter();
+        let first = match iter.next() {
+            None => return TagFilter::Or(vec![]), // Empty OR = match none
+            Some(f) => f,
+        };
+        let second = match iter.next() {
+            None => return first, // Single element - no allocation needed
+            Some(s) => s,
+        };
+        // Multiple elements - now we need to allocate
+        let mut vec = Vec::with_capacity(iter.size_hint().0 + 2);
+        vec.push(first);
+        vec.push(second);
+        vec.extend(iter);
+        TagFilter::Or(vec)
     }
 
     /// Create an OR filter, returning None if filters is empty
     ///
+    /// PERF-007: Accepts iterator to avoid pre-allocation
     /// API-003: Explicit handling of empty case
     #[must_use]
-    pub fn try_or(filters: Vec<TagFilter>) -> Option<Self> {
-        if filters.is_empty() {
-            return None;
-        }
-        Some(Self::or(filters))
+    pub fn try_or<I: IntoIterator<Item = TagFilter>>(filters: I) -> Option<Self> {
+        let mut iter = filters.into_iter().peekable();
+        iter.peek()?;
+        Some(Self::or(iter))
     }
 
     /// Create a NOT filter (negation)

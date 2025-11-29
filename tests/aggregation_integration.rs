@@ -15,8 +15,8 @@ use gorilla_tsdb::aggregation::space_time::{
     AggregateFunction, AggregateQuery, InMemoryDataSource,
 };
 use gorilla_tsdb::aggregation::{
-    AggQueryBuilder, AggQueryPlanner, CardinalityConfig, CardinalityController, MetadataStore,
-    QueryPlannerConfig, SpaceTimeAggregator, TagResolver,
+    AggQueryBuilder, CardinalityConfig, CardinalityController, MetadataStore, QueryPlannerConfig,
+    SpaceTimeAggregator, TagResolver,
 };
 use gorilla_tsdb::types::{DataPoint, SeriesId, TimeRange};
 
@@ -411,9 +411,9 @@ fn test_query_builder() {
 #[test]
 fn test_query_planner_planning() {
     // Create resolver with bitmap index populated
-    let (store, resolver, _) = create_test_resolver();
+    let (_store, resolver, _) = create_test_resolver();
 
-    let config = QueryPlannerConfig {
+    let _config = QueryPlannerConfig {
         max_series_soft_limit: 100,
         max_series_hard_limit: 1000,
         parallel_threshold: 5,
@@ -449,7 +449,7 @@ fn test_query_planner_planning() {
 #[test]
 fn test_query_planner_series_limit() {
     // Create resolver with bitmap index populated
-    let (store, resolver, _) = create_test_resolver();
+    let (_store, resolver, _) = create_test_resolver();
 
     // Test series limit via direct resolution
     let matcher = TagMatcher::new().metric("cpu_usage");
@@ -502,7 +502,7 @@ fn test_query_planner_too_many_series() {
 #[test]
 fn test_end_to_end_aggregation() {
     // Create resolver with bitmap index populated
-    let (store, resolver, series_ids) = create_test_resolver();
+    let (_store, resolver, series_ids) = create_test_resolver();
     let data_source = create_test_data_source(&series_ids);
 
     // Find CPU series in us-east via resolver

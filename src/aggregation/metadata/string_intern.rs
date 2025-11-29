@@ -68,7 +68,9 @@ impl std::error::Error for InternError {}
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use gorilla_tsdb::aggregation::metadata::StringInterner;
+///
 /// let interner = StringInterner::new();
 ///
 /// let id1 = interner.intern("host");
@@ -76,7 +78,7 @@ impl std::error::Error for InternError {}
 /// assert_eq!(id1, id2);
 ///
 /// let resolved = interner.resolve(id1);
-/// assert_eq!(resolved, Some("host"));
+/// assert_eq!(resolved, Some("host".to_string()));
 /// ```
 #[derive(Debug)]
 pub struct StringInterner {
@@ -136,7 +138,8 @@ impl StringInterner {
         }
 
         // Assign new ID
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        // PERF-009: Relaxed is sufficient - we only need uniqueness, not ordering
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         // Store in both maps
         map.insert(s.to_string(), id);
@@ -357,7 +360,9 @@ impl Default for TagValueInterner {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use gorilla_tsdb::aggregation::metadata::TagDictionary;
+///
 /// let dict = TagDictionary::new();
 ///
 /// // Intern a complete tag set
@@ -365,9 +370,11 @@ impl Default for TagValueInterner {
 ///     ("host", "server1"),
 ///     ("dc", "us-east"),
 /// ]);
+/// assert_eq!(interned.len(), 2);
 ///
 /// // Resolve back to strings
 /// let resolved = dict.resolve_tags(&interned);
+/// assert_eq!(resolved.len(), 2);
 /// ```
 #[derive(Debug)]
 pub struct TagDictionary {

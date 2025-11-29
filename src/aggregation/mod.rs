@@ -103,16 +103,17 @@ pub use metadata::SeriesEntryResolved;
 
 // Re-export main types from space_time
 pub use space_time::{
-    AggregateFunction, AggregateQuery, AggregateState, AggregatorStats, AggregatorStatsSnapshot,
-    DataSource, InMemoryDataSource, SpaceTimeAggregator, WindowIterator,
+    is_valid_timestamp, AggregateFunction, AggregateQuery, AggregateState, AggregatorStats,
+    AggregatorStatsSnapshot, DataSource, InMemoryDataSource, SpaceTimeAggregator, WindowIterator,
+    WindowIteratorError, MAX_VALID_TIMESTAMP_MS, MIN_VALID_TIMESTAMP_MS,
 };
 
 // Re-export main types from functions
 pub use functions::{
     bottomk, clamp_max, clamp_min, clamp_values, delta, exponential_moving_avg, filter_above,
-    filter_below, group_by_tag, histogram_quantile, idelta, irate, label_join, label_replace,
-    moving_avg, moving_max, moving_min, moving_sum, rate_with_resets, topk, HistogramBucket,
-    RankedSeries,
+    filter_below, group_by_tag, histogram_quantile, idelta, irate, is_valid_label_name, label_join,
+    label_replace, moving_avg, moving_max, moving_min, moving_sum, rate_with_resets, topk,
+    HistogramBucket, LabelError, RankedSeries,
 };
 
 // Re-export main types from cardinality

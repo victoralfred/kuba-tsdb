@@ -18,14 +18,25 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::functions::{topk, moving_avg};
+//! ```rust
+//! use gorilla_tsdb::aggregation::{topk, moving_avg};
 //!
-//! // Get top 5 series by value
-//! let top_series = topk(5, &series_data);
+//! // Create sample series data as (SeriesId, value) tuples
+//! let series_data: Vec<(u128, f64)> = vec![
+//!     (1, 100.0),
+//!     (2, 50.0),
+//!     (3, 75.0),
+//! ];
 //!
-//! // Calculate 5-point moving average
-//! let smoothed = moving_avg(&values, 5);
+//! // Get top 2 series by value
+//! let top_series = topk(2, series_data);
+//! assert_eq!(top_series.len(), 2);
+//! assert_eq!(top_series[0].series_id, 1); // Highest value
+//!
+//! // Calculate 3-point moving average
+//! let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+//! let smoothed = moving_avg(&values, 3);
+//! assert_eq!(smoothed.len(), 5);
 //! ```
 
 use std::cmp::Ordering;
@@ -83,9 +94,14 @@ impl Ord for RankedSeries {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// let top_3 = topk(3, &[(1, 10.0), (2, 50.0), (3, 30.0)]);
-/// // Returns: [2, 3, 1] (by series_id, sorted by value desc)
+/// ```rust
+/// use gorilla_tsdb::aggregation::topk;
+///
+/// let series: Vec<(u128, f64)> = vec![(1, 10.0), (2, 50.0), (3, 30.0)];
+/// let top_2 = topk(2, series);
+/// assert_eq!(top_2.len(), 2);
+/// assert_eq!(top_2[0].series_id, 2); // Highest value (50.0)
+/// assert_eq!(top_2[1].series_id, 3); // Second highest (30.0)
 /// ```
 pub fn topk<I>(k: usize, series: I) -> Vec<RankedSeries>
 where
@@ -178,10 +194,15 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use gorilla_tsdb::aggregation::moving_avg;
+///
 /// let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 /// let ma = moving_avg(&values, 3);
-/// // Returns: [1.0, 1.5, 2.0, 3.0, 4.0]
+/// assert_eq!(ma.len(), 5);
+/// assert_eq!(ma[0], 1.0);  // Partial window: avg of [1.0]
+/// assert_eq!(ma[1], 1.5);  // Partial window: avg of [1.0, 2.0]
+/// assert_eq!(ma[2], 2.0);  // Full window: avg of [1.0, 2.0, 3.0]
 /// ```
 #[must_use]
 pub fn moving_avg(values: &[f64], window_size: usize) -> Vec<f64> {
@@ -252,9 +273,7 @@ pub fn moving_min(values: &[f64], window_size: usize) -> Vec<f64> {
     // Deque stores (index, value) pairs where values are monotonically increasing
     let mut deque: std::collections::VecDeque<(usize, f64)> = std::collections::VecDeque::new();
 
-    for i in 0..values.len() {
-        let value = values[i];
-
+    for (i, &value) in values.iter().enumerate() {
         // Remove elements outside the window from front
         while let Some(&(idx, _)) = deque.front() {
             if i >= window_size && idx <= i - window_size {
@@ -299,9 +318,7 @@ pub fn moving_max(values: &[f64], window_size: usize) -> Vec<f64> {
     // Deque stores (index, value) pairs where values are monotonically decreasing
     let mut deque: std::collections::VecDeque<(usize, f64)> = std::collections::VecDeque::new();
 
-    for i in 0..values.len() {
-        let value = values[i];
-
+    for (i, &value) in values.iter().enumerate() {
         // Remove elements outside the window from front
         while let Some(&(idx, _)) = deque.front() {
             if i >= window_size && idx <= i - window_size {
@@ -663,16 +680,72 @@ pub fn group_by_tag<'a>(
 // Label Functions
 // ============================================================================
 
+/// SEC-008: Validate that a label name follows Prometheus conventions
+///
+/// Valid label names:
+/// - Must not be empty
+/// - Must start with a letter or underscore
+/// - Can contain letters, digits, and underscores
+#[must_use]
+pub fn is_valid_label_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    // First character must be letter or underscore
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    // Remaining characters must be alphanumeric or underscore
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Error type for label operations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelError {
+    /// Invalid regex pattern
+    RegexError(String),
+    /// Invalid label name format
+    InvalidLabelName(String),
+}
+
+impl std::fmt::Display for LabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LabelError::RegexError(msg) => write!(f, "Regex error: {}", msg),
+            LabelError::InvalidLabelName(name) => {
+                write!(f, "Invalid label name '{}': must start with letter or underscore and contain only alphanumeric or underscore", name)
+            }
+        }
+    }
+}
+
+impl std::error::Error for LabelError {}
+
+impl From<regex::Error> for LabelError {
+    fn from(e: regex::Error) -> Self {
+        LabelError::RegexError(e.to_string())
+    }
+}
+
 /// Replace label values using regex
 ///
 /// Similar to PromQL's `label_replace()`.
+/// SEC-008: Validates label names before use.
 pub fn label_replace(
     labels: &mut HashMap<String, String>,
     dst_label: &str,
     replacement: &str,
     src_label: &str,
     regex_pattern: &str,
-) -> Result<(), regex::Error> {
+) -> Result<(), LabelError> {
+    // SEC-008: Validate destination label name
+    if !is_valid_label_name(dst_label) {
+        return Err(LabelError::InvalidLabelName(dst_label.to_string()));
+    }
+    // Note: src_label doesn't need validation - if it doesn't exist, nothing happens
+
     let regex = regex::Regex::new(regex_pattern)?;
 
     if let Some(src_value) = labels.get(src_label) {

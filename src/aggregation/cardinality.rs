@@ -21,23 +21,21 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::cardinality::{CardinalityController, CardinalityConfig};
+//! ```rust
+//! use gorilla_tsdb::aggregation::{CardinalityController, CardinalityConfig};
 //!
-//! let config = CardinalityConfig::default()
-//!     .with_max_series(1_000_000)
-//!     .with_max_labels_per_series(20)
-//!     .with_max_values_per_label(10_000);
-//!
+//! let config = CardinalityConfig::default();
 //! let controller = CardinalityController::new(config);
 //!
 //! // Check before registering new series
 //! if controller.can_add_series() {
-//!     // Register the series
+//!     // Try to add a series
+//!     controller.try_add_series().unwrap();
 //! }
 //!
-//! // Track label cardinality
-//! controller.observe_label("user_id", "12345");
+//! // Check cardinality stats
+//! let stats = controller.stats();
+//! assert_eq!(stats.active_series, 1);
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -364,44 +362,38 @@ impl RateLimiter {
         // Atomically refill and try to acquire in one operation
         let now_ms = Self::current_time_ms();
 
-        loop {
-            let last_ms = self.last_refill_ms.load(Ordering::Acquire);
-            let elapsed_ms = now_ms.saturating_sub(last_ms);
+        let last_ms = self.last_refill_ms.load(Ordering::Acquire);
+        let elapsed_ms = now_ms.saturating_sub(last_ms);
 
-            // Calculate tokens to add
-            let tokens_to_add = elapsed_ms * self.refill_rate_scaled;
+        // Calculate tokens to add
+        let tokens_to_add = elapsed_ms * self.refill_rate_scaled;
 
-            // Try to update last_refill atomically
-            if tokens_to_add > 0 {
-                if self
-                    .last_refill_ms
-                    .compare_exchange(last_ms, now_ms, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    // Successfully claimed the refill, add tokens
-                    let _ = self.tokens_scaled.fetch_update(
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                        |current| Some((current + tokens_to_add).min(self.max_tokens_scaled)),
-                    );
-                }
-                // If CAS failed, another thread did the refill, continue to acquire
-            }
-
-            // Try to acquire a token atomically
-            match self
-                .tokens_scaled
-                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |tokens| {
-                    if tokens >= Self::SCALE {
-                        Some(tokens - Self::SCALE)
-                    } else {
-                        None
-                    }
-                }) {
-                Ok(_) => return true,
-                Err(_) => return false,
-            }
+        // Try to update last_refill atomically (collapsed if per clippy)
+        if tokens_to_add > 0
+            && self
+                .last_refill_ms
+                .compare_exchange(last_ms, now_ms, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            // Successfully claimed the refill, add tokens
+            let _ =
+                self.tokens_scaled
+                    .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                        Some((current + tokens_to_add).min(self.max_tokens_scaled))
+                    });
         }
+        // If CAS failed, another thread did the refill, continue to acquire
+
+        // Try to acquire a token atomically
+        self.tokens_scaled
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |tokens| {
+                if tokens >= Self::SCALE {
+                    Some(tokens - Self::SCALE)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
     }
 
     /// Get current available tokens
@@ -804,6 +796,8 @@ impl CardinalityEstimator {
     }
 
     /// Add an item to the estimator
+    ///
+    /// PERF-004: Optimized to use single binary search instead of two
     pub fn add(&mut self, item: &str) {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -812,31 +806,28 @@ impl CardinalityEstimator {
         item.hash(&mut hasher);
         let hash = hasher.finish();
 
-        // Check if this hash is already present (duplicate item)
-        if self.min_values.binary_search(&hash).is_ok() {
-            return;
+        // Single binary search - use result for both duplicate check and insertion
+        match self.min_values.binary_search(&hash) {
+            Ok(_) => {
+                // Duplicate - already present, skip
+            }
+            Err(pos) => {
+                // Not a duplicate - pos is the insertion point
+                if self.min_values.len() < self.k {
+                    // Haven't filled k values yet, just insert
+                    self.min_values.insert(pos, hash);
+                    self.count += 1;
+                } else if pos < self.k {
+                    // Full but hash is smaller than k-th largest - insert and truncate
+                    self.min_values.insert(pos, hash);
+                    self.min_values.truncate(self.k);
+                    self.count += 1;
+                } else {
+                    // Hash is larger than all k smallest - just count it
+                    self.count += 1;
+                }
+            }
         }
-
-        // If we haven't filled k values yet, just insert
-        if self.min_values.len() < self.k {
-            // Insert in sorted position
-            let pos = self.min_values.binary_search(&hash).unwrap_or_else(|p| p);
-            self.min_values.insert(pos, hash);
-            self.count += 1;
-            return;
-        }
-
-        // Only insert if smaller than largest tracked value
-        let max_tracked = self.min_values[self.k - 1];
-        if hash < max_tracked {
-            // Find insertion point and insert
-            let pos = self.min_values.binary_search(&hash).unwrap_or_else(|p| p);
-            self.min_values.insert(pos, hash);
-            // Remove the largest value
-            self.min_values.truncate(self.k);
-        }
-
-        self.count += 1;
     }
 
     /// Estimate cardinality using KMV formula
@@ -1098,7 +1089,7 @@ mod tests {
             est2.add(&format!("item_{}", i));
         }
 
-        est1.merge(&est2);
+        est1.merge(&est2).expect("merge should succeed with same k");
 
         let estimate = est1.estimate();
 

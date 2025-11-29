@@ -36,24 +36,22 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::query::{
-//!     AggregationQueryPlanner, AggregationQueryBuilder
-//! };
+//! ```rust
+//! use gorilla_tsdb::aggregation::{AggQueryBuilder, AggregateFunction};
+//! use std::time::Duration;
 //!
 //! // Build a query
 //! let query = AggQueryBuilder::new("cpu_usage")
 //!     .with_tag("datacenter", "us-east")
-//!     .time_range(start, end)
+//!     .time_range(0, 3600000)
 //!     .aggregate(AggregateFunction::Avg)
 //!     .window_size(Duration::from_secs(300))
 //!     .group_by(&["host"])
-//!     .build()?;
+//!     .build()
+//!     .unwrap();
 //!
-//! // Plan and execute
-//! let planner = AggQueryPlanner::new(metadata_store, cardinality_controller);
-//! let plan = planner.plan(&query)?;
-//! let result = planner.execute(plan, &data_source)?;
+//! assert_eq!(query.metric_name, "cpu_usage");
+//! assert_eq!(query.group_by.len(), 1);
 //! ```
 
 use std::collections::HashMap;

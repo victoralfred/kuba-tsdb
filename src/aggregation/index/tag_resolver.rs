@@ -12,23 +12,26 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use gorilla_tsdb::aggregation::index::TagResolver;
+//! ```rust
+//! use gorilla_tsdb::aggregation::index::{TagResolver, TagMatcher};
+//! use gorilla_tsdb::aggregation::MetadataStore;
+//! use std::sync::Arc;
 //!
-//! let resolver = TagResolver::new(metadata_store);
+//! let metadata = Arc::new(MetadataStore::in_memory());
+//! let resolver = TagResolver::new(metadata);
 //!
 //! // Register series (automatically updates bitmap index)
 //! let series_id = resolver.register_series(
 //!     "cpu_usage",
 //!     &[("host", "server1"), ("dc", "us-east")]
-//! )?;
+//! ).unwrap();
 //!
 //! // Query by tags
 //! let matcher = TagMatcher::new()
-//!     .with("dc", "us-east")
-//!     .with("env", "prod");
+//!     .with("dc", "us-east");
 //!
-//! let series_ids = resolver.resolve(&matcher)?;
+//! let series_ids = resolver.resolve(&matcher).unwrap();
+//! assert!(series_ids.contains(&series_id));
 //! ```
 
 use std::collections::HashMap;
@@ -293,6 +296,9 @@ pub struct TagResolver {
 
     /// Query result cache: matcher hash -> (timestamp, series_ids)
     cache: RwLock<HashMap<u64, (std::time::Instant, Vec<SeriesId>)>>,
+
+    /// PERF-006: Compiled regex cache to avoid recompilation
+    regex_cache: RwLock<HashMap<String, regex::Regex>>,
 }
 
 impl TagResolver {
@@ -309,6 +315,7 @@ impl TagResolver {
             config,
             stats: TagResolverStats::default(),
             cache: RwLock::new(HashMap::new()),
+            regex_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -543,14 +550,19 @@ impl TagResolver {
         }
     }
 
-    /// Build a filter for regex matching
-    fn build_regex_filter(
-        &self,
-        key_id: TagKeyId,
-        key: &str,
-        pattern: &str,
-        tag_dict: &TagDictionary,
-    ) -> Result<Option<TagFilter>> {
+    /// PERF-006: Get a compiled regex from cache or compile and cache it
+    ///
+    /// This avoids recompiling the same regex pattern multiple times,
+    /// which can be expensive for complex patterns.
+    fn get_or_compile_regex(&self, pattern: &str) -> Result<regex::Regex> {
+        // Check cache first (read lock)
+        {
+            let cache = self.regex_cache.read();
+            if let Some(regex) = cache.get(pattern) {
+                return Ok(regex.clone());
+            }
+        }
+
         // SEC-002: ReDoS protection - limit pattern length
         if pattern.len() > self.config.max_regex_pattern_len {
             self.stats.regex_errors.fetch_add(1, Ordering::Relaxed);
@@ -569,12 +581,41 @@ impl TagResolver {
             Ok(r) => r,
             Err(e) => {
                 self.stats.regex_errors.fetch_add(1, Ordering::Relaxed);
+                // SEC-007: Truncate pattern in error message to avoid information disclosure
+                let truncated = if pattern.len() > 50 {
+                    format!("{}...", &pattern[..50])
+                } else {
+                    pattern.to_string()
+                };
                 return Err(Error::Index(IndexError::QueryError(format!(
                     "Invalid regex '{}': {}",
-                    pattern, e
+                    truncated, e
                 ))));
             }
         };
+
+        // Cache the compiled regex (write lock)
+        {
+            let mut cache = self.regex_cache.write();
+            // Limit cache size to prevent unbounded growth
+            if cache.len() < self.config.max_cache_entries {
+                cache.insert(pattern.to_string(), regex.clone());
+            }
+        }
+
+        Ok(regex)
+    }
+
+    /// Build a filter for regex matching
+    fn build_regex_filter(
+        &self,
+        key_id: TagKeyId,
+        key: &str,
+        pattern: &str,
+        tag_dict: &TagDictionary,
+    ) -> Result<Option<TagFilter>> {
+        // PERF-006: Use cached regex compilation
+        let regex = self.get_or_compile_regex(pattern)?;
 
         // Find all matching values
         let mut matching_filters = Vec::new();
