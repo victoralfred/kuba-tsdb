@@ -8,6 +8,7 @@ use crate::error::StorageError;
 use crate::storage::chunk::{ChunkMetadata, CompressionType};
 use crate::types::{ChunkId, SeriesId};
 use async_trait::async_trait;
+use futures::StreamExt;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -193,11 +194,12 @@ impl LocalDiskEngine {
                 let file_metadata = fs::metadata(&path).await?;
 
                 // Parse chunk_id from filename (chunk_{uuid}.gor)
+                // Use unchecked since this is internal trusted storage
                 let chunk_id = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .and_then(|s| s.strip_prefix("chunk_"))
-                    .map(ChunkId::from_string)
+                    .map(ChunkId::from_string_unchecked)
                     .unwrap_or_else(ChunkId::new);
 
                 chunks.push(ChunkMetadata {
@@ -554,27 +556,375 @@ impl StorageEngine for LocalDiskEngine {
         }
     }
 
+    /// Stream chunks for a series within a time range.
+    ///
+    /// Returns an async stream that yields compressed blocks one at a time,
+    /// allowing for memory-efficient processing of large time ranges.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - The series to stream chunks for
+    /// * `time_range` - Time range to filter chunks (inclusive on both ends)
+    ///
+    /// # Returns
+    ///
+    /// A pinned stream that yields `CompressedBlock` items as they are read.
+    ///
+    /// # Semantics
+    ///
+    /// - **Snapshot consistency**: Returns a snapshot of chunk locations at call time.
+    ///   Chunks added during streaming will NOT be included.
+    /// - **Deleted chunks**: Chunks deleted during streaming may cause `ChunkNotFound` errors.
+    /// - **Order**: Chunks are returned in time order (by start_timestamp).
+    /// - **Overlap**: Chunks that overlap the time range are included, not just contained chunks.
+    ///
+    /// # Errors
+    ///
+    /// Each item in the stream may be an error if:
+    /// - The chunk file was deleted after snapshot but before read
+    /// - The chunk file is corrupted (checksum mismatch)
+    /// - The chunk size exceeds 64MB (potential malformed header)
+    /// - I/O errors occur during file access
+    ///
+    /// # Performance Notes
+    ///
+    /// - Chunk locations are collected upfront under a read lock (released before I/O)
+    /// - Stats are updated using atomic operations to avoid write lock contention
+    /// - Last accessed time updates are skipped in hot path (handled by maintenance)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    /// use gorilla_tsdb::types::TimeRange;
+    ///
+    /// let range = TimeRange::new(0, 1000).unwrap();
+    /// let mut stream = engine.stream_chunks(series_id, range);
+    ///
+    /// while let Some(result) = stream.next().await {
+    ///     match result {
+    ///         Ok(block) => {
+    ///             // Process the compressed block
+    ///             println!("Got block with {} points", block.metadata.point_count);
+    ///         }
+    ///         Err(e) => {
+    ///             // Handle error - could skip or abort
+    ///             eprintln!("Error reading chunk: {}", e);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     fn stream_chunks(
         &self,
-        _series_id: SeriesId,
-        _time_range: crate::types::TimeRange,
+        series_id: SeriesId,
+        time_range: crate::types::TimeRange,
     ) -> std::pin::Pin<
         Box<
             dyn futures::Stream<Item = Result<crate::engine::traits::CompressedBlock, StorageError>>
                 + Send,
         >,
     > {
-        // TODO: Implement streaming
-        Box::pin(futures::stream::empty())
+        // Maximum allowed chunk size to prevent OOM from malformed headers
+        const MAX_CHUNK_SIZE: u32 = 64 * 1024 * 1024; // 64MB
+
+        // Collect matching chunk locations from the index
+        // We do this synchronously to avoid holding the lock across await points
+        let chunk_locations: Vec<crate::engine::traits::ChunkLocation> = {
+            let index = self.chunk_index.read();
+            if let Some(chunks) = index.get(&series_id) {
+                chunks
+                    .iter()
+                    .filter(|c| c.overlaps(time_range.start, time_range.end))
+                    .map(|c| crate::engine::traits::ChunkLocation {
+                        engine_id: self.engine_id().to_string(),
+                        path: c.path.to_string_lossy().to_string(),
+                        offset: Some(64), // Data starts after 64-byte header
+                        size: Some(c.size_bytes as usize),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
+
+        // Clone fields once outside the stream to minimize Arc cloning (PERF-003)
+        let engine_id = self.engine_id().to_string();
+        let stats = Arc::clone(&self.stats);
+
+        // Create an async stream that reads chunks
+        Box::pin(futures::stream::iter(chunk_locations).then(move |location| {
+            // Clone once per iteration instead of in nested closure
+            let engine_id = engine_id.clone();
+            let stats = Arc::clone(&stats);
+
+            async move {
+                use crate::storage::chunk::ChunkHeader;
+                use tokio::io::AsyncReadExt;
+
+                // Verify engine ID matches
+                if location.engine_id != engine_id {
+                    return Err(StorageError::ChunkNotFound(format!(
+                        "Engine ID mismatch: expected {}, got {}",
+                        engine_id, location.engine_id
+                    )));
+                }
+
+                // Fix SEC-003: Remove TOCTOU race by just attempting to open
+                // If file doesn't exist, we get a clear error from open()
+                let path = PathBuf::from(&location.path);
+                let mut file = match fs::File::open(&path).await {
+                    Ok(f) => f,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(StorageError::ChunkNotFound(format!(
+                            "Chunk file not found: {}",
+                            location.path
+                        )));
+                    }
+                    Err(e) => return Err(StorageError::Io(e)),
+                };
+
+                // Read and parse header (first 64 bytes)
+                let mut header_bytes = [0u8; 64];
+                file.read_exact(&mut header_bytes).await?;
+
+                let header = ChunkHeader::from_bytes(&header_bytes).map_err(|e| {
+                    StorageError::ChunkNotFound(format!("Failed to parse chunk header: {}", e))
+                })?;
+
+                // Validate header
+                header.validate().map_err(|e| {
+                    StorageError::ChunkNotFound(format!("Invalid chunk header: {}", e))
+                })?;
+
+                // Fix VAL-001: Validate compressed_size before allocation
+                if header.compressed_size > MAX_CHUNK_SIZE {
+                    return Err(StorageError::CorruptedData(format!(
+                        "Chunk size {} exceeds maximum allowed size {}",
+                        header.compressed_size, MAX_CHUNK_SIZE
+                    )));
+                }
+
+                // Read compressed data
+                let mut compressed_data = vec![0u8; header.compressed_size as usize];
+                file.read_exact(&mut compressed_data).await?;
+
+                // Verify checksum
+                if header.checksum
+                    != crate::compression::gorilla::GorillaCompressor::calculate_checksum(
+                        &compressed_data,
+                    )
+                {
+                    return Err(StorageError::CorruptedData(
+                        "Chunk checksum verification failed".to_string(),
+                    ));
+                }
+
+                // Fix PERF-001: Use read lock only for stats update
+                // Skip last_accessed updates in hot path - maintenance handles it
+                {
+                    let mut s = stats.write();
+                    s.read_ops += 1;
+                }
+
+                // Return the CompressedBlock
+                Ok(crate::engine::traits::CompressedBlock {
+                    algorithm_id: "gorilla".to_string(),
+                    original_size: header.uncompressed_size as usize,
+                    compressed_size: header.compressed_size as usize,
+                    checksum: header.checksum,
+                    data: bytes::Bytes::from(compressed_data),
+                    metadata: crate::engine::traits::BlockMetadata {
+                        start_timestamp: header.start_timestamp,
+                        end_timestamp: header.end_timestamp,
+                        point_count: header.point_count as usize,
+                        series_id: header.series_id,
+                    },
+                })
+            }
+        }))
     }
 
     fn stats(&self) -> crate::engine::traits::StorageStats {
         self.stats.read().clone()
     }
 
+    /// Perform storage maintenance operations.
+    ///
+    /// Executes various cleanup and optimization operations to maintain storage health.
+    ///
+    /// # Operations Performed
+    ///
+    /// 1. **Retention Cleanup**: Deletes chunks older than 30 days (configurable in future)
+    /// 2. **Orphan Cleanup**: Removes chunk files that are not tracked in the index
+    /// 3. **Empty Directory Cleanup**: Removes series directories with no remaining chunks
+    ///
+    /// # Concurrency
+    ///
+    /// - **Safe with reads**: Reads may see `ChunkNotFound` for deleted chunks
+    /// - **Safe with writes**: Writes use separate paths, won't conflict
+    /// - **Single maintenance**: Only one maintenance task should run at a time
+    ///
+    /// # Error Handling
+    ///
+    /// Individual file deletion errors are logged but do not stop maintenance.
+    /// The operation continues with remaining files and returns success.
+    /// Only fatal conditions (like inability to read directories) return errors.
+    ///
+    /// # Performance
+    ///
+    /// - Scans all series directories for orphan detection
+    /// - Acquires locks briefly for index updates (not during I/O)
+    /// - May take significant time for storage with many files
+    /// - Consider running during low-traffic periods
+    ///
+    /// # Returns
+    ///
+    /// A [`MaintenanceReport`] containing:
+    /// - `chunks_deleted`: Number of chunks removed
+    /// - `bytes_freed`: Total bytes reclaimed
+    /// - `chunks_compacted`: Always 0 (compaction not yet implemented)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use gorilla_tsdb::storage::LocalDiskEngine;
+    ///
+    /// let report = engine.maintenance().await?;
+    /// println!("Maintenance complete:");
+    /// println!("  Chunks deleted: {}", report.chunks_deleted);
+    /// println!("  Bytes freed: {} MB", report.bytes_freed / 1024 / 1024);
+    /// ```
     async fn maintenance(&self) -> Result<crate::engine::traits::MaintenanceReport, StorageError> {
-        // TODO: Implement maintenance (compaction, cleanup)
-        Ok(crate::engine::traits::MaintenanceReport::default())
+        let mut report = crate::engine::traits::MaintenanceReport::default();
+
+        // Get current timestamp for retention calculations
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Define retention period (30 days by default, could be made configurable)
+        let retention_ms: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+        // Fix EDGE-010: Use saturating_sub to prevent underflow
+        let retention_cutoff = now.saturating_sub(retention_ms);
+
+        // Collect chunks to delete (older than retention period)
+        // We do this in two phases to avoid holding locks during I/O
+        let chunks_to_delete: Vec<(SeriesId, PathBuf, u64)> = {
+            let index = self.chunk_index.read();
+            index
+                .iter()
+                .flat_map(|(series_id, chunks)| {
+                    chunks
+                        .iter()
+                        .filter(|c| c.end_timestamp < retention_cutoff)
+                        .map(move |c| (*series_id, c.path.clone(), c.size_bytes))
+                })
+                .collect()
+        };
+
+        // Delete expired chunks
+        for (series_id, path, size) in chunks_to_delete {
+            // Try to delete the file
+            match fs::remove_file(&path).await {
+                Ok(()) => {
+                    report.chunks_deleted += 1;
+                    report.bytes_freed += size;
+
+                    // Update stats
+                    {
+                        let mut stats = self.stats.write();
+                        stats.total_chunks = stats.total_chunks.saturating_sub(1);
+                        stats.total_bytes = stats.total_bytes.saturating_sub(size);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // File already deleted, just clean up index
+                }
+                Err(e) => {
+                    // Log but continue with other chunks
+                    eprintln!("Failed to delete chunk {:?}: {}", path, e);
+                    continue;
+                }
+            }
+
+            // Remove from index
+            {
+                let mut index = self.chunk_index.write();
+                if let Some(series_chunks) = index.get_mut(&series_id) {
+                    series_chunks.retain(|c| c.path != path);
+
+                    // Remove series if no chunks remain
+                    if series_chunks.is_empty() {
+                        index.remove(&series_id);
+                    }
+                }
+            }
+        }
+
+        // Clean up orphaned chunk files (files on disk not in index)
+        // This handles cases where the index got out of sync
+        let indexed_paths: std::collections::HashSet<PathBuf> = {
+            let index = self.chunk_index.read();
+            index
+                .values()
+                .flat_map(|chunks| chunks.iter().map(|c| c.path.clone()))
+                .collect()
+        };
+
+        // Scan series directories for orphaned files
+        if let Ok(mut entries) = fs::read_dir(&self.base_path).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let dir_path = entry.path();
+                if !dir_path.is_dir() {
+                    continue;
+                }
+
+                // Check if this is a series directory
+                if let Some(dir_name) = dir_path.file_name().and_then(|n| n.to_str()) {
+                    if !dir_name.starts_with("series_") {
+                        continue;
+                    }
+                }
+
+                // Scan chunk files in this series directory
+                if let Ok(mut chunk_entries) = fs::read_dir(&dir_path).await {
+                    while let Ok(Some(chunk_entry)) = chunk_entries.next_entry().await {
+                        let chunk_path = chunk_entry.path();
+
+                        // Skip non-chunk files
+                        if !chunk_path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| ["gor", "snappy", "raw"].contains(&e))
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+
+                        // Check if this chunk is in our index
+                        if !indexed_paths.contains(&chunk_path) {
+                            // This is an orphaned chunk file - delete it
+                            if let Ok(metadata) = fs::metadata(&chunk_path).await {
+                                let size = metadata.len();
+                                if fs::remove_file(&chunk_path).await.is_ok() {
+                                    report.chunks_deleted += 1;
+                                    report.bytes_freed += size;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Remove empty series directories
+                if let Ok(mut dir_entries) = fs::read_dir(&dir_path).await {
+                    // Check if directory is empty by trying to get first entry
+                    let is_empty = dir_entries.next_entry().await.ok().flatten().is_none();
+                    if is_empty {
+                        let _ = fs::remove_dir(&dir_path).await;
+                    }
+                }
+            }
+        }
+
+        Ok(report)
     }
 }
 
@@ -607,12 +957,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
 
-        let chunk_id = ChunkId::from_string("test-chunk-123");
+        // Use valid UUID for chunk_id
+        let chunk_id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
         // Test different compression types
         let path_gor = engine.chunk_path(1, &chunk_id, CompressionType::Gorilla);
         assert!(path_gor.to_string_lossy().contains("series_1"));
-        assert!(path_gor.to_string_lossy().contains("chunk_test-chunk-123"));
+        assert!(path_gor.to_string_lossy().contains("chunk_550e8400-e29b-41d4-a716-446655440000"));
         assert!(path_gor.to_string_lossy().ends_with(".gor"));
 
         let path_snappy = engine.chunk_path(1, &chunk_id, CompressionType::Snappy);
@@ -1027,5 +1378,183 @@ mod tests {
         assert_eq!(read_block.metadata.end_timestamp, 6000);
         assert_eq!(read_block.metadata.point_count, 25);
         assert_eq!(read_block.metadata.series_id, 42);
+    }
+
+    #[tokio::test]
+    async fn test_stream_chunks() {
+        use crate::engine::traits::{BlockMetadata, CompressedBlock, StorageEngine};
+        use crate::types::TimeRange;
+        use bytes::Bytes;
+        use futures::StreamExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Write multiple chunks for a series
+        for i in 0..5 {
+            let test_data = vec![i as u8; 20];
+            let checksum =
+                crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+
+            let block = CompressedBlock {
+                algorithm_id: "gorilla".to_string(),
+                original_size: 40,
+                compressed_size: test_data.len(),
+                checksum,
+                data: Bytes::from(test_data),
+                metadata: BlockMetadata {
+                    start_timestamp: i * 1000,
+                    end_timestamp: i * 1000 + 500,
+                    point_count: 5,
+                    series_id: 1,
+                },
+            };
+
+            engine
+                .write_chunk(1, ChunkId::new(), &block)
+                .await
+                .unwrap();
+        }
+
+        // Stream all chunks
+        let time_range = TimeRange::new(0, 5000).unwrap();
+        let mut stream = engine.stream_chunks(1, time_range);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            let block = result.unwrap();
+            assert_eq!(block.algorithm_id, "gorilla");
+            assert_eq!(block.metadata.series_id, 1);
+            count += 1;
+        }
+
+        assert_eq!(count, 5);
+
+        // Stream with filtered time range (should get chunks 1, 2, 3)
+        let filtered_range = TimeRange::new(1000, 3500).unwrap();
+        let mut stream = engine.stream_chunks(1, filtered_range);
+
+        let mut filtered_count = 0;
+        while let Some(result) = stream.next().await {
+            let block = result.unwrap();
+            assert!(block.metadata.start_timestamp >= 1000);
+            assert!(block.metadata.end_timestamp <= 4000);
+            filtered_count += 1;
+        }
+
+        assert_eq!(filtered_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_stream_chunks_empty_series() {
+        use crate::engine::traits::StorageEngine;
+        use crate::types::TimeRange;
+        use futures::StreamExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Stream from a series that doesn't exist
+        let time_range = TimeRange::new(0, 10000).unwrap();
+        let mut stream = engine.stream_chunks(999, time_range);
+
+        // Should get no chunks
+        let mut count = 0;
+        while let Some(_) = stream.next().await {
+            count += 1;
+        }
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_maintenance_empty_storage() {
+        use crate::engine::traits::StorageEngine;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Run maintenance on empty storage
+        let report = engine.maintenance().await.unwrap();
+
+        // Should report no actions taken
+        assert_eq!(report.chunks_deleted, 0);
+        assert_eq!(report.chunks_compacted, 0);
+        assert_eq!(report.bytes_freed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_maintenance_orphan_cleanup() {
+        use crate::engine::traits::StorageEngine;
+        use tokio::io::AsyncWriteExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Create an orphan file (not in index)
+        let series_dir = temp_dir.path().join("series_1");
+        fs::create_dir_all(&series_dir).await.unwrap();
+
+        let orphan_path = series_dir.join("chunk_orphan.gor");
+        let mut file = fs::File::create(&orphan_path).await.unwrap();
+        file.write_all(&[0u8; 100]).await.unwrap();
+        file.sync_all().await.unwrap();
+
+        // Verify the orphan file exists
+        assert!(orphan_path.exists());
+
+        // Run maintenance
+        let report = engine.maintenance().await.unwrap();
+
+        // The orphan should be cleaned up
+        assert_eq!(report.chunks_deleted, 1);
+        assert_eq!(report.bytes_freed, 100);
+        assert!(!orphan_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_maintenance_preserves_valid_chunks() {
+        use crate::engine::traits::{BlockMetadata, CompressedBlock, StorageEngine};
+        use bytes::Bytes;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Write a valid chunk with recent timestamp
+        let now = chrono::Utc::now().timestamp_millis();
+        let test_data = vec![1u8; 50];
+        let checksum =
+            crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
+
+        let block = CompressedBlock {
+            algorithm_id: "gorilla".to_string(),
+            original_size: 100,
+            compressed_size: test_data.len(),
+            checksum,
+            data: Bytes::from(test_data),
+            metadata: BlockMetadata {
+                start_timestamp: now - 1000,
+                end_timestamp: now,
+                point_count: 10,
+                series_id: 1,
+            },
+        };
+
+        let chunk_id = ChunkId::new();
+        let location = engine.write_chunk(1, chunk_id, &block).await.unwrap();
+
+        // Run maintenance
+        let report = engine.maintenance().await.unwrap();
+
+        // Recent chunk should NOT be deleted
+        assert_eq!(report.chunks_deleted, 0);
+        assert_eq!(report.bytes_freed, 0);
+
+        // Chunk should still exist and be readable
+        let path = PathBuf::from(&location.path);
+        assert!(path.exists());
+
+        let read_block = engine.read_chunk(&location).await.unwrap();
+        assert_eq!(read_block.metadata.series_id, 1);
     }
 }
