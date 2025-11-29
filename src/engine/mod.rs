@@ -42,7 +42,6 @@
 
 pub mod builder;
 pub mod stubs;
-pub mod stubs;
 pub mod traits;
 
 pub use builder::{DatabaseConfig, DatabaseStats, TimeSeriesDB, TimeSeriesDBBuilder};

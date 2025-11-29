@@ -9,7 +9,6 @@ use crate::storage::chunk::{ChunkMetadata, CompressionType};
 use crate::types::{ChunkId, SeriesId};
 use async_trait::async_trait;
 use futures::StreamExt;
-use futures::StreamExt;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -267,12 +266,10 @@ impl LocalDiskEngine {
 
                 // Parse chunk_id from filename (chunk_{uuid}.gor)
                 // Use unchecked since this is internal trusted storage
-                // Use unchecked since this is internal trusted storage
                 let chunk_id = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .and_then(|s| s.strip_prefix("chunk_"))
-                    .map(ChunkId::from_string_unchecked)
                     .map(ChunkId::from_string_unchecked)
                     .unwrap_or_else(ChunkId::new);
 
@@ -814,68 +811,8 @@ impl StorageEngine for LocalDiskEngine {
     ///     }
     /// }
     /// ```
-    /// Stream chunks for a series within a time range.
-    ///
-    /// Returns an async stream that yields compressed blocks one at a time,
-    /// allowing for memory-efficient processing of large time ranges.
-    ///
-    /// # Arguments
-    ///
-    /// * `series_id` - The series to stream chunks for
-    /// * `time_range` - Time range to filter chunks (inclusive on both ends)
-    ///
-    /// # Returns
-    ///
-    /// A pinned stream that yields `CompressedBlock` items as they are read.
-    ///
-    /// # Semantics
-    ///
-    /// - **Snapshot consistency**: Returns a snapshot of chunk locations at call time.
-    ///   Chunks added during streaming will NOT be included.
-    /// - **Deleted chunks**: Chunks deleted during streaming may cause `ChunkNotFound` errors.
-    /// - **Order**: Chunks are returned in time order (by start_timestamp).
-    /// - **Overlap**: Chunks that overlap the time range are included, not just contained chunks.
-    ///
-    /// # Errors
-    ///
-    /// Each item in the stream may be an error if:
-    /// - The chunk file was deleted after snapshot but before read
-    /// - The chunk file is corrupted (checksum mismatch)
-    /// - The chunk size exceeds 64MB (potential malformed header)
-    /// - I/O errors occur during file access
-    ///
-    /// # Performance Notes
-    ///
-    /// - Chunk locations are collected upfront under a read lock (released before I/O)
-    /// - Stats are updated using atomic operations to avoid write lock contention
-    /// - Last accessed time updates are skipped in hot path (handled by maintenance)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use futures::StreamExt;
-    /// use gorilla_tsdb::types::TimeRange;
-    ///
-    /// let range = TimeRange::new(0, 1000).unwrap();
-    /// let mut stream = engine.stream_chunks(series_id, range);
-    ///
-    /// while let Some(result) = stream.next().await {
-    ///     match result {
-    ///         Ok(block) => {
-    ///             // Process the compressed block
-    ///             println!("Got block with {} points", block.metadata.point_count);
-    ///         }
-    ///         Err(e) => {
-    ///             // Handle error - could skip or abort
-    ///             eprintln!("Error reading chunk: {}", e);
-    ///         }
-    ///     }
-    /// }
-    /// ```
     fn stream_chunks(
         &self,
-        series_id: SeriesId,
-        time_range: crate::types::TimeRange,
         series_id: SeriesId,
         time_range: crate::types::TimeRange,
     ) -> std::pin::Pin<
@@ -1012,52 +949,6 @@ impl StorageEngine for LocalDiskEngine {
         self.stats.read().clone()
     }
 
-    /// Perform storage maintenance operations.
-    ///
-    /// Executes various cleanup and optimization operations to maintain storage health.
-    ///
-    /// # Operations Performed
-    ///
-    /// 1. **Retention Cleanup**: Deletes chunks older than 30 days (configurable in future)
-    /// 2. **Orphan Cleanup**: Removes chunk files that are not tracked in the index
-    /// 3. **Empty Directory Cleanup**: Removes series directories with no remaining chunks
-    ///
-    /// # Concurrency
-    ///
-    /// - **Safe with reads**: Reads may see `ChunkNotFound` for deleted chunks
-    /// - **Safe with writes**: Writes use separate paths, won't conflict
-    /// - **Single maintenance**: Only one maintenance task should run at a time
-    ///
-    /// # Error Handling
-    ///
-    /// Individual file deletion errors are logged but do not stop maintenance.
-    /// The operation continues with remaining files and returns success.
-    /// Only fatal conditions (like inability to read directories) return errors.
-    ///
-    /// # Performance
-    ///
-    /// - Scans all series directories for orphan detection
-    /// - Acquires locks briefly for index updates (not during I/O)
-    /// - May take significant time for storage with many files
-    /// - Consider running during low-traffic periods
-    ///
-    /// # Returns
-    ///
-    /// A [`crate::engine::traits::MaintenanceReport`] containing:
-    /// - `chunks_deleted`: Number of chunks removed
-    /// - `bytes_freed`: Total bytes reclaimed
-    /// - `chunks_compacted`: Always 0 (compaction not yet implemented)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use gorilla_tsdb::storage::LocalDiskEngine;
-    ///
-    /// let report = engine.maintenance().await?;
-    /// println!("Maintenance complete:");
-    /// println!("  Chunks deleted: {}", report.chunks_deleted);
-    /// println!("  Bytes freed: {} MB", report.bytes_freed / 1024 / 1024);
-    /// ```
     /// Perform storage maintenance operations.
     ///
     /// Executes various cleanup and optimization operations to maintain storage health.
@@ -1273,15 +1164,10 @@ mod tests {
 
         // Use valid UUID for chunk_id
         let chunk_id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        // Use valid UUID for chunk_id
-        let chunk_id = ChunkId::from_string("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
         // Test different compression types
         let path_gor = engine.chunk_path(1, &chunk_id, CompressionType::Gorilla);
         assert!(path_gor.to_string_lossy().contains("series_1"));
-        assert!(path_gor
-            .to_string_lossy()
-            .contains("chunk_550e8400-e29b-41d4-a716-446655440000"));
         assert!(path_gor
             .to_string_lossy()
             .contains("chunk_550e8400-e29b-41d4-a716-446655440000"));
@@ -1702,7 +1588,6 @@ mod tests {
         assert_eq!(chunks[0].time_range.start, 5000);
         assert_eq!(chunks[0].time_range.end, 6000);
         assert_eq!(chunks[0].point_count, 25);
-        assert_eq!(chunks[0].time_range.start, 5000);
 
         // Verify we can read the chunk after restart
         let read_block = engine2.read_chunk(&chunks[0].location).await.unwrap();
@@ -1710,181 +1595,6 @@ mod tests {
         assert_eq!(read_block.metadata.end_timestamp, 6000);
         assert_eq!(read_block.metadata.point_count, 25);
         assert_eq!(read_block.metadata.series_id, 42);
-    }
-
-    #[tokio::test]
-    async fn test_stream_chunks() {
-        use crate::engine::traits::{BlockMetadata, CompressedBlock, StorageEngine};
-        use crate::types::TimeRange;
-        use bytes::Bytes;
-        use futures::StreamExt;
-
-        let temp_dir = TempDir::new().unwrap();
-        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
-
-        // Write multiple chunks for a series
-        for i in 0..5 {
-            let test_data = vec![i as u8; 20];
-            let checksum =
-                crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
-
-            let block = CompressedBlock {
-                algorithm_id: "gorilla".to_string(),
-                original_size: 40,
-                compressed_size: test_data.len(),
-                checksum,
-                data: Bytes::from(test_data),
-                metadata: BlockMetadata {
-                    start_timestamp: i * 1000,
-                    end_timestamp: i * 1000 + 500,
-                    point_count: 5,
-                    series_id: 1,
-                },
-            };
-
-            engine.write_chunk(1, ChunkId::new(), &block).await.unwrap();
-        }
-
-        // Stream all chunks
-        let time_range = TimeRange::new(0, 5000).unwrap();
-        let mut stream = engine.stream_chunks(1, time_range);
-
-        let mut count = 0;
-        while let Some(result) = stream.next().await {
-            let block = result.unwrap();
-            assert_eq!(block.algorithm_id, "gorilla");
-            assert_eq!(block.metadata.series_id, 1);
-            count += 1;
-        }
-
-        assert_eq!(count, 5);
-
-        // Stream with filtered time range (should get chunks 1, 2, 3)
-        let filtered_range = TimeRange::new(1000, 3500).unwrap();
-        let mut stream = engine.stream_chunks(1, filtered_range);
-
-        let mut filtered_count = 0;
-        while let Some(result) = stream.next().await {
-            let block = result.unwrap();
-            assert!(block.metadata.start_timestamp >= 1000);
-            assert!(block.metadata.end_timestamp <= 4000);
-            filtered_count += 1;
-        }
-
-        assert_eq!(filtered_count, 3);
-    }
-
-    #[tokio::test]
-    async fn test_stream_chunks_empty_series() {
-        use crate::engine::traits::StorageEngine;
-        use crate::types::TimeRange;
-        use futures::StreamExt;
-
-        let temp_dir = TempDir::new().unwrap();
-        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
-
-        // Stream from a series that doesn't exist
-        let time_range = TimeRange::new(0, 10000).unwrap();
-        let mut stream = engine.stream_chunks(999, time_range);
-
-        // Should get no chunks
-        let mut count = 0;
-        while (stream.next().await).is_some() {
-            count += 1;
-        }
-
-        assert_eq!(count, 0);
-    }
-
-    #[tokio::test]
-    async fn test_maintenance_empty_storage() {
-        use crate::engine::traits::StorageEngine;
-
-        let temp_dir = TempDir::new().unwrap();
-        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
-
-        // Run maintenance on empty storage
-        let report = engine.maintenance().await.unwrap();
-
-        // Should report no actions taken
-        assert_eq!(report.chunks_deleted, 0);
-        assert_eq!(report.chunks_compacted, 0);
-        assert_eq!(report.bytes_freed, 0);
-    }
-
-    #[tokio::test]
-    async fn test_maintenance_orphan_cleanup() {
-        use crate::engine::traits::StorageEngine;
-        use tokio::io::AsyncWriteExt;
-
-        let temp_dir = TempDir::new().unwrap();
-        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
-
-        // Create an orphan file (not in index)
-        let series_dir = temp_dir.path().join("series_1");
-        fs::create_dir_all(&series_dir).await.unwrap();
-
-        let orphan_path = series_dir.join("chunk_orphan.gor");
-        let mut file = fs::File::create(&orphan_path).await.unwrap();
-        file.write_all(&[0u8; 100]).await.unwrap();
-        file.sync_all().await.unwrap();
-
-        // Verify the orphan file exists
-        assert!(orphan_path.exists());
-
-        // Run maintenance
-        let report = engine.maintenance().await.unwrap();
-
-        // The orphan should be cleaned up
-        assert_eq!(report.chunks_deleted, 1);
-        assert_eq!(report.bytes_freed, 100);
-        assert!(!orphan_path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_maintenance_preserves_valid_chunks() {
-        use crate::engine::traits::{BlockMetadata, CompressedBlock, StorageEngine};
-        use bytes::Bytes;
-
-        let temp_dir = TempDir::new().unwrap();
-        let engine = LocalDiskEngine::new(temp_dir.path().to_path_buf()).unwrap();
-
-        // Write a valid chunk with recent timestamp
-        let now = chrono::Utc::now().timestamp_millis();
-        let test_data = vec![1u8; 50];
-        let checksum =
-            crate::compression::gorilla::GorillaCompressor::calculate_checksum(&test_data);
-
-        let block = CompressedBlock {
-            algorithm_id: "gorilla".to_string(),
-            original_size: 100,
-            compressed_size: test_data.len(),
-            checksum,
-            data: Bytes::from(test_data),
-            metadata: BlockMetadata {
-                start_timestamp: now - 1000,
-                end_timestamp: now,
-                point_count: 10,
-                series_id: 1,
-            },
-        };
-
-        let chunk_id = ChunkId::new();
-        let location = engine.write_chunk(1, chunk_id, &block).await.unwrap();
-
-        // Run maintenance
-        let report = engine.maintenance().await.unwrap();
-
-        // Recent chunk should NOT be deleted
-        assert_eq!(report.chunks_deleted, 0);
-        assert_eq!(report.bytes_freed, 0);
-
-        // Chunk should still exist and be readable
-        let path = PathBuf::from(&location.path);
-        assert!(path.exists());
-
-        let read_block = engine.read_chunk(&location).await.unwrap();
-        assert_eq!(read_block.metadata.series_id, 1);
     }
 
     #[tokio::test]
