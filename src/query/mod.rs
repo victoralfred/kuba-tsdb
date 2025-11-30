@@ -86,7 +86,7 @@ pub use operators::{
 };
 pub use parser::{parse_promql, parse_query, parse_sql};
 pub use planner::{QueryPlan, QueryPlanner};
-pub use result::{QueryResult, ResultFormat, ResultRow};
+pub use result::{CacheInfo, QueryResult, ResultFormat, ResultMetadata, ResultRow};
 pub use subscription::{
     QuerySubscription, SharedSubscriptionManager, SubscriptionConfig, SubscriptionManager,
     SubscriptionUpdate,

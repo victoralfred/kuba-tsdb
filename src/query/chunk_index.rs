@@ -451,6 +451,7 @@ mod tests {
             end_timestamp: end,
             point_count: 100,
             size_bytes: 1024,
+            uncompressed_size: 0,
             compression: CompressionType::Gorilla,
             created_at: 0,
             last_accessed: 0,

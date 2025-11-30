@@ -523,7 +523,10 @@ impl TimeSeriesDB {
     pub fn stats(&self) -> DatabaseStats {
         let storage_stats = self.storage.stats();
         let index_stats = self.index.stats();
-        let compression_stats = self.compressor.stats();
+
+        // Use storage-based compression ratio (from actual stored data)
+        // This is more accurate than compressor stats which only track session operations
+        let compression_ratio = storage_stats.compression_ratio();
 
         DatabaseStats {
             total_chunks: storage_stats.total_chunks,
@@ -531,7 +534,7 @@ impl TimeSeriesDB {
             total_series: index_stats.total_series,
             write_ops: storage_stats.write_ops,
             read_ops: storage_stats.read_ops,
-            compression_ratio: compression_stats.average_ratio,
+            compression_ratio,
             // Index cache statistics for cache-first lookup optimization
             index_cache_hits: index_stats.cache_hits,
             index_cache_misses: index_stats.cache_misses,

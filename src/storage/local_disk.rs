@@ -191,14 +191,16 @@ impl LocalDiskEngine {
         if total_chunks_loaded > 0 {
             let mut stats = self.stats.write();
             stats.total_chunks = total_chunks_loaded as u64;
-            // Calculate total bytes from the loaded chunks
+            // Calculate total bytes (compressed and uncompressed) from the loaded chunks
             let index = self.chunk_index.read();
-            let total_bytes: u64 = index
+            let (total_bytes, total_uncompressed): (u64, u64) = index
                 .values()
                 .flat_map(|chunks| chunks.iter())
-                .map(|c| c.size_bytes)
-                .sum();
+                .fold((0, 0), |(bytes, uncompressed), c| {
+                    (bytes + c.size_bytes, uncompressed + c.uncompressed_size)
+                });
             stats.total_bytes = total_bytes;
+            stats.total_uncompressed_bytes = total_uncompressed;
         }
 
         Ok(())
@@ -281,6 +283,7 @@ impl LocalDiskEngine {
                     end_timestamp: header.end_timestamp,
                     point_count: header.point_count,
                     size_bytes: file_metadata.len(),
+                    uncompressed_size: header.uncompressed_size as u64,
                     compression: header.compression_type,
                     created_at: file_metadata
                         .created()
@@ -536,6 +539,7 @@ impl StorageEngine for LocalDiskEngine {
                 end_timestamp: data.metadata.end_timestamp,
                 point_count: data.metadata.point_count as u32,
                 size_bytes: total_size,
+                uncompressed_size: data.original_size as u64,
                 compression: CompressionType::Gorilla,
                 created_at: chrono::Utc::now().timestamp_millis(),
                 last_accessed: chrono::Utc::now().timestamp_millis(),
@@ -550,6 +554,7 @@ impl StorageEngine for LocalDiskEngine {
             let mut stats = self.stats.write();
             stats.write_ops += 1;
             stats.total_bytes += total_size;
+            stats.total_uncompressed_bytes += data.original_size as u64;
             stats.total_chunks += 1;
         }
 

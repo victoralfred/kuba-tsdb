@@ -86,6 +86,22 @@ impl QueryResult {
         self
     }
 
+    /// Set cache hit status
+    pub fn with_cache_hit(mut self, hit: bool) -> Self {
+        self.metadata.cache_hit = hit;
+        self
+    }
+
+    /// Set detailed cache information for analysis
+    ///
+    /// This provides visibility into cache behavior when queries are executed,
+    /// allowing users to analyze cache hit rates, entry ages, and cache configuration.
+    pub fn with_cache_info(mut self, cache_info: CacheInfo) -> Self {
+        self.metadata.cache_hit = cache_info.hit;
+        self.metadata.cache_info = Some(cache_info);
+        self
+    }
+
     /// Create an explain result with plan text
     pub fn explain(plan_text: String) -> Self {
         Self {
@@ -471,6 +487,12 @@ pub struct ResultMetadata {
     #[serde(default)]
     pub cache_hit: bool,
 
+    /// Detailed cache information for analysis
+    /// Contains cache configuration and hit/miss statistics when available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub cache_info: Option<CacheInfo>,
+
     /// Whether result is truncated due to limits
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     #[serde(default)]
@@ -491,6 +513,149 @@ impl ResultMetadata {
     /// Add a warning message
     pub fn add_warning(&mut self, message: impl Into<String>) {
         self.warnings.push(message.into());
+    }
+
+    /// Set cache information for analysis
+    pub fn with_cache_info(mut self, cache_info: CacheInfo) -> Self {
+        self.cache_info = Some(cache_info);
+        self
+    }
+}
+
+// ============================================================================
+// Cache Information
+// ============================================================================
+
+/// Detailed cache information for query analysis
+///
+/// This structure provides visibility into how the cache was used during
+/// query execution, allowing users to understand cache behavior and tune
+/// cache configuration if needed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheInfo {
+    /// Whether the result was served from cache
+    pub hit: bool,
+
+    /// Cache key hash (for debugging cache behavior)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+
+    /// Time-to-live of the cached entry in seconds
+    /// Only present if result was cached
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
+
+    /// Age of the cached entry in milliseconds
+    /// Only present if result came from cache (cache_hit = true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_age_ms: Option<u64>,
+
+    /// Current cache size in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_size_bytes: Option<u64>,
+
+    /// Maximum cache size in bytes (from config)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_max_size_bytes: Option<usize>,
+
+    /// Current number of entries in cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_entries: Option<usize>,
+
+    /// Maximum entries allowed (from config)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_max_entries: Option<usize>,
+
+    /// Total cache hits since startup
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_hits: Option<u64>,
+
+    /// Total cache misses since startup
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_misses: Option<u64>,
+
+    /// Cache hit ratio (0.0 to 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_ratio: Option<f64>,
+
+    /// Whether caching is enabled
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl CacheInfo {
+    /// Create cache info for a cache hit
+    pub fn hit() -> Self {
+        Self {
+            hit: true,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    /// Create cache info for a cache miss
+    pub fn miss() -> Self {
+        Self {
+            hit: false,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    /// Create cache info when cache is disabled
+    pub fn disabled() -> Self {
+        Self {
+            hit: false,
+            enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Set the cache key (for debugging)
+    pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.cache_key = Some(key.into());
+        self
+    }
+
+    /// Set TTL in seconds
+    pub fn with_ttl(mut self, ttl_secs: u64) -> Self {
+        self.ttl_secs = Some(ttl_secs);
+        self
+    }
+
+    /// Set entry age in milliseconds
+    pub fn with_entry_age(mut self, age_ms: u64) -> Self {
+        self.entry_age_ms = Some(age_ms);
+        self
+    }
+
+    /// Set cache size statistics
+    pub fn with_size_stats(
+        mut self,
+        current_bytes: u64,
+        max_bytes: usize,
+        current_entries: usize,
+        max_entries: usize,
+    ) -> Self {
+        self.cache_size_bytes = Some(current_bytes);
+        self.cache_max_size_bytes = Some(max_bytes);
+        self.cache_entries = Some(current_entries);
+        self.cache_max_entries = Some(max_entries);
+        self
+    }
+
+    /// Set cache hit/miss statistics
+    pub fn with_hit_stats(mut self, hits: u64, misses: u64) -> Self {
+        self.total_hits = Some(hits);
+        self.total_misses = Some(misses);
+        let total = hits + misses;
+        self.hit_ratio = if total > 0 {
+            Some(hits as f64 / total as f64)
+        } else {
+            Some(0.0)
+        };
+        self
     }
 }
 

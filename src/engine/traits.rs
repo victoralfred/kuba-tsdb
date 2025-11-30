@@ -188,14 +188,32 @@ pub struct ChunkMetadata {
 pub struct StorageStats {
     /// Total number of chunks stored
     pub total_chunks: u64,
-    /// Total bytes stored
+    /// Total bytes stored (compressed size on disk)
     pub total_bytes: u64,
+    /// Total uncompressed bytes (original size before compression)
+    /// Used to calculate compression ratio from stored data
+    pub total_uncompressed_bytes: u64,
     /// Number of write operations
     pub write_ops: u64,
     /// Number of read operations
     pub read_ops: u64,
     /// Number of delete operations
     pub delete_ops: u64,
+}
+
+impl StorageStats {
+    /// Calculate compression ratio from stored data
+    ///
+    /// Returns the ratio of compressed to uncompressed bytes.
+    /// A ratio of 0.5 means data is compressed to 50% of original size.
+    /// Returns 0.0 if no uncompressed data is tracked.
+    pub fn compression_ratio(&self) -> f64 {
+        if self.total_uncompressed_bytes == 0 {
+            0.0
+        } else {
+            self.total_bytes as f64 / self.total_uncompressed_bytes as f64
+        }
+    }
 }
 
 /// Maintenance report

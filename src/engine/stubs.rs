@@ -452,6 +452,7 @@ impl StorageEngine for S3Engine {
         StorageStats {
             total_chunks: self.stats.total_chunks.load(Ordering::Relaxed),
             total_bytes: self.stats.total_bytes.load(Ordering::Relaxed),
+            total_uncompressed_bytes: 0, // S3 stub doesn't track uncompressed sizes
             write_ops: self.stats.write_ops.load(Ordering::Relaxed),
             read_ops: self.stats.read_ops.load(Ordering::Relaxed),
             delete_ops: self.stats.delete_ops.load(Ordering::Relaxed),
