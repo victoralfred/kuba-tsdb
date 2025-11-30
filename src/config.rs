@@ -68,7 +68,7 @@ pub type ConfigResult<T> = Result<T, ConfigError>;
 /// Contains all configuration sections for the Gorilla TSDB server.
 /// All fields have sensible defaults and can be overridden via TOML
 /// file or environment variables.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApplicationConfig {
     /// Server network settings
@@ -111,31 +111,6 @@ pub struct ApplicationConfig {
     pub security: SecurityConfig,
 }
 
-impl Default for ApplicationConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            http: HttpConfig::default(),
-            storage: StorageConfig::default(),
-            ingestion: IngestionConfig::default(),
-            backpressure: BackpressureConfig::default(),
-            wal: WalConfig::default(),
-            compression: CompressionConfig::default(),
-            compaction: CompactionConfig::default(),
-            rate_limit: RateLimitConfig::default(),
-            query: QueryConfig::default(),
-            spill: SpillConfig::default(),
-            redis: RedisConfig::default(),
-            health: HealthConfig::default(),
-            monitoring: MonitoringConfig::default(),
-            protocol: ProtocolConfig::default(),
-            schema: SchemaConfig::default(),
-            timestamp: TimestampConfig::default(),
-            performance: PerformanceConfig::default(),
-            security: SecurityConfig::default(),
-        }
-    }
-}
 
 impl ApplicationConfig {
     /// Load configuration from file with environment variable overrides
@@ -1410,95 +1385,135 @@ mod tests {
 
     #[test]
     fn test_server_workers() {
-        let mut config = ServerConfig::default();
-        config.workers = 0;
+        let config = ServerConfig {
+            workers: 0,
+            ..Default::default()
+        };
         assert!(config.effective_workers() > 0);
 
-        config.workers = 8;
+        let config = ServerConfig {
+            workers: 8,
+            ..Default::default()
+        };
         assert_eq!(config.effective_workers(), 8);
     }
 
     #[test]
     fn test_invalid_listen_addr() {
-        let mut config = ServerConfig::default();
-        config.listen_addr = "invalid".to_string();
+        let config = ServerConfig {
+            listen_addr: "invalid".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_invalid_log_level() {
-        let mut config = ServerConfig::default();
-        config.log_level = "invalid_level".to_string();
+        let config = ServerConfig {
+            log_level: "invalid_level".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_http_body_size_validation() {
-        let mut config = HttpConfig::default();
-        config.max_body_size_bytes = 0;
+        let config = HttpConfig {
+            max_body_size_bytes: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.max_body_size_bytes = 2 * 1024 * 1024 * 1024; // 2GB
+        let config = HttpConfig {
+            max_body_size_bytes: 2 * 1024 * 1024 * 1024, // 2GB
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_storage_validation() {
-        let mut config = StorageConfig::default();
-        config.max_chunk_size_bytes = 100; // Too small
+        let config = StorageConfig {
+            max_chunk_size_bytes: 100, // Too small
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config = StorageConfig::default();
-        config.seal_duration_ms = 0;
+        let config = StorageConfig {
+            seal_duration_ms: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_ingestion_shard_validation() {
-        let mut config = IngestionConfig::default();
-        config.shard_count = 3; // Not power of 2
+        let config = IngestionConfig {
+            shard_count: 3, // Not power of 2
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.shard_count = 16;
+        let config = IngestionConfig {
+            shard_count: 16,
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_rate_limit_validation() {
-        let mut config = RateLimitConfig::default();
-        config.burst_multiplier = 0.5; // Less than 1
+        let config = RateLimitConfig {
+            burst_multiplier: 0.5, // Less than 1
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.burst_multiplier = 2.0;
-        config.ipv6_prefix_length = 200; // Invalid
+        let config = RateLimitConfig {
+            burst_multiplier: 2.0,
+            ipv6_prefix_length: 200, // Invalid
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_query_limit_validation() {
-        let mut config = QueryConfig::default();
-        config.default_limit = 2_000_000;
-        config.max_limit = 1_000_000;
+        let config = QueryConfig {
+            default_limit: 2_000_000,
+            max_limit: 1_000_000,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_wal_sync_mode_validation() {
-        let mut config = WalConfig::default();
-        config.sync_mode = "invalid".to_string();
+        let config = WalConfig {
+            sync_mode: "invalid".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.sync_mode = "immediate".to_string();
+        let config = WalConfig {
+            sync_mode: "immediate".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_compression_algorithm_validation() {
-        let mut config = CompressionConfig::default();
-        config.algorithm = "invalid".to_string();
+        let config = CompressionConfig {
+            algorithm: "invalid".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.algorithm = "zstd".to_string();
+        let config = CompressionConfig {
+            algorithm: "zstd".to_string(),
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 
