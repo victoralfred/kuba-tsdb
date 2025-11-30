@@ -575,19 +575,33 @@ mod tests {
         }
 
         assert!(filter.filter_count() > 1, "Filter should have grown");
-        assert!(filter.memory_usage() > initial_memory, "Memory should have increased");
+        assert!(
+            filter.memory_usage() > initial_memory,
+            "Memory should have increased"
+        );
 
         // Reset to original state
         filter.reset();
 
         // Verify filter is back to initial state
-        assert_eq!(filter.filter_count(), 1, "Should have single filter after reset");
+        assert_eq!(
+            filter.filter_count(),
+            1,
+            "Should have single filter after reset"
+        );
         assert_eq!(filter.count(), 0, "Count should be zero after reset");
-        assert_eq!(filter.initial_capacity(), initial_capacity, "Initial capacity preserved");
+        assert_eq!(
+            filter.initial_capacity(),
+            initial_capacity,
+            "Initial capacity preserved"
+        );
 
         // Elements should no longer be found
         assert!(!filter.contains(&0), "Should not find elements after reset");
-        assert!(!filter.contains(&50), "Should not find elements after reset");
+        assert!(
+            !filter.contains(&50),
+            "Should not find elements after reset"
+        );
 
         // Should be able to insert again
         assert!(filter.insert(&"new_element"));

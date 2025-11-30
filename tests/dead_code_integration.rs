@@ -8,9 +8,9 @@
 //! - Feature 5: Subscription cleanup with age
 //! - Feature 3: Metrics histogram reset
 
-use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::query::subscription::{SubscriptionConfig, SubscriptionManager};
 use gorilla_tsdb::redis::metrics::{MetricsConfig, RedisMetrics};
+use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use std::time::Duration;
 
 // ============================================================================

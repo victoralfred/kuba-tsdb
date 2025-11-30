@@ -2,7 +2,7 @@
 # Metrics Collector for Gorilla TSDB
 # Collects CPU stats every 10 seconds and pushes to the database
 
-TSDB_URL="${TSDB_URL:-http://localhost:8080}"
+TSDB_URL="${TSDB_URL:-http://localhost:8090}"
 INTERVAL="${INTERVAL:-10}"
 HOSTNAME=$(hostname)
 PID=$$

@@ -442,11 +442,8 @@ impl AggregationOperator {
                 }
 
                 // Collect series IDs to process (avoids borrow conflict)
-                let series_to_update: Vec<SeriesId> = self
-                    .series_data_buffer
-                    .keys()
-                    .copied()
-                    .collect();
+                let series_to_update: Vec<SeriesId> =
+                    self.series_data_buffer.keys().copied().collect();
 
                 // Update states for each series using get_state helper
                 for sid in series_to_update {
@@ -462,7 +459,8 @@ impl AggregationOperator {
             }
         } else {
             // Global aggregation - all data goes to series 0
-            self.get_state(0).update_batch(&batch.timestamps, &batch.values);
+            self.get_state(0)
+                .update_batch(&batch.timestamps, &batch.values);
         }
     }
 
