@@ -5,6 +5,9 @@
 //!
 //! Usage:
 //!   cargo test --release --test stress_tests -- --ignored --test-threads=1
+
+// Allow manual modulo checks since is_multiple_of is unstable on stable Rust (Docker builds)
+#![allow(clippy::manual_is_multiple_of)]
 use gorilla_tsdb::storage::active_chunk::{ActiveChunk, SealConfig};
 use gorilla_tsdb::storage::chunk::Chunk;
 use gorilla_tsdb::types::DataPoint;
@@ -65,7 +68,7 @@ async fn test_sustained_high_throughput() {
         let batch_duration = batch_start.elapsed();
         let current_rate = POINTS_PER_BATCH as f64 / batch_duration.as_secs_f64();
 
-        if total_points.is_multiple_of(1_000_000) {
+        if total_points % 1_000_000 == 0 {
             println!(
                 "   ✓ {} points processed (current rate: {:.0} pts/sec)",
                 total_points, current_rate
@@ -221,7 +224,7 @@ async fn test_memory_stability() {
         chunk.seal(path.into()).await.unwrap();
         total_chunks_sealed += 1;
 
-        if total_chunks_sealed.is_multiple_of(10) {
+        if total_chunks_sealed % 10 == 0 {
             println!(
                 "   ✓ {} chunks sealed ({:.1}s elapsed)",
                 total_chunks_sealed,

@@ -9,6 +9,8 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+// Allow manual modulo checks since is_multiple_of is unstable on stable Rust (Docker builds)
+#![allow(clippy::manual_is_multiple_of)]
 
 pub mod compression;
 pub mod engine;

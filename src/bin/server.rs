@@ -2,6 +2,9 @@
 //!
 //! This binary provides a complete HTTP server for the Gorilla time-series database.
 //! It exposes REST endpoints for data ingestion, querying, and administration.
+
+// Allow manual modulo checks since is_multiple_of is unstable on stable Rust (Docker builds)
+#![allow(clippy::manual_is_multiple_of)]
 //!
 //! # Endpoints
 //!
@@ -816,7 +819,7 @@ mod query_router {
                 let mut values: Vec<f64> = points.iter().map(|p| p.value).collect();
                 values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let mid = values.len() / 2;
-                if values.len().is_multiple_of(2) {
+                if values.len() % 2 == 0 {
                     (values[mid - 1] + values[mid]) / 2.0
                 } else {
                     values[mid]
