@@ -277,7 +277,7 @@ impl SpillFile {
 
     /// Deserialize points from bytes
     fn deserialize_points(data: &[u8]) -> SpillResult<Vec<DataPoint>> {
-        if !data.len().is_multiple_of(32) {
+        if data.len() % 32 != 0 {
             return Err(SpillError::Corruption {
                 path: PathBuf::new(),
                 message: format!("invalid data length: {} not divisible by 32", data.len()),

@@ -203,7 +203,7 @@ impl SeriesBuffer {
 
         // Update last_modified lazily to reduce Instant::now() calls
         // Only update every 100 points or on first point to reduce syscall overhead
-        if self.total_added == 1 || self.total_added.is_multiple_of(100) {
+        if self.total_added == 1 || self.total_added % 100 == 0 {
             self.last_modified = Instant::now();
         }
 
