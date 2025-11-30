@@ -111,7 +111,6 @@ pub struct ApplicationConfig {
     pub security: SecurityConfig,
 }
 
-
 impl ApplicationConfig {
     /// Load configuration from file with environment variable overrides
     ///
