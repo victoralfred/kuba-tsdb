@@ -373,6 +373,8 @@ pub struct NetworkStats {
 mod tests {
     use super::*;
 
+    // ===== NetworkConfig tests =====
+
     #[test]
     fn test_network_config_default() {
         let config = NetworkConfig::default();
@@ -383,6 +385,16 @@ mod tests {
     }
 
     #[test]
+    fn test_network_config_default_values() {
+        let config = NetworkConfig::default();
+        assert_eq!(config.read_buffer_size, 64 * 1024);
+        assert_eq!(config.write_buffer_size, 16 * 1024);
+        assert_eq!(config.max_line_length, 64 * 1024);
+        assert_eq!(config.max_body_size, 10 * 1024 * 1024);
+        assert!(config.tls.is_none());
+    }
+
+    #[test]
     fn test_network_config_validation_no_listeners() {
         let config = NetworkConfig {
             tcp_addr: None,
@@ -390,8 +402,108 @@ mod tests {
             http_addr: None,
             ..Default::default()
         };
-        assert!(config.validate().is_err());
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("At least one listener"));
     }
+
+    #[test]
+    fn test_network_config_validation_zero_read_buffer() {
+        let config = NetworkConfig {
+            read_buffer_size: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("read_buffer_size must be > 0"));
+    }
+
+    #[test]
+    fn test_network_config_validation_zero_write_buffer() {
+        let config = NetworkConfig {
+            write_buffer_size: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("write_buffer_size must be > 0"));
+    }
+
+    #[test]
+    fn test_network_config_validation_zero_max_line_length() {
+        let config = NetworkConfig {
+            max_line_length: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_line_length must be > 0"));
+    }
+
+    #[test]
+    fn test_network_config_validation_zero_max_body_size() {
+        let config = NetworkConfig {
+            max_body_size: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_body_size must be > 0"));
+    }
+
+    #[test]
+    fn test_network_config_tcp_only() {
+        let config = NetworkConfig {
+            tcp_addr: Some("127.0.0.1:8086".parse().unwrap()),
+            udp_addr: None,
+            http_addr: None,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_network_config_udp_only() {
+        let config = NetworkConfig {
+            tcp_addr: None,
+            udp_addr: Some("127.0.0.1:8087".parse().unwrap()),
+            http_addr: None,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_network_config_http_only() {
+        let config = NetworkConfig {
+            tcp_addr: None,
+            udp_addr: None,
+            http_addr: Some("127.0.0.1:8088".parse().unwrap()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_network_config_clone() {
+        let config = NetworkConfig::default();
+        let cloned = config.clone();
+
+        assert_eq!(cloned.tcp_addr, config.tcp_addr);
+        assert_eq!(cloned.read_buffer_size, config.read_buffer_size);
+    }
+
+    #[test]
+    fn test_network_config_debug() {
+        let config = NetworkConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("NetworkConfig"));
+        assert!(debug_str.contains("tcp_addr"));
+    }
+
+    // ===== NetworkConfigBuilder tests =====
 
     #[test]
     fn test_network_config_builder() {
@@ -406,5 +518,204 @@ mod tests {
         assert_eq!(config.tcp_addr.unwrap().port(), 8086);
         assert!(config.http_addr.is_none());
         assert_eq!(config.read_buffer_size, 128 * 1024);
+    }
+
+    #[test]
+    fn test_network_config_builder_default() {
+        let builder = NetworkConfigBuilder::default();
+        let debug_str = format!("{:?}", builder);
+        assert!(debug_str.contains("NetworkConfigBuilder"));
+    }
+
+    #[test]
+    fn test_network_config_builder_tcp_addr() {
+        let addr: SocketAddr = "192.168.1.1:9000".parse().unwrap();
+        let config = NetworkConfig::builder().tcp_addr(addr).build().unwrap();
+        assert_eq!(config.tcp_addr, Some(addr));
+    }
+
+    #[test]
+    fn test_network_config_builder_disable_tcp() {
+        let config = NetworkConfig::builder()
+            .http_addr("127.0.0.1:8088".parse().unwrap())
+            .disable_tcp()
+            .build()
+            .unwrap();
+        assert!(config.tcp_addr.is_none());
+    }
+
+    #[test]
+    fn test_network_config_builder_udp_addr() {
+        let addr: SocketAddr = "0.0.0.0:8087".parse().unwrap();
+        let config = NetworkConfig::builder()
+            .udp_addr(addr)
+            .disable_tcp()
+            .disable_http()
+            .build()
+            .unwrap();
+        assert_eq!(config.udp_addr, Some(addr));
+    }
+
+    #[test]
+    fn test_network_config_builder_http_addr() {
+        let addr: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        let config = NetworkConfig::builder()
+            .http_addr(addr)
+            .disable_tcp()
+            .build()
+            .unwrap();
+        assert_eq!(config.http_addr, Some(addr));
+    }
+
+    #[test]
+    fn test_network_config_builder_connection() {
+        let conn_config = ConnectionConfig {
+            max_connections: 500,
+            ..Default::default()
+        };
+        let config = NetworkConfig::builder()
+            .connection(conn_config.clone())
+            .build()
+            .unwrap();
+        assert_eq!(config.connection.max_connections, 500);
+    }
+
+    #[test]
+    fn test_network_config_builder_rate_limit() {
+        let rate_config = RateLimitConfig::default();
+        let config = NetworkConfig::builder()
+            .rate_limit(rate_config)
+            .build()
+            .unwrap();
+        // Just verify it builds successfully
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_network_config_builder_max_line_length() {
+        let config = NetworkConfig::builder()
+            .max_line_length(1024)
+            .build()
+            .unwrap();
+        assert_eq!(config.max_line_length, 1024);
+    }
+
+    #[test]
+    fn test_network_config_builder_max_body_size() {
+        let config = NetworkConfig::builder()
+            .max_body_size(5 * 1024 * 1024)
+            .build()
+            .unwrap();
+        assert_eq!(config.max_body_size, 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_network_config_builder_validation_fails() {
+        let result = NetworkConfig::builder()
+            .disable_tcp()
+            .disable_http()
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_network_config_builder_chaining() {
+        let config = NetworkConfig::builder()
+            .tcp_addr("127.0.0.1:8086".parse().unwrap())
+            .http_addr("127.0.0.1:8088".parse().unwrap())
+            .read_buffer_size(32 * 1024)
+            .max_line_length(16 * 1024)
+            .max_body_size(1024 * 1024)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.tcp_addr.unwrap().port(), 8086);
+        assert_eq!(config.http_addr.unwrap().port(), 8088);
+        assert_eq!(config.read_buffer_size, 32 * 1024);
+        assert_eq!(config.max_line_length, 16 * 1024);
+        assert_eq!(config.max_body_size, 1024 * 1024);
+    }
+
+    // ===== NetworkStats tests =====
+
+    #[test]
+    fn test_network_stats_default() {
+        let stats = NetworkStats::default();
+        assert_eq!(stats.total_connections, 0);
+        assert_eq!(stats.rate_limit_rejections, 0);
+    }
+
+    #[test]
+    fn test_network_stats_clone() {
+        let stats = NetworkStats {
+            total_connections: 42,
+            rate_limit_rejections: 10,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.total_connections, 42);
+        assert_eq!(cloned.rate_limit_rejections, 10);
+    }
+
+    #[test]
+    fn test_network_stats_debug() {
+        let stats = NetworkStats {
+            total_connections: 5,
+            rate_limit_rejections: 2,
+        };
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("NetworkStats"));
+        assert!(debug_str.contains("total_connections: 5"));
+        assert!(debug_str.contains("rate_limit_rejections: 2"));
+    }
+
+    // ===== NetworkListener tests =====
+
+    #[tokio::test]
+    async fn test_network_listener_new() {
+        let config = NetworkConfig::default();
+        let listener = NetworkListener::new(config).await;
+        assert!(listener.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_network_listener_new_invalid_config() {
+        let config = NetworkConfig {
+            tcp_addr: None,
+            udp_addr: None,
+            http_addr: None,
+            ..Default::default()
+        };
+        let result = NetworkListener::new(config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_network_listener_accessors() {
+        let config = NetworkConfig::default();
+        let listener = NetworkListener::new(config).await.unwrap();
+
+        // Test accessors
+        let _ = listener.connection_manager();
+        let _ = listener.rate_limiter();
+        let _ = listener.shutdown_receiver();
+        let _ = listener.stats();
+    }
+
+    #[tokio::test]
+    async fn test_network_listener_stats() {
+        let config = NetworkConfig::default();
+        let listener = NetworkListener::new(config).await.unwrap();
+
+        let stats = listener.stats();
+        assert_eq!(stats.total_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn test_network_listener_shutdown() {
+        let config = NetworkConfig::default();
+        let listener = NetworkListener::new(config).await.unwrap();
+
+        // Test shutdown doesn't panic
+        listener.shutdown();
     }
 }

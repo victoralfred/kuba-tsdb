@@ -704,6 +704,10 @@ impl FailoverManager {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // FailoverConfig Tests
+    // =========================================================================
+
     #[test]
     fn test_failover_config_default() {
         let config = FailoverConfig::default();
@@ -715,11 +719,117 @@ mod tests {
     }
 
     #[test]
+    fn test_failover_config_all_fields() {
+        let config = FailoverConfig {
+            health_check_interval_ms: 10_000,
+            failure_threshold: 5,
+            recovery_threshold: 3,
+            local_cache_size_mb: 256,
+            cache_ttl_secs: 600,
+            auto_failover_enabled: false,
+            local_cache_enabled: false,
+        };
+
+        assert_eq!(config.health_check_interval_ms, 10_000);
+        assert_eq!(config.failure_threshold, 5);
+        assert_eq!(config.recovery_threshold, 3);
+        assert_eq!(config.local_cache_size_mb, 256);
+        assert_eq!(config.cache_ttl_secs, 600);
+        assert!(!config.auto_failover_enabled);
+        assert!(!config.local_cache_enabled);
+    }
+
+    #[test]
+    fn test_failover_config_clone() {
+        let config1 = FailoverConfig {
+            health_check_interval_ms: 1000,
+            failure_threshold: 2,
+            recovery_threshold: 1,
+            local_cache_size_mb: 64,
+            cache_ttl_secs: 120,
+            auto_failover_enabled: true,
+            local_cache_enabled: true,
+        };
+
+        let config2 = config1.clone();
+        assert_eq!(
+            config2.health_check_interval_ms,
+            config1.health_check_interval_ms
+        );
+        assert_eq!(config2.failure_threshold, config1.failure_threshold);
+        assert_eq!(config2.recovery_threshold, config1.recovery_threshold);
+        assert_eq!(config2.local_cache_size_mb, config1.local_cache_size_mb);
+        assert_eq!(config2.cache_ttl_secs, config1.cache_ttl_secs);
+        assert_eq!(config2.auto_failover_enabled, config1.auto_failover_enabled);
+        assert_eq!(config2.local_cache_enabled, config1.local_cache_enabled);
+    }
+
+    #[test]
+    fn test_failover_config_debug() {
+        let config = FailoverConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("FailoverConfig"));
+        assert!(debug_str.contains("health_check_interval_ms"));
+        assert!(debug_str.contains("failure_threshold"));
+    }
+
+    // =========================================================================
+    // FailoverState Tests
+    // =========================================================================
+
+    #[test]
     fn test_failover_state_display() {
         assert_eq!(format!("{}", FailoverState::Primary), "primary");
         assert_eq!(format!("{}", FailoverState::Replica), "replica");
         assert_eq!(format!("{}", FailoverState::LocalCache), "local_cache");
     }
+
+    #[test]
+    fn test_failover_state_display_all() {
+        assert_eq!(format!("{}", FailoverState::Primary), "primary");
+        assert_eq!(format!("{}", FailoverState::FailingOver), "failing_over");
+        assert_eq!(format!("{}", FailoverState::Replica), "replica");
+        assert_eq!(format!("{}", FailoverState::LocalCache), "local_cache");
+        assert_eq!(format!("{}", FailoverState::Recovering), "recovering");
+    }
+
+    #[test]
+    fn test_failover_state_from_u8() {
+        assert_eq!(FailoverState::from_u8(0), Some(FailoverState::Primary));
+        assert_eq!(FailoverState::from_u8(1), Some(FailoverState::FailingOver));
+        assert_eq!(FailoverState::from_u8(2), Some(FailoverState::Replica));
+        assert_eq!(FailoverState::from_u8(3), Some(FailoverState::LocalCache));
+        assert_eq!(FailoverState::from_u8(4), Some(FailoverState::Recovering));
+        assert_eq!(FailoverState::from_u8(5), None);
+        assert_eq!(FailoverState::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_failover_state_repr() {
+        assert_eq!(FailoverState::Primary as u8, 0);
+        assert_eq!(FailoverState::FailingOver as u8, 1);
+        assert_eq!(FailoverState::Replica as u8, 2);
+        assert_eq!(FailoverState::LocalCache as u8, 3);
+        assert_eq!(FailoverState::Recovering as u8, 4);
+    }
+
+    #[test]
+    fn test_failover_state_equality() {
+        assert_eq!(FailoverState::Primary, FailoverState::Primary);
+        assert_ne!(FailoverState::Primary, FailoverState::Replica);
+        assert_ne!(FailoverState::LocalCache, FailoverState::Recovering);
+    }
+
+    #[test]
+    fn test_failover_state_clone() {
+        let s1 = FailoverState::Recovering;
+        let s2 = s1;
+        assert_eq!(s1, s2);
+    }
+
+    // =========================================================================
+    // LocalCacheKey Tests
+    // =========================================================================
 
     #[test]
     fn test_local_cache_key() {
@@ -734,6 +844,43 @@ mod tests {
         assert_eq!(key1, key2);
         assert_ne!(key1, key3);
     }
+
+    #[test]
+    fn test_local_cache_key_different_series() {
+        let range = TimeRange { start: 0, end: 100 };
+
+        let key1 = LocalCacheKey::new(1, &range);
+        let key2 = LocalCacheKey::new(2, &range);
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_local_cache_key_debug() {
+        let range = TimeRange { start: 0, end: 100 };
+        let key = LocalCacheKey::new(42, &range);
+        let debug_str = format!("{:?}", key);
+        assert!(debug_str.contains("LocalCacheKey"));
+        assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn test_local_cache_key_clone() {
+        let range = TimeRange {
+            start: 50,
+            end: 150,
+        };
+        let key1 = LocalCacheKey::new(99, &range);
+        let key2 = key1.clone();
+        assert_eq!(key1, key2);
+        assert_eq!(key1.series_id, key2.series_id);
+        assert_eq!(key1.start, key2.start);
+        assert_eq!(key1.end, key2.end);
+    }
+
+    // =========================================================================
+    // LocalIndexCache Tests
+    // =========================================================================
 
     #[test]
     fn test_local_cache_operations() {
@@ -769,6 +916,55 @@ mod tests {
     }
 
     #[test]
+    fn test_local_cache_clear() {
+        let mut cache = LocalIndexCache::new(1, 60);
+
+        let range = TimeRange { start: 0, end: 100 };
+        cache.put_chunks(1, &range, vec![]);
+        cache.put_chunks(2, &range, vec![]);
+
+        assert!(cache.stats().entries > 0);
+
+        cache.clear();
+
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.stats().memory_used_bytes, 0);
+    }
+
+    #[test]
+    fn test_local_cache_touch_increments_access() {
+        let mut entry = CacheEntry::new(vec![]);
+        assert_eq!(entry.access_count, 0);
+
+        entry.touch();
+        assert_eq!(entry.access_count, 1);
+
+        entry.touch();
+        assert_eq!(entry.access_count, 2);
+    }
+
+    #[test]
+    fn test_local_cache_multiple_series() {
+        let mut cache = LocalIndexCache::new(10, 60);
+
+        let range = TimeRange { start: 0, end: 100 };
+
+        // Add chunks for multiple series
+        for series_id in 1..=5 {
+            cache.put_chunks(series_id, &range, vec![]);
+        }
+
+        // Verify all are retrievable
+        for series_id in 1..=5 {
+            assert!(cache.get_chunks(series_id, &range).is_some());
+        }
+    }
+
+    // =========================================================================
+    // CacheEntry Tests
+    // =========================================================================
+
+    #[test]
     fn test_cache_entry_expiry() {
         let chunks = vec![];
         let entry = CacheEntry::new(chunks);
@@ -778,5 +974,160 @@ mod tests {
 
         // Entry with 0 TTL should be expired
         assert!(entry.is_expired(Duration::ZERO));
+    }
+
+    #[test]
+    fn test_cache_entry_new() {
+        let chunks = vec![];
+        let entry = CacheEntry::new(chunks);
+
+        assert_eq!(entry.access_count, 0);
+        assert!(entry.cached_at.elapsed() < Duration::from_secs(1));
+    }
+
+    // =========================================================================
+    // LocalCacheStats Tests
+    // =========================================================================
+
+    #[test]
+    fn test_local_cache_stats_clone() {
+        let stats = LocalCacheStats {
+            entries: 10,
+            series_count: 5,
+            memory_used_bytes: 1024,
+            expired_entries: 2,
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.entries, stats.entries);
+        assert_eq!(cloned.series_count, stats.series_count);
+        assert_eq!(cloned.memory_used_bytes, stats.memory_used_bytes);
+        assert_eq!(cloned.expired_entries, stats.expired_entries);
+    }
+
+    #[test]
+    fn test_local_cache_stats_debug() {
+        let stats = LocalCacheStats {
+            entries: 10,
+            series_count: 5,
+            memory_used_bytes: 1024,
+            expired_entries: 2,
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("LocalCacheStats"));
+        assert!(debug_str.contains("entries"));
+        assert!(debug_str.contains("10"));
+    }
+
+    // =========================================================================
+    // FailoverStats Tests
+    // =========================================================================
+
+    #[test]
+    fn test_failover_stats_clone() {
+        let stats = FailoverStats {
+            state: FailoverState::Primary,
+            failover_count: 5,
+            recovery_count: 3,
+            health_checks: 100,
+            consecutive_failures: 0,
+            local_cache: LocalCacheStats {
+                entries: 0,
+                series_count: 0,
+                memory_used_bytes: 0,
+                expired_entries: 0,
+            },
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.state, stats.state);
+        assert_eq!(cloned.failover_count, stats.failover_count);
+        assert_eq!(cloned.recovery_count, stats.recovery_count);
+        assert_eq!(cloned.health_checks, stats.health_checks);
+    }
+
+    #[test]
+    fn test_failover_stats_debug() {
+        let stats = FailoverStats {
+            state: FailoverState::Replica,
+            failover_count: 1,
+            recovery_count: 0,
+            health_checks: 50,
+            consecutive_failures: 2,
+            local_cache: LocalCacheStats {
+                entries: 5,
+                series_count: 3,
+                memory_used_bytes: 512,
+                expired_entries: 0,
+            },
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("FailoverStats"));
+        assert!(debug_str.contains("failover_count"));
+    }
+
+    // =========================================================================
+    // Edge Cases Tests
+    // =========================================================================
+
+    #[test]
+    fn test_local_cache_key_negative_times() {
+        let range = TimeRange {
+            start: -1000,
+            end: -500,
+        };
+        let key = LocalCacheKey::new(1, &range);
+
+        assert_eq!(key.start, -1000);
+        assert_eq!(key.end, -500);
+    }
+
+    #[test]
+    fn test_local_cache_key_large_values() {
+        let range = TimeRange {
+            start: i64::MIN,
+            end: i64::MAX,
+        };
+        let key = LocalCacheKey::new(u64::MAX as SeriesId, &range);
+
+        assert_eq!(key.series_id, u64::MAX as SeriesId);
+        assert_eq!(key.start, i64::MIN);
+        assert_eq!(key.end, i64::MAX);
+    }
+
+    #[test]
+    fn test_local_cache_zero_memory() {
+        let cache = LocalIndexCache::new(0, 60);
+        assert_eq!(cache.max_memory, 0);
+    }
+
+    #[test]
+    fn test_local_cache_zero_ttl() {
+        let cache = LocalIndexCache::new(1, 0);
+        assert_eq!(cache.ttl, Duration::ZERO);
+    }
+
+    #[test]
+    fn test_cache_eviction_when_full() {
+        // Create a very small cache (effectively 1 entry)
+        let mut cache = LocalIndexCache::new(0, 60);
+        cache.max_memory = 100; // Override to tiny size
+
+        let range1 = TimeRange { start: 0, end: 100 };
+        let range2 = TimeRange {
+            start: 100,
+            end: 200,
+        };
+
+        // Add entries to trigger eviction
+        cache.put_chunks(1, &range1, vec![]);
+        cache.put_chunks(2, &range2, vec![]);
+
+        // With such a small cache, older entries may be evicted
+        // We just verify no panic occurs
+        let stats = cache.stats();
+        assert!(stats.entries <= 2);
     }
 }

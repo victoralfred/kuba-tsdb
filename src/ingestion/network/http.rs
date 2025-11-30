@@ -507,6 +507,10 @@ struct ErrorResponse {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // HttpConfig Tests
+    // =========================================================================
+
     #[test]
     fn test_http_config_default() {
         let config = HttpConfig::default();
@@ -515,6 +519,50 @@ mod tests {
         assert!(config.enable_gzip);
         assert!(config.enable_logging);
     }
+
+    #[test]
+    fn test_http_config_all_fields() {
+        let config = HttpConfig {
+            max_body_size: 5 * 1024 * 1024,
+            request_timeout: Duration::from_secs(60),
+            enable_gzip: false,
+            enable_logging: false,
+        };
+
+        assert_eq!(config.max_body_size, 5 * 1024 * 1024);
+        assert_eq!(config.request_timeout, Duration::from_secs(60));
+        assert!(!config.enable_gzip);
+        assert!(!config.enable_logging);
+    }
+
+    #[test]
+    fn test_http_config_clone() {
+        let config1 = HttpConfig {
+            max_body_size: 1024,
+            request_timeout: Duration::from_secs(10),
+            enable_gzip: true,
+            enable_logging: false,
+        };
+
+        let config2 = config1.clone();
+        assert_eq!(config2.max_body_size, config1.max_body_size);
+        assert_eq!(config2.request_timeout, config1.request_timeout);
+        assert_eq!(config2.enable_gzip, config1.enable_gzip);
+        assert_eq!(config2.enable_logging, config1.enable_logging);
+    }
+
+    #[test]
+    fn test_http_config_debug() {
+        let config = HttpConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("HttpConfig"));
+        assert!(debug_str.contains("max_body_size"));
+        assert!(debug_str.contains("request_timeout"));
+    }
+
+    // =========================================================================
+    // HttpConfig Validation Tests
+    // =========================================================================
 
     #[test]
     fn test_http_config_validation() {
@@ -533,6 +581,48 @@ mod tests {
         };
         assert!(bad_config2.validate().is_err());
     }
+
+    #[test]
+    fn test_http_config_validation_error_messages() {
+        let bad_config = HttpConfig {
+            max_body_size: 0,
+            ..Default::default()
+        };
+        let err = bad_config.validate().unwrap_err();
+        assert!(err.contains("max_body_size must be > 0"));
+
+        let bad_config2 = HttpConfig {
+            request_timeout: Duration::ZERO,
+            ..Default::default()
+        };
+        let err2 = bad_config2.validate().unwrap_err();
+        assert!(err2.contains("request_timeout must be > 0"));
+    }
+
+    #[test]
+    fn test_http_config_validation_edge_cases() {
+        // Minimum valid values
+        let min_config = HttpConfig {
+            max_body_size: 1,
+            request_timeout: Duration::from_nanos(1),
+            enable_gzip: false,
+            enable_logging: false,
+        };
+        assert!(min_config.validate().is_ok());
+
+        // Large values
+        let large_config = HttpConfig {
+            max_body_size: usize::MAX,
+            request_timeout: Duration::from_secs(3600),
+            enable_gzip: true,
+            enable_logging: true,
+        };
+        assert!(large_config.validate().is_ok());
+    }
+
+    // =========================================================================
+    // Protocol Detection Tests
+    // =========================================================================
 
     #[test]
     fn test_detect_protocol() {
@@ -558,6 +648,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_detect_protocol_case_insensitive() {
+        assert_eq!(detect_protocol("APPLICATION/JSON"), Protocol::Json);
+        assert_eq!(detect_protocol("Application/Json"), Protocol::Json);
+        assert_eq!(
+            detect_protocol("APPLICATION/X-PROTOBUF"),
+            Protocol::Protobuf
+        );
+        assert_eq!(detect_protocol("TEXT/PLAIN"), Protocol::LineProtocol);
+    }
+
+    #[test]
+    fn test_detect_protocol_with_parameters() {
+        assert_eq!(
+            detect_protocol("application/json; charset=utf-8; boundary=something"),
+            Protocol::Json
+        );
+        assert_eq!(
+            detect_protocol("application/x-protobuf; version=1"),
+            Protocol::Protobuf
+        );
+        assert_eq!(
+            detect_protocol("text/plain; format=fixed"),
+            Protocol::LineProtocol
+        );
+    }
+
+    #[test]
+    fn test_detect_protocol_empty_and_unknown() {
+        // Empty string defaults to line protocol
+        assert_eq!(detect_protocol(""), Protocol::LineProtocol);
+
+        // Unknown content types default to line protocol
+        assert_eq!(detect_protocol("video/mp4"), Protocol::LineProtocol);
+        assert_eq!(detect_protocol("image/png"), Protocol::LineProtocol);
+        assert_eq!(
+            detect_protocol("multipart/form-data"),
+            Protocol::LineProtocol
+        );
+    }
+
+    #[test]
+    fn test_detect_protocol_partial_matches() {
+        // Note: detect_protocol uses contains() so these will also match
+        // This documents the actual behavior (application/jsonl contains "application/json")
+        assert_eq!(detect_protocol("application/jsonl"), Protocol::Json);
+
+        // text/json doesn't contain "application/json" so it defaults to line protocol
+        assert_eq!(detect_protocol("text/json"), Protocol::LineProtocol);
+
+        // These should match
+        assert_eq!(detect_protocol("application/json"), Protocol::Json);
+        assert_eq!(
+            detect_protocol("application/x-protobuf"),
+            Protocol::Protobuf
+        );
+        assert_eq!(detect_protocol("application/protobuf"), Protocol::Protobuf);
+    }
+
+    // =========================================================================
+    // HttpListener Tests
+    // =========================================================================
+
     #[tokio::test]
     async fn test_http_listener_creation() {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -565,5 +718,135 @@ mod tests {
 
         let listener = HttpListener::new(addr, None, config).await;
         assert!(listener.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_http_listener_creation_with_custom_config() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let config = HttpConfig {
+            max_body_size: 1024 * 1024, // 1 MB
+            request_timeout: Duration::from_secs(60),
+            enable_gzip: false,
+            enable_logging: false,
+        };
+
+        let listener = HttpListener::new(addr, None, config).await;
+        assert!(listener.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_http_listener_creation_with_invalid_config() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let config = HttpConfig {
+            max_body_size: 0, // Invalid
+            ..Default::default()
+        };
+
+        let listener = HttpListener::new(addr, None, config).await;
+        assert!(listener.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_http_listener_with_rate_limiter() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let config = HttpConfig::default();
+
+        let listener = HttpListener::new(addr, None, config).await.unwrap();
+        let rate_limiter = Arc::new(RateLimiter::new(Default::default()));
+
+        let listener = listener.with_rate_limiter(rate_limiter);
+        // Listener should still be valid after adding rate limiter
+        assert!(listener.tls_acceptor.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_listener_with_shutdown() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let config = HttpConfig::default();
+
+        let listener = HttpListener::new(addr, None, config).await.unwrap();
+        let (tx, rx) = broadcast::channel(1);
+
+        let listener = listener.with_shutdown(rx);
+        assert!(listener.shutdown_rx.is_some());
+
+        // Cleanup
+        drop(tx);
+    }
+
+    // =========================================================================
+    // Response Structure Tests
+    // =========================================================================
+
+    #[test]
+    fn test_write_response_serialization() {
+        let response = WriteResponse {
+            points_written: 100,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("points_written"));
+        assert!(json.contains("100"));
+    }
+
+    #[test]
+    fn test_error_response_serialization() {
+        let response = ErrorResponse {
+            error: "Test error message".to_string(),
+            code: "ERR_TEST".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("Test error message"));
+        assert!(json.contains("ERR_TEST"));
+    }
+
+    // =========================================================================
+    // AppState Tests
+    // =========================================================================
+
+    #[test]
+    fn test_app_state_clone() {
+        let rate_limiter = Arc::new(RateLimiter::new(Default::default()));
+        let state = AppState {
+            rate_limiter,
+            config: HttpConfig::default(),
+            line_parser: LineProtocolParser::new(),
+            json_parser: JsonParser::new(),
+            protobuf_parser: ProtobufParser::new(),
+        };
+
+        // AppState should be Clone
+        let state2 = state.clone();
+        assert_eq!(state2.config.max_body_size, state.config.max_body_size);
+    }
+
+    // =========================================================================
+    // Address Parsing Tests
+    // =========================================================================
+
+    #[test]
+    fn test_socket_addr_parsing_ipv4() {
+        let addr: Result<SocketAddr, _> = "127.0.0.1:8080".parse();
+        assert!(addr.is_ok());
+
+        let addr: Result<SocketAddr, _> = "0.0.0.0:8080".parse();
+        assert!(addr.is_ok());
+    }
+
+    #[test]
+    fn test_socket_addr_parsing_ipv6() {
+        let addr: Result<SocketAddr, _> = "[::1]:8080".parse();
+        assert!(addr.is_ok());
+
+        let addr: Result<SocketAddr, _> = "[::]:8080".parse();
+        assert!(addr.is_ok());
+    }
+
+    #[test]
+    fn test_socket_addr_parsing_invalid() {
+        let addr: Result<SocketAddr, _> = "invalid".parse();
+        assert!(addr.is_err());
+
+        let addr: Result<SocketAddr, _> = "127.0.0.1".parse(); // Missing port
+        assert!(addr.is_err());
     }
 }

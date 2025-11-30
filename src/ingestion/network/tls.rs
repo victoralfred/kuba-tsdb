@@ -258,22 +258,52 @@ impl TlsConfig {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_tls_config_validation_missing_cert() {
-        let config = TlsConfig {
-            cert_path: PathBuf::from("/nonexistent/cert.pem"),
-            key_path: PathBuf::from("/nonexistent/key.pem"),
-            client_ca_path: None,
-            min_version: TlsVersion::Tls13,
-            require_client_cert: false,
-        };
-
-        assert!(config.validate().is_err());
-    }
+    // =========================================================================
+    // TlsVersion Tests
+    // =========================================================================
 
     #[test]
     fn test_tls_version_default() {
         assert_eq!(TlsVersion::default(), TlsVersion::Tls13);
+    }
+
+    #[test]
+    fn test_tls_version_variants() {
+        let v12 = TlsVersion::Tls12;
+        let v13 = TlsVersion::Tls13;
+
+        assert_ne!(v12, v13);
+        assert_eq!(v12, TlsVersion::Tls12);
+        assert_eq!(v13, TlsVersion::Tls13);
+    }
+
+    #[test]
+    fn test_tls_version_clone() {
+        let v1 = TlsVersion::Tls12;
+        let v2 = v1;
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_tls_version_debug() {
+        let v = TlsVersion::Tls13;
+        let debug_str = format!("{:?}", v);
+        assert!(debug_str.contains("Tls13"));
+    }
+
+    // =========================================================================
+    // TlsConfig Constructor Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tls_config_new() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"));
+
+        assert_eq!(config.cert_path, PathBuf::from("cert.pem"));
+        assert_eq!(config.key_path, PathBuf::from("key.pem"));
+        assert!(config.client_ca_path.is_none());
+        assert_eq!(config.min_version, TlsVersion::Tls13);
+        assert!(!config.require_client_cert);
     }
 
     #[test]
@@ -291,6 +321,238 @@ mod tests {
             .with_mtls(PathBuf::from("ca.pem"), true);
 
         assert!(config.client_ca_path.is_some());
+        assert_eq!(
+            config.client_ca_path.as_ref().unwrap(),
+            &PathBuf::from("ca.pem")
+        );
         assert!(config.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_mtls_optional_client_cert() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"))
+            .with_mtls(PathBuf::from("ca.pem"), false);
+
+        assert!(config.client_ca_path.is_some());
+        assert!(!config.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_chained_builder() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"))
+            .with_min_version(TlsVersion::Tls12)
+            .with_mtls(PathBuf::from("ca.pem"), true);
+
+        assert_eq!(config.min_version, TlsVersion::Tls12);
+        assert!(config.client_ca_path.is_some());
+        assert!(config.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_clone() {
+        let config1 = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"))
+            .with_mtls(PathBuf::from("ca.pem"), true);
+
+        let config2 = config1.clone();
+        assert_eq!(config2.cert_path, config1.cert_path);
+        assert_eq!(config2.key_path, config1.key_path);
+        assert_eq!(config2.client_ca_path, config1.client_ca_path);
+        assert_eq!(config2.min_version, config1.min_version);
+        assert_eq!(config2.require_client_cert, config1.require_client_cert);
+    }
+
+    #[test]
+    fn test_tls_config_debug() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"));
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TlsConfig"));
+        assert!(debug_str.contains("cert_path"));
+        assert!(debug_str.contains("key_path"));
+    }
+
+    // =========================================================================
+    // TlsConfig Validation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tls_config_validation_missing_cert() {
+        let config = TlsConfig {
+            cert_path: PathBuf::from("/nonexistent/cert.pem"),
+            key_path: PathBuf::from("/nonexistent/key.pem"),
+            client_ca_path: None,
+            min_version: TlsVersion::Tls13,
+            require_client_cert: false,
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_tls_config_validation_missing_key() {
+        // Create a temp file for cert (simulating it exists)
+        let temp_dir = std::env::temp_dir();
+        let cert_path = temp_dir.join("test_cert.pem");
+        std::fs::write(&cert_path, "dummy cert").unwrap();
+
+        let config = TlsConfig {
+            cert_path,
+            key_path: PathBuf::from("/nonexistent/key.pem"),
+            client_ca_path: None,
+            min_version: TlsVersion::Tls13,
+            require_client_cert: false,
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Private key file not found"));
+
+        // Cleanup
+        std::fs::remove_file(&config.cert_path).ok();
+    }
+
+    #[test]
+    fn test_tls_config_validation_missing_ca() {
+        let temp_dir = std::env::temp_dir();
+        let cert_path = temp_dir.join("test_cert2.pem");
+        let key_path = temp_dir.join("test_key2.pem");
+        std::fs::write(&cert_path, "dummy cert").unwrap();
+        std::fs::write(&key_path, "dummy key").unwrap();
+
+        let config = TlsConfig {
+            cert_path: cert_path.clone(),
+            key_path: key_path.clone(),
+            client_ca_path: Some(PathBuf::from("/nonexistent/ca.pem")),
+            min_version: TlsVersion::Tls13,
+            require_client_cert: true,
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("CA certificate file not found"));
+
+        // Cleanup
+        std::fs::remove_file(&cert_path).ok();
+        std::fs::remove_file(&key_path).ok();
+    }
+
+    #[test]
+    fn test_tls_config_validation_all_files_exist() {
+        let temp_dir = std::env::temp_dir();
+        let cert_path = temp_dir.join("test_cert3.pem");
+        let key_path = temp_dir.join("test_key3.pem");
+        let ca_path = temp_dir.join("test_ca3.pem");
+        std::fs::write(&cert_path, "dummy cert").unwrap();
+        std::fs::write(&key_path, "dummy key").unwrap();
+        std::fs::write(&ca_path, "dummy ca").unwrap();
+
+        let config = TlsConfig {
+            cert_path: cert_path.clone(),
+            key_path: key_path.clone(),
+            client_ca_path: Some(ca_path.clone()),
+            min_version: TlsVersion::Tls13,
+            require_client_cert: true,
+        };
+
+        // Validation should pass (files exist)
+        assert!(config.validate().is_ok());
+
+        // Cleanup
+        std::fs::remove_file(&cert_path).ok();
+        std::fs::remove_file(&key_path).ok();
+        std::fs::remove_file(&ca_path).ok();
+    }
+
+    #[test]
+    fn test_tls_config_validation_error_messages() {
+        let config = TlsConfig::new(
+            PathBuf::from("/nonexistent/cert.pem"),
+            PathBuf::from("/nonexistent/key.pem"),
+        );
+
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("Certificate file not found"));
+        assert!(err.contains("/nonexistent/cert.pem"));
+    }
+
+    // =========================================================================
+    // Path Handling Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tls_config_paths_with_spaces() {
+        let config = TlsConfig::new(
+            PathBuf::from("/path/with spaces/cert.pem"),
+            PathBuf::from("/another path/key.pem"),
+        );
+
+        assert_eq!(
+            config.cert_path.to_str().unwrap(),
+            "/path/with spaces/cert.pem"
+        );
+        assert_eq!(config.key_path.to_str().unwrap(), "/another path/key.pem");
+    }
+
+    #[test]
+    fn test_tls_config_paths_unicode() {
+        let config = TlsConfig::new(
+            PathBuf::from("/путь/到/证书/cert.pem"),
+            PathBuf::from("/密钥/key.pem"),
+        );
+
+        assert!(config.cert_path.to_str().is_some());
+        assert!(config.key_path.to_str().is_some());
+    }
+
+    #[test]
+    fn test_tls_config_relative_paths() {
+        let config = TlsConfig::new(
+            PathBuf::from("./certs/cert.pem"),
+            PathBuf::from("../keys/key.pem"),
+        );
+
+        assert_eq!(config.cert_path.to_str().unwrap(), "./certs/cert.pem");
+        assert_eq!(config.key_path.to_str().unwrap(), "../keys/key.pem");
+    }
+
+    // =========================================================================
+    // Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tls_config_empty_paths() {
+        let config = TlsConfig::new(PathBuf::from(""), PathBuf::from(""));
+
+        // Empty paths should fail validation
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_tls_config_with_min_version_preserves_other_fields() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"))
+            .with_mtls(PathBuf::from("ca.pem"), true)
+            .with_min_version(TlsVersion::Tls12);
+
+        // Ensure with_min_version doesn't affect other fields
+        assert_eq!(config.cert_path, PathBuf::from("cert.pem"));
+        assert_eq!(config.key_path, PathBuf::from("key.pem"));
+        assert!(config.client_ca_path.is_some());
+        assert!(config.require_client_cert);
+        assert_eq!(config.min_version, TlsVersion::Tls12);
+    }
+
+    #[test]
+    fn test_tls_config_mtls_overwrites_previous() {
+        let config = TlsConfig::new(PathBuf::from("cert.pem"), PathBuf::from("key.pem"))
+            .with_mtls(PathBuf::from("ca1.pem"), true)
+            .with_mtls(PathBuf::from("ca2.pem"), false);
+
+        // Second mtls call should overwrite the first
+        assert_eq!(
+            config.client_ca_path.as_ref().unwrap(),
+            &PathBuf::from("ca2.pem")
+        );
+        assert!(!config.require_client_cert);
     }
 }

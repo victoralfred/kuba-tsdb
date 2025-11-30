@@ -795,6 +795,8 @@ impl ToQueryResult for UnifiedTimeSeries {
 mod tests {
     use super::*;
 
+    // ===== AggQueryBuilder tests =====
+
     #[test]
     fn test_query_builder_basic() {
         let query = AggQueryBuilder::new("cpu_usage")
@@ -858,6 +860,383 @@ mod tests {
     }
 
     #[test]
+    fn test_query_builder_with_tag_regex() {
+        let query = AggQueryBuilder::new("metric")
+            .with_tag_regex("host", "server-[0-9]+")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.tag_filters.len(), 1);
+        assert_eq!(query.tag_filters[0].mode, TagMatchMode::Regex);
+    }
+
+    #[test]
+    fn test_query_builder_with_tag_prefix() {
+        let query = AggQueryBuilder::new("metric")
+            .with_tag_prefix("env", "prod")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.tag_filters.len(), 1);
+        assert_eq!(query.tag_filters[0].mode, TagMatchMode::Prefix);
+    }
+
+    #[test]
+    fn test_query_builder_without_tag() {
+        let query = AggQueryBuilder::new("metric")
+            .without_tag("env", "test")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.tag_filters.len(), 1);
+        assert_eq!(query.tag_filters[0].mode, TagMatchMode::NotEqual);
+    }
+
+    #[test]
+    fn test_query_builder_has_tag() {
+        let query = AggQueryBuilder::new("metric")
+            .has_tag("region")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.tag_filters.len(), 1);
+        assert_eq!(query.tag_filters[0].mode, TagMatchMode::Exists);
+        assert_eq!(query.tag_filters[0].key, "region");
+    }
+
+    #[test]
+    fn test_query_builder_quantile() {
+        let query = AggQueryBuilder::new("latency")
+            .time_range(0, 1000)
+            .quantile(0.99)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.quantile, Some(0.99));
+    }
+
+    #[test]
+    fn test_query_builder_series_limit() {
+        let query = AggQueryBuilder::new("metric")
+            .time_range(0, 1000)
+            .series_limit(100)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.series_limit, Some(100));
+    }
+
+    #[test]
+    fn test_query_builder_max_points() {
+        let query = AggQueryBuilder::new("metric")
+            .time_range(0, 1000)
+            .max_points(1000)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.max_points, Some(1000));
+    }
+
+    #[test]
+    fn test_query_builder_chaining() {
+        let query = AggQueryBuilder::new("cpu")
+            .with_tag("dc", "us-east")
+            .with_tag_regex("host", "web-.*")
+            .has_tag("tier")
+            .without_tag("deprecated", "true")
+            .time_range(0, 3600000)
+            .aggregate(AggregateFunction::Max)
+            .window_size(Duration::from_secs(60))
+            .group_by(&["host"])
+            .series_limit(50)
+            .max_points(500)
+            .build()
+            .unwrap();
+
+        assert_eq!(query.tag_filters.len(), 4);
+        assert_eq!(query.function, AggregateFunction::Max);
+    }
+
+    #[test]
+    fn test_query_builder_equal_time_range() {
+        let result = AggQueryBuilder::new("metric")
+            .time_range(1000, 1000) // start == end
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(QueryPlanError::InvalidTimeRange { .. })
+        ));
+    }
+
+    #[test]
+    fn test_query_builder_debug() {
+        let builder = AggQueryBuilder::new("test");
+        let debug_str = format!("{:?}", builder);
+        assert!(debug_str.contains("AggQueryBuilder"));
+    }
+
+    // ===== AggQuery tests =====
+
+    #[test]
+    fn test_agg_query_clone() {
+        let query = AggQueryBuilder::new("test")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        let cloned = query.clone();
+        assert_eq!(cloned.metric_name, query.metric_name);
+        assert_eq!(cloned.time_range.start, query.time_range.start);
+    }
+
+    #[test]
+    fn test_agg_query_debug() {
+        let query = AggQueryBuilder::new("test")
+            .time_range(0, 1000)
+            .build()
+            .unwrap();
+
+        let debug_str = format!("{:?}", query);
+        assert!(debug_str.contains("AggQuery"));
+    }
+
+    // ===== TagFilterSpec tests =====
+
+    #[test]
+    fn test_tag_filter_spec_clone() {
+        let filter = TagFilterSpec {
+            key: "host".to_string(),
+            value: "server1".to_string(),
+            mode: TagMatchMode::Exact,
+        };
+
+        let cloned = filter.clone();
+        assert_eq!(cloned.key, "host");
+        assert_eq!(cloned.value, "server1");
+        assert_eq!(cloned.mode, TagMatchMode::Exact);
+    }
+
+    #[test]
+    fn test_tag_filter_spec_debug() {
+        let filter = TagFilterSpec {
+            key: "env".to_string(),
+            value: "prod".to_string(),
+            mode: TagMatchMode::Prefix,
+        };
+
+        let debug_str = format!("{:?}", filter);
+        assert!(debug_str.contains("TagFilterSpec"));
+        assert!(debug_str.contains("env"));
+    }
+
+    // ===== TagMatchMode tests =====
+
+    #[test]
+    fn test_tag_match_mode_equality() {
+        assert_eq!(TagMatchMode::Exact, TagMatchMode::Exact);
+        assert_ne!(TagMatchMode::Exact, TagMatchMode::Regex);
+    }
+
+    #[test]
+    fn test_tag_match_mode_copy() {
+        let mode = TagMatchMode::Prefix;
+        let copied = mode;
+        assert_eq!(mode, copied);
+    }
+
+    #[test]
+    fn test_tag_match_mode_all_variants() {
+        let modes = [
+            TagMatchMode::Exact,
+            TagMatchMode::Regex,
+            TagMatchMode::Prefix,
+            TagMatchMode::NotEqual,
+            TagMatchMode::Exists,
+        ];
+
+        for mode in modes {
+            let debug_str = format!("{:?}", mode);
+            assert!(!debug_str.is_empty());
+        }
+    }
+
+    // ===== QueryCost tests =====
+
+    #[test]
+    fn test_query_cost_default() {
+        let cost = QueryCost::default();
+        assert_eq!(cost.series_count, 0);
+        assert_eq!(cost.estimated_points, 0);
+        assert_eq!(cost.estimated_memory, 0);
+        assert_eq!(cost.cpu_cost, 0.0);
+        assert_eq!(cost.io_cost, 0.0);
+    }
+
+    #[test]
+    fn test_query_cost_total_cost() {
+        let cost = QueryCost {
+            series_count: 10,
+            estimated_points: 1000,
+            estimated_memory: 16000,
+            cpu_cost: 1.0,
+            io_cost: 0.5,
+        };
+
+        // I/O is 10x more expensive than CPU
+        let expected = 1.0 + 0.5 * 10.0;
+        assert_eq!(cost.total_cost(), expected);
+    }
+
+    #[test]
+    fn test_query_cost_clone() {
+        let cost = QueryCost {
+            series_count: 50,
+            estimated_points: 5000,
+            estimated_memory: 80000,
+            cpu_cost: 2.5,
+            io_cost: 3.0,
+        };
+
+        let cloned = cost.clone();
+        assert_eq!(cloned.series_count, 50);
+        assert_eq!(cloned.cpu_cost, 2.5);
+    }
+
+    #[test]
+    fn test_query_cost_debug() {
+        let cost = QueryCost::default();
+        let debug_str = format!("{:?}", cost);
+        assert!(debug_str.contains("QueryCost"));
+    }
+
+    // ===== QueryPlannerConfig tests =====
+
+    #[test]
+    fn test_planner_config_defaults() {
+        let config = QueryPlannerConfig::default();
+        assert_eq!(config.max_series_soft_limit, 1000);
+        assert_eq!(config.max_series_hard_limit, 10000);
+        assert!(config.enable_cardinality_check);
+    }
+
+    #[test]
+    fn test_planner_config_clone() {
+        let config = QueryPlannerConfig {
+            max_series_soft_limit: 500,
+            max_series_hard_limit: 5000,
+            parallel_threshold: 5,
+            max_parallel_workers: 4,
+            enable_cardinality_check: false,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.max_series_soft_limit, 500);
+        assert_eq!(cloned.max_parallel_workers, 4);
+        assert!(!cloned.enable_cardinality_check);
+    }
+
+    #[test]
+    fn test_planner_config_debug() {
+        let config = QueryPlannerConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("QueryPlannerConfig"));
+    }
+
+    // ===== ResultPoint tests =====
+
+    #[test]
+    fn test_result_point_clone() {
+        let point = ResultPoint {
+            timestamp: 1000,
+            value: 42.5,
+            labels: HashMap::from([("host".to_string(), "server1".to_string())]),
+        };
+
+        let cloned = point.clone();
+        assert_eq!(cloned.timestamp, 1000);
+        assert_eq!(cloned.value, 42.5);
+        assert_eq!(cloned.labels.get("host"), Some(&"server1".to_string()));
+    }
+
+    #[test]
+    fn test_result_point_debug() {
+        let point = ResultPoint {
+            timestamp: 100,
+            value: 1.0,
+            labels: HashMap::new(),
+        };
+
+        let debug_str = format!("{:?}", point);
+        assert!(debug_str.contains("ResultPoint"));
+    }
+
+    // ===== QueryPlanError tests =====
+
+    #[test]
+    fn test_query_plan_error_display_missing_time_range() {
+        let err = QueryPlanError::MissingTimeRange;
+        let msg = err.to_string();
+        assert!(msg.contains("time range"));
+    }
+
+    #[test]
+    fn test_query_plan_error_display_invalid_time_range() {
+        let err = QueryPlanError::InvalidTimeRange {
+            start: 200,
+            end: 100,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("200"));
+        assert!(msg.contains("100"));
+    }
+
+    #[test]
+    fn test_query_plan_error_display_too_many_series() {
+        let err = QueryPlanError::TooManySeries {
+            count: 15000,
+            limit: 10000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("15000"));
+        assert!(msg.contains("10000"));
+    }
+
+    #[test]
+    fn test_query_plan_error_display_resolution_error() {
+        let err = QueryPlanError::ResolutionError("tag not found".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("tag not found"));
+    }
+
+    #[test]
+    fn test_query_plan_error_display_execution_error() {
+        let err = QueryPlanError::ExecutionError("timeout".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("timeout"));
+    }
+
+    #[test]
+    fn test_query_plan_error_display_internal() {
+        let err = QueryPlanError::Internal("unexpected".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("unexpected"));
+    }
+
+    #[test]
+    fn test_query_plan_error_debug() {
+        let err = QueryPlanError::MissingTimeRange;
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("MissingTimeRange"));
+    }
+
+    // ===== Query cost estimation tests =====
+
+    #[test]
     fn test_query_cost_estimation() {
         let config = QueryPlannerConfig::default();
         let store = MetadataStore::in_memory();
@@ -885,10 +1264,56 @@ mod tests {
     }
 
     #[test]
-    fn test_planner_config_defaults() {
+    fn test_query_cost_estimation_stddev() {
         let config = QueryPlannerConfig::default();
-        assert_eq!(config.max_series_soft_limit, 1000);
-        assert_eq!(config.max_series_hard_limit, 10000);
-        assert!(config.enable_cardinality_check);
+        let store = MetadataStore::in_memory();
+        let planner = AggQueryPlanner::new(Arc::new(store)).with_config(config);
+
+        let query = AggQuery {
+            metric_name: "test".to_string(),
+            tag_filters: vec![],
+            time_range: TimeRange {
+                start: 0,
+                end: 60_000_000_000,
+            },
+            function: AggregateFunction::StdDev,
+            window_size: None,
+            group_by: vec![],
+            quantile: None,
+            series_limit: None,
+            max_points: None,
+        };
+
+        let cost_stddev = planner.estimate_cost(&query, 100);
+
+        let query_avg = AggQuery {
+            function: AggregateFunction::Avg,
+            ..query.clone()
+        };
+        let cost_avg = planner.estimate_cost(&query_avg, 100);
+
+        // StdDev should have higher CPU cost
+        assert!(cost_stddev.cpu_cost > cost_avg.cpu_cost);
+    }
+
+    // ===== AggQueryPlanner tests =====
+
+    #[test]
+    fn test_agg_query_planner_new() {
+        let store = MetadataStore::in_memory();
+        let planner = AggQueryPlanner::new(Arc::new(store));
+        // Just verify it doesn't panic
+        let _ = planner;
+    }
+
+    #[test]
+    fn test_agg_query_planner_with_config() {
+        let store = MetadataStore::in_memory();
+        let config = QueryPlannerConfig {
+            max_series_hard_limit: 5000,
+            ..Default::default()
+        };
+        let planner = AggQueryPlanner::new(Arc::new(store)).with_config(config);
+        let _ = planner;
     }
 }

@@ -850,13 +850,94 @@ mod tests {
         (0..n).map(|i| (i as i64 * 1000, i as f64, 1)).collect()
     }
 
+    // ===== ParallelConfig tests =====
+
     #[test]
     fn test_parallel_config_defaults() {
         let config = ParallelConfig::default();
         assert!(config.num_workers > 0);
         assert_eq!(config.morsel_size, 4096);
         assert_eq!(config.parallel_threshold, 10_000);
+        assert_eq!(config.max_parallel_chunks, 4);
+        assert!(config.enable_parallel_io);
     }
+
+    #[test]
+    fn test_parallel_config_with_workers() {
+        let config = ParallelConfig::default().with_workers(4);
+        assert_eq!(config.num_workers, 4);
+    }
+
+    #[test]
+    fn test_parallel_config_with_workers_zero() {
+        // Zero workers should be clamped to 1
+        let config = ParallelConfig::default().with_workers(0);
+        assert_eq!(config.num_workers, 1);
+    }
+
+    #[test]
+    fn test_parallel_config_with_morsel_size() {
+        let config = ParallelConfig::default().with_morsel_size(8192);
+        assert_eq!(config.morsel_size, 8192);
+    }
+
+    #[test]
+    fn test_parallel_config_with_morsel_size_min() {
+        // Morsel size should be clamped to at least 256
+        let config = ParallelConfig::default().with_morsel_size(100);
+        assert_eq!(config.morsel_size, 256);
+    }
+
+    #[test]
+    fn test_parallel_config_with_threshold() {
+        let config = ParallelConfig::default().with_threshold(5000);
+        assert_eq!(config.parallel_threshold, 5000);
+    }
+
+    #[test]
+    fn test_parallel_config_with_threshold_zero() {
+        let config = ParallelConfig::default().with_threshold(0);
+        assert_eq!(config.parallel_threshold, 0);
+    }
+
+    #[test]
+    fn test_parallel_config_without_parallel_io() {
+        let config = ParallelConfig::default().without_parallel_io();
+        assert!(!config.enable_parallel_io);
+    }
+
+    #[test]
+    fn test_parallel_config_chaining() {
+        let config = ParallelConfig::default()
+            .with_workers(8)
+            .with_morsel_size(2048)
+            .with_threshold(20000)
+            .without_parallel_io();
+
+        assert_eq!(config.num_workers, 8);
+        assert_eq!(config.morsel_size, 2048);
+        assert_eq!(config.parallel_threshold, 20000);
+        assert!(!config.enable_parallel_io);
+    }
+
+    #[test]
+    fn test_parallel_config_clone() {
+        let config = ParallelConfig::default().with_workers(4);
+        let cloned = config.clone();
+        assert_eq!(cloned.num_workers, 4);
+        assert_eq!(cloned.morsel_size, config.morsel_size);
+    }
+
+    #[test]
+    fn test_parallel_config_debug() {
+        let config = ParallelConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("ParallelConfig"));
+        assert!(debug_str.contains("num_workers"));
+        assert!(debug_str.contains("morsel_size"));
+    }
+
+    // ===== ParallelAggregator tests =====
 
     #[test]
     fn test_parallel_aggregator_sum_small() {
@@ -982,5 +1063,320 @@ mod tests {
         // Each series should have ~333-334 values
         let total: f64 = result.values.iter().sum();
         assert_eq!(total, 1000.0);
+    }
+
+    #[test]
+    fn test_parallel_aggregator_count() {
+        let data = make_test_data(500);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default().with_threshold(100);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Count, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        assert_eq!(result.values[0], 500.0);
+    }
+
+    #[test]
+    fn test_parallel_aggregator_stddev() {
+        // Data: 0, 1, 2, 3, 4 - population stddev is sqrt(2)
+        let data: Vec<(i64, f64, SeriesId)> =
+            (0..5).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
+
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default().with_threshold(100);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::StdDev, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        // Population stddev of [0,1,2,3,4] = sqrt(2) ≈ 1.414
+        assert!((result.values[0] - 1.414).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parallel_aggregator_variance() {
+        let data: Vec<(i64, f64, SeriesId)> =
+            (0..5).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
+
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default().with_threshold(100);
+        let mut agg =
+            ParallelAggregator::new(Box::new(scan), AggregationFunction::Variance, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        // Population variance of [0,1,2,3,4] = 2.0
+        assert!((result.values[0] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parallel_aggregator_empty_input() {
+        let data: Vec<(i64, f64, SeriesId)> = vec![];
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default();
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap();
+        // Empty input should return something (timestamp 0)
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_parallel_aggregator_reset() {
+        let data = make_test_data(100);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default();
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        // First run
+        let _ = agg.next_batch(&mut ctx).unwrap();
+
+        // Reset
+        agg.reset();
+
+        // Should be able to run again
+        let result = agg.next_batch(&mut ctx).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_parallel_aggregator_name() {
+        let data = make_test_data(10);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default();
+        let agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        assert_eq!(agg.name(), "ParallelAggregator");
+    }
+
+    #[test]
+    fn test_parallel_aggregator_second_call_returns_none() {
+        let data = make_test_data(100);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(100);
+
+        let config = ParallelConfig::default();
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        // First call returns result
+        let result1 = agg.next_batch(&mut ctx).unwrap();
+        assert!(result1.is_some());
+
+        // Second call returns None
+        let result2 = agg.next_batch(&mut ctx).unwrap();
+        assert!(result2.is_none());
+    }
+
+    // ===== Parallel aggregation with different morsel sizes =====
+
+    #[test]
+    fn test_parallel_aggregator_small_morsel() {
+        let data = make_test_data(15000);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(1000);
+
+        let config = ParallelConfig::default()
+            .with_threshold(5000)
+            .with_morsel_size(256);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        let expected: f64 = (0..15000).map(|i| i as f64).sum();
+        assert!((result.values[0] - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parallel_aggregator_large_morsel() {
+        let data = make_test_data(15000);
+        let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
+            .with_mock_data(data)
+            .with_batch_size(1000);
+
+        let config = ParallelConfig::default()
+            .with_threshold(5000)
+            .with_morsel_size(8192);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config);
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        let expected: f64 = (0..15000).map(|i| i as f64).sum();
+        assert!((result.values[0] - expected).abs() < 0.001);
+    }
+
+    // ===== Group by series with parallel path =====
+
+    #[test]
+    fn test_parallel_aggregator_group_by_series_large() {
+        // Large dataset with multiple series - should use parallel path
+        let mut data = Vec::new();
+        for i in 0..15000 {
+            let series_id = (i % 5) as SeriesId + 1; // 5 series
+            data.push((i as i64 * 1000, i as f64, series_id));
+        }
+
+        let selector = SeriesSelector {
+            series_id: None,
+            measurement: Some("test".to_string()),
+            tag_filters: vec![],
+        };
+
+        let scan = ScanOperator::new(selector, None)
+            .with_mock_data(data)
+            .with_batch_size(1000);
+
+        let config = ParallelConfig::default().with_threshold(5000);
+        let mut agg = ParallelAggregator::new(Box::new(scan), AggregationFunction::Sum, config)
+            .with_group_by_series();
+
+        let exec_config = ExecutorConfig::default();
+        let mut ctx = ExecutionContext::new(&exec_config);
+
+        let result = agg.next_batch(&mut ctx).unwrap().unwrap();
+        assert_eq!(result.len(), 5); // 5 groups
+
+        // Total sum should match
+        let total: f64 = result.values.iter().sum();
+        let expected: f64 = (0..15000).map(|i| i as f64).sum();
+        assert!((total - expected).abs() < 0.001);
+    }
+
+    // ===== ParallelScanner tests =====
+
+    #[test]
+    fn test_parallel_scanner_name() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalDiskEngine::new(dir.path().to_path_buf()).unwrap());
+
+        let scanner = ParallelScanner::new(
+            storage,
+            SeriesSelector::by_id(1),
+            vec![],
+            ParallelConfig::default(),
+        );
+
+        assert_eq!(scanner.name(), "ParallelScan");
+    }
+
+    #[test]
+    fn test_parallel_scanner_estimated_cardinality_empty() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalDiskEngine::new(dir.path().to_path_buf()).unwrap());
+
+        let scanner = ParallelScanner::new(
+            storage,
+            SeriesSelector::by_id(1),
+            vec![],
+            ParallelConfig::default(),
+        );
+
+        assert_eq!(scanner.estimated_cardinality(), 0);
+    }
+
+    #[test]
+    fn test_parallel_scanner_reset() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalDiskEngine::new(dir.path().to_path_buf()).unwrap());
+
+        let mut scanner = ParallelScanner::new(
+            storage,
+            SeriesSelector::by_id(1),
+            vec![],
+            ParallelConfig::default(),
+        );
+
+        scanner.reset();
+
+        // After reset, internal state should be cleared
+        assert_eq!(scanner.window_start, 0);
+        assert!(scanner.prefetched.is_empty());
+        assert_eq!(scanner.prefetch_pos, 0);
+        assert!(!scanner.exhausted);
+    }
+
+    #[test]
+    fn test_parallel_scanner_with_time_range() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalDiskEngine::new(dir.path().to_path_buf()).unwrap());
+
+        let scanner = ParallelScanner::new(
+            storage,
+            SeriesSelector::by_id(1),
+            vec![],
+            ParallelConfig::default(),
+        )
+        .with_time_range(TimeRange {
+            start: 0,
+            end: 1000,
+        });
+
+        assert!(scanner.time_range.is_some());
+        assert_eq!(scanner.time_range.unwrap().start, 0);
+        assert_eq!(scanner.time_range.unwrap().end, 1000);
+    }
+
+    #[test]
+    fn test_parallel_scanner_with_batch_size() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalDiskEngine::new(dir.path().to_path_buf()).unwrap());
+
+        let scanner = ParallelScanner::new(
+            storage,
+            SeriesSelector::by_id(1),
+            vec![],
+            ParallelConfig::default(),
+        )
+        .with_batch_size(8192);
+
+        assert_eq!(scanner.batch_size, 8192);
     }
 }

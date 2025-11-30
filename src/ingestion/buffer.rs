@@ -760,10 +760,18 @@ impl WriteBufferManager {
 mod tests {
     use super::*;
 
+    // ===== BufferConfig tests =====
+
     #[test]
     fn test_buffer_config_default() {
         let config = BufferConfig::default();
         assert!(config.validate().is_ok());
+        assert_eq!(config.max_points_per_series, 10_000);
+        assert_eq!(config.max_total_memory, 512 * 1024 * 1024);
+        assert_eq!(config.flush_interval, Duration::from_secs(1));
+        assert_eq!(config.max_buffer_age, Duration::from_secs(10));
+        assert_eq!(config.initial_series_capacity, 1_000);
+        assert_eq!(config.max_series_count, 100_000);
     }
 
     #[test]
@@ -776,11 +784,101 @@ mod tests {
     }
 
     #[test]
+    fn test_buffer_config_validation_zero_memory() {
+        let config = BufferConfig {
+            max_total_memory: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_total_memory must be > 0"));
+    }
+
+    #[test]
+    fn test_buffer_config_validation_zero_flush_interval() {
+        let config = BufferConfig {
+            flush_interval: Duration::ZERO,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("flush_interval must be > 0"));
+    }
+
+    #[test]
+    fn test_buffer_config_validation_zero_series_count() {
+        let config = BufferConfig {
+            max_series_count: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_series_count must be > 0"));
+    }
+
+    #[test]
+    fn test_buffer_config_validation_exceeds_max_points() {
+        let config = BufferConfig {
+            max_points_per_series: MAX_POINTS_PER_SERIES + 1,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_buffer_config_validation_exceeds_max_series() {
+        let config = BufferConfig {
+            max_series_count: MAX_SERIES_COUNT + 1,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_buffer_config_clone() {
+        let config = BufferConfig {
+            max_points_per_series: 5000,
+            max_total_memory: 1024,
+            flush_interval: Duration::from_millis(500),
+            max_buffer_age: Duration::from_secs(5),
+            initial_series_capacity: 100,
+            max_series_count: 1000,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.max_points_per_series, 5000);
+        assert_eq!(cloned.max_total_memory, 1024);
+        assert_eq!(cloned.flush_interval, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_buffer_config_debug() {
+        let config = BufferConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("BufferConfig"));
+        assert!(debug_str.contains("max_points_per_series"));
+    }
+
+    // ===== SeriesBuffer tests =====
+
+    #[test]
     fn test_series_buffer_new() {
         let buffer = SeriesBuffer::new(1);
         assert_eq!(buffer.series_id, 1);
         assert!(buffer.is_empty());
         assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_series_buffer_with_capacity() {
+        let buffer = SeriesBuffer::with_capacity(42, 100);
+        assert_eq!(buffer.series_id, 42);
+        assert!(buffer.is_empty());
+        assert!(buffer.points.capacity() >= 100);
     }
 
     #[test]
@@ -805,6 +903,56 @@ mod tests {
     }
 
     #[test]
+    fn test_series_buffer_add_validated_valid() {
+        let mut buffer = SeriesBuffer::new(1);
+        let result = buffer.add_validated(1000, 42.5);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
+    fn test_series_buffer_add_validated_invalid_timestamp_negative() {
+        let mut buffer = SeriesBuffer::new(1);
+        let result = buffer.add_validated(-1, 42.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_series_buffer_add_validated_invalid_timestamp_too_large() {
+        let mut buffer = SeriesBuffer::new(1);
+        let result = buffer.add_validated(MAX_VALID_TIMESTAMP + 1, 42.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_series_buffer_add_validated_nan() {
+        let mut buffer = SeriesBuffer::new(1);
+        let result = buffer.add_validated(1000, f64::NAN);
+        assert!(result.is_err());
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_series_buffer_add_validated_infinity() {
+        let mut buffer = SeriesBuffer::new(1);
+        let result = buffer.add_validated(1000, f64::INFINITY);
+        assert!(result.is_err());
+
+        let result = buffer.add_validated(1000, f64::NEG_INFINITY);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_series_buffer_add_validated_overwrite() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add_validated(1000, 42.0).unwrap();
+        let result = buffer.add_validated(1000, 99.0);
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Was an overwrite
+    }
+
+    #[test]
     fn test_series_buffer_out_of_order() {
         let mut buffer = SeriesBuffer::new(1);
 
@@ -822,6 +970,21 @@ mod tests {
     }
 
     #[test]
+    fn test_series_buffer_out_of_order_count() {
+        let mut buffer = SeriesBuffer::new(1);
+
+        buffer.add(1000, 1.0);
+        buffer.add(1001, 2.0);
+        assert_eq!(buffer.out_of_order_count(), 0);
+
+        buffer.add(999, 0.0); // Out of order
+        assert_eq!(buffer.out_of_order_count(), 1);
+
+        buffer.add(998, -1.0); // Out of order
+        assert_eq!(buffer.out_of_order_count(), 2);
+    }
+
+    #[test]
     fn test_series_buffer_drain() {
         let mut buffer = SeriesBuffer::new(1);
         buffer.add(1000, 42.0);
@@ -830,6 +993,32 @@ mod tests {
         let points = buffer.drain();
         assert_eq!(points.len(), 2);
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_series_buffer_drain_empty() {
+        let mut buffer = SeriesBuffer::new(1);
+        let points = buffer.drain();
+        assert!(points.is_empty());
+    }
+
+    #[test]
+    fn test_series_buffer_drain_resets_state() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add(1000, 42.0);
+
+        buffer.drain();
+        assert!(buffer.is_sorted);
+        assert!(buffer.last_timestamp.is_none());
+    }
+
+    #[test]
+    fn test_series_buffer_add_batch() {
+        let mut buffer = SeriesBuffer::new(1);
+        let points = vec![(1000, 1.0), (1001, 2.0), (1002, 3.0)];
+
+        buffer.add_batch(points);
+        assert_eq!(buffer.len(), 3);
     }
 
     #[test]
@@ -855,5 +1044,167 @@ mod tests {
 
         let with_points_size = buffer.memory_size();
         assert!(with_points_size > empty_size);
+    }
+
+    #[test]
+    fn test_series_buffer_age() {
+        let buffer = SeriesBuffer::new(1);
+        std::thread::sleep(Duration::from_millis(10));
+        let age = buffer.age();
+        assert!(age >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_series_buffer_idle_time() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add(1000, 42.0);
+        std::thread::sleep(Duration::from_millis(10));
+        let idle = buffer.idle_time();
+        assert!(idle >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_series_buffer_deduplicate_on_drain() {
+        let mut buffer = SeriesBuffer::new(1);
+
+        // Add points with duplicates
+        buffer.add(1000, 1.0);
+        buffer.add(1001, 2.0);
+        buffer.add(1000, 3.0); // Overwrite
+
+        let points = buffer.drain();
+        // After dedup, should have 2 unique timestamps
+        assert_eq!(points.len(), 2);
+    }
+
+    #[test]
+    fn test_series_buffer_boundary_timestamps() {
+        let mut buffer = SeriesBuffer::new(1);
+
+        // Test boundary valid timestamps
+        let result = buffer.add_validated(MIN_VALID_TIMESTAMP, 1.0);
+        assert!(result.is_ok());
+
+        let result = buffer.add_validated(MAX_VALID_TIMESTAMP, 2.0);
+        assert!(result.is_ok());
+
+        assert_eq!(buffer.len(), 2);
+    }
+
+    // ===== SeriesBufferStats tests =====
+
+    #[test]
+    fn test_series_buffer_stats_clone() {
+        let stats = SeriesBufferStats {
+            series_id: 42,
+            point_count: 100,
+            total_added: 150,
+            overwrites: 50,
+            age: Duration::from_secs(10),
+            idle_time: Duration::from_secs(1),
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.series_id, 42);
+        assert_eq!(cloned.point_count, 100);
+        assert_eq!(cloned.overwrites, 50);
+    }
+
+    #[test]
+    fn test_series_buffer_stats_debug() {
+        let stats = SeriesBufferStats {
+            series_id: 1,
+            point_count: 10,
+            total_added: 20,
+            overwrites: 5,
+            age: Duration::from_millis(100),
+            idle_time: Duration::from_millis(50),
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("SeriesBufferStats"));
+        assert!(debug_str.contains("point_count: 10"));
+    }
+
+    // ===== WriteBatch tests =====
+
+    #[test]
+    fn test_write_batch_debug() {
+        let batch = WriteBatch {
+            series_id: 1,
+            points: vec![DataPoint::new(1, 1000, 42.0)],
+            sequence: 0,
+        };
+
+        let debug_str = format!("{:?}", batch);
+        assert!(debug_str.contains("WriteBatch"));
+        assert!(debug_str.contains("series_id: 1"));
+    }
+
+    // ===== Constant tests =====
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(MIN_VALID_TIMESTAMP, 0);
+        assert_eq!(MAX_SERIES_COUNT, 10_000_000);
+        assert_eq!(MAX_POINTS_PER_SERIES, 1_000_000);
+    }
+
+    #[test]
+    fn test_max_valid_timestamp_is_reasonable() {
+        // MAX_VALID_TIMESTAMP should be year 2100 in milliseconds
+        // 2100-01-01 is approximately 4102444800 seconds since epoch
+        assert_eq!(MAX_VALID_TIMESTAMP, 4_102_444_800_000);
+    }
+
+    // ===== Edge case tests =====
+
+    #[test]
+    fn test_series_buffer_many_points() {
+        let mut buffer = SeriesBuffer::new(1);
+
+        for i in 0..1000 {
+            buffer.add(i, i as f64);
+        }
+
+        assert_eq!(buffer.len(), 1000);
+        let points = buffer.drain();
+        assert_eq!(points.len(), 1000);
+
+        // Verify ordering
+        for (i, point) in points.iter().enumerate() {
+            assert_eq!(point.timestamp, i as i64);
+        }
+    }
+
+    #[test]
+    fn test_series_buffer_negative_values() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add(1000, -42.5);
+        buffer.add(1001, -0.0);
+
+        let points = buffer.drain();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].value, -42.5);
+    }
+
+    #[test]
+    fn test_series_buffer_very_small_values() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add(1000, f64::MIN_POSITIVE);
+        buffer.add(1001, -f64::MIN_POSITIVE);
+
+        let points = buffer.drain();
+        assert_eq!(points.len(), 2);
+    }
+
+    #[test]
+    fn test_series_buffer_zero_values() {
+        let mut buffer = SeriesBuffer::new(1);
+        buffer.add(1000, 0.0);
+        buffer.add(1001, -0.0);
+
+        let points = buffer.drain();
+        assert_eq!(points.len(), 2);
     }
 }

@@ -841,6 +841,10 @@ impl TimeIndex for RedisTimeIndex {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // Key Generation Tests
+    // =========================================================================
+
     #[test]
     fn test_key_generation() {
         assert_eq!(RedisTimeIndex::series_index_key(123), "ts:series:123:index");
@@ -852,6 +856,30 @@ mod tests {
             "ts:chunks:550e8400-e29b-41d4-a716-446655440000"
         );
     }
+
+    #[test]
+    fn test_key_generation_various_series_ids() {
+        // Test with various series_id values
+        assert_eq!(RedisTimeIndex::series_index_key(0), "ts:series:0:index");
+        assert_eq!(RedisTimeIndex::series_index_key(1), "ts:series:1:index");
+        assert_eq!(
+            RedisTimeIndex::series_index_key(u64::MAX as SeriesId),
+            format!("ts:series:{}:index", u64::MAX)
+        );
+    }
+
+    #[test]
+    fn test_meta_key_generation_various_ids() {
+        assert_eq!(RedisTimeIndex::series_meta_key(0), "ts:series:0:meta");
+        assert_eq!(
+            RedisTimeIndex::series_meta_key(999999),
+            "ts:series:999999:meta"
+        );
+    }
+
+    // =========================================================================
+    // ChunkId Validation Tests
+    // =========================================================================
 
     #[test]
     fn test_chunk_id_validation() {
@@ -867,6 +895,26 @@ mod tests {
         assert!(ChunkId::from_string("not-a-uuid").is_err());
         assert!(ChunkId::from_string("abc-123").is_err());
     }
+
+    #[test]
+    fn test_chunk_id_more_path_traversal() {
+        // Additional path traversal attack vectors
+        assert!(ChunkId::from_string("....//....//etc/passwd").is_err());
+        assert!(ChunkId::from_string("..%2F..%2Fetc%2Fpasswd").is_err());
+        assert!(ChunkId::from_string("..%5C..%5Cwindows%5Csystem32").is_err());
+    }
+
+    #[test]
+    fn test_chunk_id_valid_uuids() {
+        // Various valid UUID formats
+        assert!(ChunkId::from_string("00000000-0000-0000-0000-000000000000").is_ok());
+        assert!(ChunkId::from_string("ffffffff-ffff-ffff-ffff-ffffffffffff").is_ok());
+        assert!(ChunkId::from_string("a1b2c3d4-e5f6-7890-abcd-ef1234567890").is_ok());
+    }
+
+    // =========================================================================
+    // LocalCache Tests
+    // =========================================================================
 
     #[test]
     fn test_local_cache() {
@@ -927,5 +975,279 @@ mod tests {
 
         cache.invalidate_series(1);
         assert!(cache.get_series_meta(1).is_none());
+    }
+
+    #[test]
+    fn test_local_cache_new() {
+        let cache = LocalCache::new(100);
+        assert_eq!(cache.max_entries, 100);
+        assert!(cache.series_meta.is_empty());
+    }
+
+    #[test]
+    fn test_local_cache_default() {
+        let cache = LocalCache::default();
+        assert_eq!(cache.max_entries, 0);
+        assert!(cache.series_meta.is_empty());
+    }
+
+    #[test]
+    fn test_cache_get_nonexistent() {
+        let cache = LocalCache::new(10);
+        assert!(cache.get_series_meta(12345).is_none());
+    }
+
+    #[test]
+    fn test_cache_metadata_content() {
+        let mut cache = LocalCache::new(10);
+
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "server1".to_string());
+        tags.insert("region".to_string(), "us-east".to_string());
+
+        let meta = SeriesMetadata {
+            metric_name: "cpu.usage".to_string(),
+            tags: tags.clone(),
+            created_at: 1000,
+            retention_days: Some(30),
+        };
+
+        cache.set_series_meta(42, meta.clone(), 60_000);
+
+        let cached = cache.get_series_meta(42).unwrap();
+        assert_eq!(cached.metric_name, "cpu.usage");
+        assert_eq!(cached.tags.get("host"), Some(&"server1".to_string()));
+        assert_eq!(cached.tags.get("region"), Some(&"us-east".to_string()));
+        assert_eq!(cached.created_at, 1000);
+        assert_eq!(cached.retention_days, Some(30));
+    }
+
+    #[test]
+    fn test_cache_overwrite_same_key() {
+        let mut cache = LocalCache::new(10);
+
+        let meta1 = SeriesMetadata {
+            metric_name: "metric1".to_string(),
+            tags: HashMap::new(),
+            created_at: 1000,
+            retention_days: None,
+        };
+
+        let meta2 = SeriesMetadata {
+            metric_name: "metric2".to_string(),
+            tags: HashMap::new(),
+            created_at: 2000,
+            retention_days: None,
+        };
+
+        cache.set_series_meta(1, meta1, 60_000);
+        cache.set_series_meta(1, meta2, 60_000);
+
+        let cached = cache.get_series_meta(1).unwrap();
+        assert_eq!(cached.metric_name, "metric2");
+        assert_eq!(cached.created_at, 2000);
+    }
+
+    #[test]
+    fn test_cache_invalidate_nonexistent() {
+        let mut cache = LocalCache::new(10);
+        // Should not panic when invalidating non-existent entry
+        cache.invalidate_series(99999);
+        assert!(cache.get_series_meta(99999).is_none());
+    }
+
+    // =========================================================================
+    // CachedSeriesMeta Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cached_series_meta_not_expired() {
+        let cached = CachedSeriesMeta {
+            metadata: SeriesMetadata {
+                metric_name: "test".to_string(),
+                tags: HashMap::new(),
+                created_at: 0,
+                retention_days: None,
+            },
+            cached_at: Utc::now().timestamp_millis(),
+            ttl_ms: 60_000, // 60 seconds
+        };
+
+        assert!(!cached.is_expired());
+    }
+
+    #[test]
+    fn test_cached_series_meta_expired() {
+        let cached = CachedSeriesMeta {
+            metadata: SeriesMetadata {
+                metric_name: "test".to_string(),
+                tags: HashMap::new(),
+                created_at: 0,
+                retention_days: None,
+            },
+            cached_at: Utc::now().timestamp_millis() - 120_000, // 2 minutes ago
+            ttl_ms: 60_000,                                     // 60 seconds TTL
+        };
+
+        assert!(cached.is_expired());
+    }
+
+    #[test]
+    fn test_cached_series_meta_zero_ttl() {
+        let cached = CachedSeriesMeta {
+            metadata: SeriesMetadata {
+                metric_name: "test".to_string(),
+                tags: HashMap::new(),
+                created_at: 0,
+                retention_days: None,
+            },
+            cached_at: Utc::now().timestamp_millis(),
+            ttl_ms: 0, // Immediate expiry
+        };
+
+        // Zero TTL means immediate expiry (or very short-lived)
+        // Since cached_at is "now", we might get false if we're within same millisecond
+        // Adding 1ms to cached_at would make it expired
+        let cached_old = CachedSeriesMeta {
+            cached_at: Utc::now().timestamp_millis() - 1,
+            ..cached
+        };
+        assert!(cached_old.is_expired());
+    }
+
+    // =========================================================================
+    // RedisChunkMetadata Tests
+    // =========================================================================
+
+    #[test]
+    fn test_redis_chunk_metadata_serialization() {
+        let metadata = RedisChunkMetadata {
+            series_id: "12345".to_string(),
+            path: "/data/chunks/chunk1.bin".to_string(),
+            start_time: 1000,
+            end_time: 2000,
+            point_count: 100,
+            size_bytes: 4096,
+            compression: "gorilla".to_string(),
+            status: "sealed".to_string(),
+            created_at: 1700000000000,
+        };
+
+        // Serialize
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(json.contains("12345"));
+        assert!(json.contains("/data/chunks/chunk1.bin"));
+        assert!(json.contains("gorilla"));
+
+        // Deserialize
+        let deserialized: RedisChunkMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.series_id, "12345");
+        assert_eq!(deserialized.path, "/data/chunks/chunk1.bin");
+        assert_eq!(deserialized.start_time, 1000);
+        assert_eq!(deserialized.end_time, 2000);
+        assert_eq!(deserialized.point_count, 100);
+        assert_eq!(deserialized.size_bytes, 4096);
+        assert_eq!(deserialized.compression, "gorilla");
+        assert_eq!(deserialized.status, "sealed");
+    }
+
+    #[test]
+    fn test_redis_chunk_metadata_clone() {
+        let metadata = RedisChunkMetadata {
+            series_id: "999".to_string(),
+            path: "/path/to/chunk".to_string(),
+            start_time: 0,
+            end_time: 1000,
+            point_count: 50,
+            size_bytes: 2048,
+            compression: "gorilla".to_string(),
+            status: "active".to_string(),
+            created_at: 0,
+        };
+
+        let cloned = metadata.clone();
+        assert_eq!(cloned.series_id, metadata.series_id);
+        assert_eq!(cloned.path, metadata.path);
+        assert_eq!(cloned.size_bytes, metadata.size_bytes);
+    }
+
+    // =========================================================================
+    // Key Constant Tests
+    // =========================================================================
+
+    #[test]
+    fn test_key_constants() {
+        assert_eq!(KEY_REGISTRY, "ts:registry");
+        assert_eq!(KEY_SERIES_INDEX_PREFIX, "ts:series:");
+        assert_eq!(KEY_SERIES_INDEX_SUFFIX, ":index");
+        assert_eq!(KEY_SERIES_META_SUFFIX, ":meta");
+        assert_eq!(KEY_CHUNKS_PREFIX, "ts:chunks:");
+    }
+
+    // =========================================================================
+    // Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cache_zero_capacity() {
+        let mut cache = LocalCache::new(0);
+
+        let meta = SeriesMetadata {
+            metric_name: "test".to_string(),
+            tags: HashMap::new(),
+            created_at: 0,
+            retention_days: None,
+        };
+
+        // With zero capacity, set should still work but evict immediately
+        cache.set_series_meta(1, meta, 60_000);
+
+        // The entry count should be at most 1 (or 0 if immediately evicted)
+        assert!(cache.series_meta.len() <= 1);
+    }
+
+    #[test]
+    fn test_cache_large_series_id() {
+        let mut cache = LocalCache::new(10);
+
+        let meta = SeriesMetadata {
+            metric_name: "test".to_string(),
+            tags: HashMap::new(),
+            created_at: 0,
+            retention_days: None,
+        };
+
+        let large_id = u64::MAX as SeriesId;
+        cache.set_series_meta(large_id, meta.clone(), 60_000);
+
+        assert!(cache.get_series_meta(large_id).is_some());
+        assert_eq!(cache.get_series_meta(large_id).unwrap().metric_name, "test");
+    }
+
+    #[test]
+    fn test_metadata_with_special_characters() {
+        let mut cache = LocalCache::new(10);
+
+        let mut tags = HashMap::new();
+        tags.insert(
+            "special".to_string(),
+            "value with spaces and !@#$%^&*()".to_string(),
+        );
+
+        let meta = SeriesMetadata {
+            metric_name: "metric.with.dots.and-dashes".to_string(),
+            tags,
+            created_at: 0,
+            retention_days: None,
+        };
+
+        cache.set_series_meta(1, meta.clone(), 60_000);
+
+        let cached = cache.get_series_meta(1).unwrap();
+        assert_eq!(cached.metric_name, "metric.with.dots.and-dashes");
+        assert_eq!(
+            cached.tags.get("special"),
+            Some(&"value with spaces and !@#$%^&*()".to_string())
+        );
     }
 }

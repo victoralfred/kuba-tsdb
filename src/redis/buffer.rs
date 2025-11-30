@@ -549,6 +549,10 @@ impl BufferFlushTask {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // BufferConfig Tests
+    // =========================================================================
+
     #[test]
     fn test_buffer_config_default() {
         let config = BufferConfig::default();
@@ -558,9 +562,73 @@ mod tests {
     }
 
     #[test]
+    fn test_buffer_config_all_fields() {
+        let config = BufferConfig::default();
+        assert_eq!(config.max_buffer_size, 100);
+        assert_eq!(config.max_buffer_age_ms, 60_000);
+        assert_eq!(config.auto_flush_interval_ms, 5_000);
+        assert_eq!(config.max_batch_size, 1000);
+        assert!(config.auto_flush_enabled);
+        assert_eq!(config.operation_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn test_buffer_config_clone() {
+        let config1 = BufferConfig {
+            max_buffer_size: 50,
+            max_buffer_age_ms: 30_000,
+            auto_flush_interval_ms: 2_500,
+            max_batch_size: 500,
+            auto_flush_enabled: false,
+            operation_timeout_ms: 3_000,
+        };
+
+        let config2 = config1.clone();
+        assert_eq!(config2.max_buffer_size, 50);
+        assert_eq!(config2.max_buffer_age_ms, 30_000);
+        assert_eq!(config2.auto_flush_interval_ms, 2_500);
+        assert_eq!(config2.max_batch_size, 500);
+        assert!(!config2.auto_flush_enabled);
+        assert_eq!(config2.operation_timeout_ms, 3_000);
+    }
+
+    #[test]
+    fn test_buffer_config_debug() {
+        let config = BufferConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("BufferConfig"));
+        assert!(debug_str.contains("max_buffer_size"));
+    }
+
+    // =========================================================================
+    // Key Generation Tests
+    // =========================================================================
+
+    #[test]
     fn test_buffer_key_generation() {
         assert_eq!(WriteBuffer::buffer_key(123), "ts:series:123:buffer");
     }
+
+    #[test]
+    fn test_buffer_key_generation_various_ids() {
+        assert_eq!(WriteBuffer::buffer_key(0), "ts:series:0:buffer");
+        assert_eq!(WriteBuffer::buffer_key(1), "ts:series:1:buffer");
+        assert_eq!(WriteBuffer::buffer_key(999999), "ts:series:999999:buffer");
+        assert_eq!(
+            WriteBuffer::buffer_key(u64::MAX as SeriesId),
+            format!("ts:series:{}:buffer", u64::MAX)
+        );
+    }
+
+    #[test]
+    fn test_key_constants() {
+        assert_eq!(KEY_BUFFER_PREFIX, "ts:series:");
+        assert_eq!(KEY_BUFFER_SUFFIX, ":buffer");
+    }
+
+    // =========================================================================
+    // BufferedPoint Tests
+    // =========================================================================
 
     #[test]
     fn test_buffered_point_conversion() {
@@ -576,6 +644,80 @@ mod tests {
         assert_eq!(dp2.timestamp, 1000);
         assert!((dp2.value - 42.5).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn test_buffered_point_roundtrip_negative_value() {
+        let dp = DataPoint::new(42, 5000, -123.456);
+        let bp = BufferedPoint::from_data_point(&dp);
+        let dp2 = bp.to_data_point();
+
+        assert_eq!(dp2.series_id, 42);
+        assert_eq!(dp2.timestamp, 5000);
+        assert!((dp2.value - (-123.456)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_buffered_point_roundtrip_zero() {
+        let dp = DataPoint::new(1, 0, 0.0);
+        let bp = BufferedPoint::from_data_point(&dp);
+        let dp2 = bp.to_data_point();
+
+        assert_eq!(dp2.series_id, 1);
+        assert_eq!(dp2.timestamp, 0);
+        assert!(dp2.value == 0.0);
+    }
+
+    #[test]
+    fn test_buffered_point_roundtrip_extreme_values() {
+        // Test very large value
+        let dp_large = DataPoint::new(1, 1000, 1e300);
+        let bp_large = BufferedPoint::from_data_point(&dp_large);
+        let dp_large2 = bp_large.to_data_point();
+        assert!((dp_large2.value - 1e300).abs() < 1e290);
+
+        // Test very small value
+        let dp_small = DataPoint::new(1, 1000, 1e-300);
+        let bp_small = BufferedPoint::from_data_point(&dp_small);
+        let dp_small2 = bp_small.to_data_point();
+        assert!((dp_small2.value - 1e-300).abs() < 1e-290);
+    }
+
+    #[test]
+    fn test_buffered_point_serialization() {
+        let bp = BufferedPoint {
+            series_id: 123,
+            timestamp: 1700000000000,
+            value: 99.99,
+        };
+
+        let json = serde_json::to_string(&bp).unwrap();
+        assert!(json.contains("123"));
+        assert!(json.contains("1700000000000"));
+        assert!(json.contains("99.99"));
+
+        let deserialized: BufferedPoint = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.series_id, 123);
+        assert_eq!(deserialized.timestamp, 1700000000000);
+        assert!((deserialized.value - 99.99).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_buffered_point_clone() {
+        let bp1 = BufferedPoint {
+            series_id: 1,
+            timestamp: 1000,
+            value: 42.0,
+        };
+
+        let bp2 = bp1.clone();
+        assert_eq!(bp2.series_id, bp1.series_id);
+        assert_eq!(bp2.timestamp, bp1.timestamp);
+        assert!((bp2.value - bp1.value).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // BufferedBatch Tests
+    // =========================================================================
 
     #[test]
     fn test_buffered_batch_serialization() {
@@ -606,11 +748,83 @@ mod tests {
     }
 
     #[test]
+    fn test_buffered_batch_empty() {
+        let batch = BufferedBatch {
+            points: vec![],
+            created_at: 1000,
+            sequence: 0,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        let deserialized: BufferedBatch = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.points.is_empty());
+        assert_eq!(deserialized.sequence, 0);
+    }
+
+    #[test]
+    fn test_buffered_batch_large() {
+        let points: Vec<BufferedPoint> = (0..100)
+            .map(|i| BufferedPoint {
+                series_id: 1,
+                timestamp: i * 1000,
+                value: i as f64,
+            })
+            .collect();
+
+        let batch = BufferedBatch {
+            points,
+            created_at: chrono::Utc::now().timestamp_millis(),
+            sequence: 42,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        let deserialized: BufferedBatch = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.points.len(), 100);
+        assert_eq!(deserialized.sequence, 42);
+        assert_eq!(deserialized.points[50].timestamp, 50000);
+    }
+
+    #[test]
+    fn test_buffered_batch_clone() {
+        let batch = BufferedBatch {
+            points: vec![BufferedPoint {
+                series_id: 1,
+                timestamp: 1000,
+                value: 42.0,
+            }],
+            created_at: 1000000,
+            sequence: 5,
+        };
+
+        let cloned = batch.clone();
+        assert_eq!(cloned.points.len(), batch.points.len());
+        assert_eq!(cloned.created_at, batch.created_at);
+        assert_eq!(cloned.sequence, batch.sequence);
+    }
+
+    // =========================================================================
+    // SeriesBufferState Tests
+    // =========================================================================
+
+    #[test]
     fn test_series_buffer_state_default() {
         let state = SeriesBufferState::default();
         assert_eq!(state.pending_batches, 0);
         assert_eq!(state.total_points, 0);
     }
+
+    #[test]
+    fn test_series_buffer_state_last_flush_timing() {
+        let state = SeriesBufferState::default();
+        // last_flush should be set to "now" on default creation
+        assert!(state.last_flush.elapsed().as_millis() < 100);
+    }
+
+    // =========================================================================
+    // BufferStats Tests
+    // =========================================================================
 
     #[test]
     fn test_buffer_stats_initialization() {
@@ -626,5 +840,153 @@ mod tests {
         assert_eq!(stats.total_points_buffered, 100);
         assert_eq!(stats.total_flushes, 5);
         assert_eq!(stats.active_series, 2);
+    }
+
+    #[test]
+    fn test_buffer_stats_all_fields() {
+        let stats = BufferStats {
+            total_points_buffered: 1000,
+            total_batches_buffered: 100,
+            total_points_flushed: 800,
+            total_flushes: 80,
+            buffer_overflows: 5,
+            active_series: 10,
+        };
+
+        assert_eq!(stats.total_points_buffered, 1000);
+        assert_eq!(stats.total_batches_buffered, 100);
+        assert_eq!(stats.total_points_flushed, 800);
+        assert_eq!(stats.total_flushes, 80);
+        assert_eq!(stats.buffer_overflows, 5);
+        assert_eq!(stats.active_series, 10);
+    }
+
+    #[test]
+    fn test_buffer_stats_clone() {
+        let stats1 = BufferStats {
+            total_points_buffered: 500,
+            total_batches_buffered: 50,
+            total_points_flushed: 400,
+            total_flushes: 40,
+            buffer_overflows: 2,
+            active_series: 5,
+        };
+
+        let stats2 = stats1.clone();
+        assert_eq!(stats2.total_points_buffered, stats1.total_points_buffered);
+        assert_eq!(stats2.total_batches_buffered, stats1.total_batches_buffered);
+        assert_eq!(stats2.total_points_flushed, stats1.total_points_flushed);
+        assert_eq!(stats2.total_flushes, stats1.total_flushes);
+        assert_eq!(stats2.buffer_overflows, stats1.buffer_overflows);
+        assert_eq!(stats2.active_series, stats1.active_series);
+    }
+
+    #[test]
+    fn test_buffer_stats_debug() {
+        let stats = BufferStats {
+            total_points_buffered: 100,
+            total_batches_buffered: 10,
+            total_points_flushed: 50,
+            total_flushes: 5,
+            buffer_overflows: 0,
+            active_series: 2,
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("BufferStats"));
+        assert!(debug_str.contains("total_points_buffered"));
+        assert!(debug_str.contains("100"));
+    }
+
+    #[test]
+    fn test_buffer_stats_zero_values() {
+        let stats = BufferStats {
+            total_points_buffered: 0,
+            total_batches_buffered: 0,
+            total_points_flushed: 0,
+            total_flushes: 0,
+            buffer_overflows: 0,
+            active_series: 0,
+        };
+
+        assert_eq!(stats.total_points_buffered, 0);
+        assert_eq!(stats.active_series, 0);
+    }
+
+    // =========================================================================
+    // Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_buffered_point_negative_timestamp() {
+        let dp = DataPoint::new(1, -1000, 42.0);
+        let bp = BufferedPoint::from_data_point(&dp);
+        let dp2 = bp.to_data_point();
+
+        assert_eq!(dp2.timestamp, -1000);
+    }
+
+    #[test]
+    fn test_buffered_point_max_series_id() {
+        let large_id = u64::MAX as SeriesId;
+        let dp = DataPoint::new(large_id, 1000, 42.0);
+        let bp = BufferedPoint::from_data_point(&dp);
+        let dp2 = bp.to_data_point();
+
+        assert_eq!(dp2.series_id, large_id);
+    }
+
+    #[test]
+    fn test_buffered_batch_sorting_by_sequence() {
+        let mut batches = [
+            BufferedBatch {
+                points: vec![],
+                created_at: 1000,
+                sequence: 3,
+            },
+            BufferedBatch {
+                points: vec![],
+                created_at: 2000,
+                sequence: 1,
+            },
+            BufferedBatch {
+                points: vec![],
+                created_at: 3000,
+                sequence: 2,
+            },
+        ];
+
+        batches.sort_by_key(|b| b.sequence);
+
+        assert_eq!(batches[0].sequence, 1);
+        assert_eq!(batches[1].sequence, 2);
+        assert_eq!(batches[2].sequence, 3);
+    }
+
+    #[test]
+    fn test_buffered_batch_json_roundtrip_special_values() {
+        let batch = BufferedBatch {
+            points: vec![
+                BufferedPoint {
+                    series_id: 1,
+                    timestamp: i64::MAX,
+                    value: f64::MAX / 2.0,
+                },
+                BufferedPoint {
+                    series_id: 2,
+                    timestamp: i64::MIN,
+                    value: f64::MIN_POSITIVE,
+                },
+            ],
+            created_at: 0,
+            sequence: 0,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        let deserialized: BufferedBatch = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.points.len(), 2);
+        assert_eq!(deserialized.points[0].timestamp, i64::MAX);
+        assert_eq!(deserialized.points[1].timestamp, i64::MIN);
     }
 }

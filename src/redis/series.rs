@@ -379,6 +379,8 @@ impl SeriesManager {
 mod tests {
     use super::*;
 
+    // ===== SeriesFilter tests =====
+
     #[test]
     fn test_series_filter_builder() {
         let filter = SeriesFilter::new()
@@ -397,26 +399,88 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_series_id() {
-        let mut tags1 = HashMap::new();
-        tags1.insert("host".to_string(), "server1".to_string());
-        tags1.insert("dc".to_string(), "us-east".to_string());
+    fn test_series_filter_default() {
+        let filter = SeriesFilter::default();
 
-        let mut tags2 = HashMap::new();
-        tags2.insert("dc".to_string(), "us-east".to_string());
-        tags2.insert("host".to_string(), "server1".to_string());
-
-        // Same tags in different order should produce same lower 64 bits
-        let id1 = SeriesManager::generate_series_id("cpu.usage", &tags1);
-        let id2 = SeriesManager::generate_series_id("cpu.usage", &tags2);
-
-        // Lower 64 bits should be the same (hash of metric + tags)
-        assert_eq!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
-
-        // Different metric name should produce different ID
-        let id3 = SeriesManager::generate_series_id("mem.usage", &tags1);
-        assert_ne!(id1 & 0xFFFFFFFFFFFFFFFF, id3 & 0xFFFFFFFFFFFFFFFF);
+        assert!(filter.metric_prefix.is_none());
+        assert!(filter.tags.is_none());
+        assert!(filter.limit.is_none());
+        assert!(filter.offset.is_none());
+        // Default derive sets bool to false
+        assert!(!filter.include_inactive);
+        assert!(filter.inactive_threshold_ms.is_none());
     }
+
+    #[test]
+    fn test_series_filter_new() {
+        let filter = SeriesFilter::new();
+
+        assert!(filter.metric_prefix.is_none());
+        assert!(filter.tags.is_none());
+    }
+
+    #[test]
+    fn test_series_filter_multiple_tags() {
+        let filter = SeriesFilter::new()
+            .with_tag("host", "server1")
+            .with_tag("region", "us-east")
+            .with_tag("env", "prod");
+
+        let tags = filter.tags.as_ref().unwrap();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags.get("host"), Some(&"server1".to_string()));
+        assert_eq!(tags.get("region"), Some(&"us-east".to_string()));
+        assert_eq!(tags.get("env"), Some(&"prod".to_string()));
+    }
+
+    #[test]
+    fn test_series_filter_active_only() {
+        let filter = SeriesFilter::new().active_only(3600000); // 1 hour
+
+        assert!(!filter.include_inactive);
+        assert_eq!(filter.inactive_threshold_ms, Some(3600000));
+    }
+
+    #[test]
+    fn test_series_filter_chaining() {
+        let filter = SeriesFilter::new()
+            .with_metric_prefix("system.")
+            .with_tag("type", "cpu")
+            .with_limit(50)
+            .with_offset(25)
+            .active_only(60000);
+
+        assert_eq!(filter.metric_prefix, Some("system.".to_string()));
+        assert_eq!(
+            filter.tags.as_ref().unwrap().get("type"),
+            Some(&"cpu".to_string())
+        );
+        assert_eq!(filter.limit, Some(50));
+        assert_eq!(filter.offset, Some(25));
+        assert!(!filter.include_inactive);
+        assert_eq!(filter.inactive_threshold_ms, Some(60000));
+    }
+
+    #[test]
+    fn test_series_filter_clone() {
+        let filter = SeriesFilter::new()
+            .with_metric_prefix("test")
+            .with_limit(10);
+
+        let cloned = filter.clone();
+        assert_eq!(cloned.metric_prefix, Some("test".to_string()));
+        assert_eq!(cloned.limit, Some(10));
+    }
+
+    #[test]
+    fn test_series_filter_debug() {
+        let filter = SeriesFilter::new().with_metric_prefix("cpu");
+        let debug_str = format!("{:?}", filter);
+        assert!(debug_str.contains("SeriesFilter"));
+        assert!(debug_str.contains("cpu"));
+    }
+
+    // ===== SeriesInfo tests =====
 
     #[test]
     fn test_series_info_serialization() {
@@ -441,5 +505,216 @@ mod tests {
         assert_eq!(deserialized.series_id, info.series_id);
         assert_eq!(deserialized.metric_name, info.metric_name);
         assert_eq!(deserialized.total_points, info.total_points);
+    }
+
+    #[test]
+    fn test_series_info_clone() {
+        let info = SeriesInfo {
+            series_id: 42,
+            metric_name: "test".to_string(),
+            tags: HashMap::new(),
+            created_at: 100,
+            last_write: 200,
+            total_points: 50,
+            total_chunks: 2,
+            retention_days: None,
+        };
+
+        let cloned = info.clone();
+        assert_eq!(cloned.series_id, 42);
+        assert_eq!(cloned.metric_name, "test");
+        assert_eq!(cloned.total_points, 50);
+        assert!(cloned.retention_days.is_none());
+    }
+
+    #[test]
+    fn test_series_info_debug() {
+        let info = SeriesInfo {
+            series_id: 1,
+            metric_name: "mem.free".to_string(),
+            tags: HashMap::new(),
+            created_at: 0,
+            last_write: 0,
+            total_points: 0,
+            total_chunks: 0,
+            retention_days: Some(7),
+        };
+
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("SeriesInfo"));
+        assert!(debug_str.contains("mem.free"));
+        assert!(debug_str.contains("retention_days: Some(7)"));
+    }
+
+    #[test]
+    fn test_series_info_with_empty_tags() {
+        let info = SeriesInfo {
+            series_id: 0,
+            metric_name: "".to_string(),
+            tags: HashMap::new(),
+            created_at: 0,
+            last_write: 0,
+            total_points: 0,
+            total_chunks: 0,
+            retention_days: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SeriesInfo = serde_json::from_str(&json).unwrap();
+        assert!(parsed.tags.is_empty());
+    }
+
+    #[test]
+    fn test_series_info_with_many_tags() {
+        let mut tags = HashMap::new();
+        for i in 0..100 {
+            tags.insert(format!("tag{}", i), format!("value{}", i));
+        }
+
+        let info = SeriesInfo {
+            series_id: 999,
+            metric_name: "multi_tag_metric".to_string(),
+            tags,
+            created_at: 1000,
+            last_write: 2000,
+            total_points: 100,
+            total_chunks: 10,
+            retention_days: Some(90),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SeriesInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tags.len(), 100);
+    }
+
+    #[test]
+    fn test_series_info_large_values() {
+        let info = SeriesInfo {
+            series_id: u128::MAX,
+            metric_name: "large_values".to_string(),
+            tags: HashMap::new(),
+            created_at: i64::MAX,
+            last_write: i64::MAX,
+            total_points: u64::MAX,
+            total_chunks: u64::MAX,
+            retention_days: Some(u32::MAX),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SeriesInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.series_id, u128::MAX);
+        assert_eq!(parsed.total_points, u64::MAX);
+    }
+
+    // ===== generate_series_id tests =====
+
+    #[test]
+    fn test_generate_series_id() {
+        let mut tags1 = HashMap::new();
+        tags1.insert("host".to_string(), "server1".to_string());
+        tags1.insert("dc".to_string(), "us-east".to_string());
+
+        let mut tags2 = HashMap::new();
+        tags2.insert("dc".to_string(), "us-east".to_string());
+        tags2.insert("host".to_string(), "server1".to_string());
+
+        // Same tags in different order should produce same lower 64 bits
+        let id1 = SeriesManager::generate_series_id("cpu.usage", &tags1);
+        let id2 = SeriesManager::generate_series_id("cpu.usage", &tags2);
+
+        // Lower 64 bits should be the same (hash of metric + tags)
+        assert_eq!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+
+        // Different metric name should produce different ID
+        let id3 = SeriesManager::generate_series_id("mem.usage", &tags1);
+        assert_ne!(id1 & 0xFFFFFFFFFFFFFFFF, id3 & 0xFFFFFFFFFFFFFFFF);
+    }
+
+    #[test]
+    fn test_generate_series_id_empty_metric() {
+        let tags = HashMap::new();
+        let id = SeriesManager::generate_series_id("", &tags);
+        assert_ne!(id, 0); // Should still produce a valid ID
+    }
+
+    #[test]
+    fn test_generate_series_id_empty_tags() {
+        let tags = HashMap::new();
+        let id1 = SeriesManager::generate_series_id("metric", &tags);
+        let id2 = SeriesManager::generate_series_id("metric", &tags);
+
+        // Same metric without tags should produce same lower bits
+        assert_eq!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+    }
+
+    #[test]
+    fn test_generate_series_id_different_tags_same_metric() {
+        let mut tags1 = HashMap::new();
+        tags1.insert("host".to_string(), "a".to_string());
+
+        let mut tags2 = HashMap::new();
+        tags2.insert("host".to_string(), "b".to_string());
+
+        let id1 = SeriesManager::generate_series_id("metric", &tags1);
+        let id2 = SeriesManager::generate_series_id("metric", &tags2);
+
+        // Different tag values should produce different lower bits
+        assert_ne!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+    }
+
+    #[test]
+    fn test_generate_series_id_special_characters() {
+        let mut tags = HashMap::new();
+        tags.insert("path".to_string(), "/var/log/test.log".to_string());
+        tags.insert("query".to_string(), "SELECT * FROM users;".to_string());
+
+        let id = SeriesManager::generate_series_id("http.requests", &tags);
+        assert_ne!(id, 0);
+    }
+
+    #[test]
+    fn test_generate_series_id_unicode() {
+        let mut tags = HashMap::new();
+        tags.insert("city".to_string(), "東京".to_string());
+        tags.insert("country".to_string(), "日本".to_string());
+
+        let id = SeriesManager::generate_series_id("weather.温度", &tags);
+        assert_ne!(id, 0);
+    }
+
+    #[test]
+    fn test_generate_series_id_upper_bits_change() {
+        // Upper bits should contain timestamp, so IDs generated at different times
+        // may differ in upper bits. At minimum, verify the ID is non-zero.
+        let tags = HashMap::new();
+        let id = SeriesManager::generate_series_id("test", &tags);
+
+        // Upper 64 bits should contain timestamp information
+        let upper_bits = id >> 64;
+        assert!(upper_bits > 0); // Should have some timestamp component
+    }
+
+    #[test]
+    fn test_generate_series_id_deterministic_hash() {
+        let mut tags = HashMap::new();
+        tags.insert("a".to_string(), "1".to_string());
+        tags.insert("b".to_string(), "2".to_string());
+
+        // Call multiple times - lower bits should be consistent
+        let mut lower_bits_set = std::collections::HashSet::new();
+        for _ in 0..10 {
+            let id = SeriesManager::generate_series_id("metric", &tags);
+            lower_bits_set.insert(id & 0xFFFFFFFFFFFFFFFF);
+        }
+
+        // All calls should produce the same lower 64 bits
+        assert_eq!(lower_bits_set.len(), 1);
+    }
+
+    // ===== Key prefix tests =====
+
+    #[test]
+    fn test_key_series_prefix() {
+        assert_eq!(KEY_SERIES_PREFIX, "ts:series:");
     }
 }

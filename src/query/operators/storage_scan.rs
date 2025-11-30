@@ -414,140 +414,472 @@ impl StorageQueryExt for LocalDiskEngine {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
-    // Tests require actual storage setup, so we use basic unit tests here
-    // Integration tests would be in a separate test file
+    // Helper to create test chunk metadata
+    fn make_chunk(series_id: SeriesId, start: i64, end: i64, points: u32) -> ChunkMetadata {
+        ChunkMetadata {
+            chunk_id: crate::types::ChunkId::new(),
+            series_id,
+            path: PathBuf::from("/tmp/chunk.gor"),
+            start_timestamp: start,
+            end_timestamp: end,
+            point_count: points,
+            size_bytes: 1024,
+            uncompressed_size: 0,
+            compression: crate::storage::chunk::CompressionType::Gorilla,
+            created_at: 0,
+            last_accessed: 0,
+        }
+    }
+
+    // ===== StorageScanOperator construction tests =====
+
+    #[test]
+    fn test_storage_scan_operator_new() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector);
+
+        assert_eq!(scan.batch_size, 4096);
+        assert!(scan.time_range.is_none());
+        assert!(scan.predicate.is_none());
+        assert!(!scan.initialized);
+        assert!(!scan.exhausted);
+    }
+
+    #[test]
+    fn test_storage_scan_operator_with_time_range() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector).with_time_range(TimeRange {
+            start: 100,
+            end: 200,
+        });
+
+        assert!(scan.time_range.is_some());
+        assert_eq!(scan.time_range.unwrap().start, 100);
+        assert_eq!(scan.time_range.unwrap().end, 200);
+    }
+
+    #[test]
+    fn test_storage_scan_operator_with_optional_time_range_some() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan =
+            StorageScanOperator::new(storage, selector).with_optional_time_range(Some(TimeRange {
+                start: 50,
+                end: 150,
+            }));
+
+        assert!(scan.time_range.is_some());
+        assert_eq!(scan.time_range.unwrap().start, 50);
+    }
+
+    #[test]
+    fn test_storage_scan_operator_with_optional_time_range_none() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector).with_optional_time_range(None);
+
+        assert!(scan.time_range.is_none());
+    }
+
+    #[test]
+    fn test_storage_scan_operator_with_predicate() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector)
+            .with_predicate(Predicate::gt("value", 10.0));
+
+        assert!(scan.predicate.is_some());
+    }
+
+    #[test]
+    fn test_storage_scan_operator_with_batch_size() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector).with_batch_size(8192);
+
+        assert_eq!(scan.batch_size, 8192);
+    }
+
+    #[test]
+    fn test_storage_scan_operator_chaining() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector)
+            .with_time_range(TimeRange {
+                start: 0,
+                end: 1000,
+            })
+            .with_predicate(Predicate::lt("value", 100.0))
+            .with_batch_size(2048);
+
+        assert!(scan.time_range.is_some());
+        assert!(scan.predicate.is_some());
+        assert_eq!(scan.batch_size, 2048);
+    }
+
+    // ===== Time range overlap tests =====
 
     #[test]
     fn test_chunk_time_overlap() {
+        let dir = tempdir().unwrap();
         let storage = Arc::new(
-            LocalDiskEngine::new("/tmp/test_tsdb".into()).expect("Failed to create engine"),
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
         );
         let selector = SeriesSelector::by_id(1);
 
         // Query with time range
-        let scan = StorageScanOperator::new(storage.clone(), selector.clone()).with_time_range(
-            TimeRange {
-                start: 100,
-                end: 200,
-            },
-        );
+        let scan = StorageScanOperator::new(storage, selector).with_time_range(TimeRange {
+            start: 100,
+            end: 200,
+        });
 
         // Test chunk that overlaps
-        let overlapping_chunk = ChunkMetadata {
-            chunk_id: crate::types::ChunkId::new(),
-            series_id: 1,
-            path: PathBuf::from("/tmp/chunk.gor"),
-            start_timestamp: 50,
-            end_timestamp: 150,
-            point_count: 100,
-            size_bytes: 1024,
-            uncompressed_size: 0,
-            compression: crate::storage::chunk::CompressionType::Gorilla,
-            created_at: 0,
-            last_accessed: 0,
-        };
+        let overlapping_chunk = make_chunk(1, 50, 150, 100);
         assert!(scan.chunk_overlaps_time_range(&overlapping_chunk));
 
         // Test chunk that doesn't overlap (before range)
-        let before_chunk = ChunkMetadata {
-            chunk_id: crate::types::ChunkId::new(),
-            series_id: 1,
-            path: PathBuf::from("/tmp/chunk.gor"),
-            start_timestamp: 0,
-            end_timestamp: 50,
-            point_count: 50,
-            size_bytes: 512,
-            uncompressed_size: 0,
-            compression: crate::storage::chunk::CompressionType::Gorilla,
-            created_at: 0,
-            last_accessed: 0,
-        };
+        let before_chunk = make_chunk(1, 0, 50, 50);
         assert!(!scan.chunk_overlaps_time_range(&before_chunk));
 
         // Test chunk that doesn't overlap (after range)
-        let after_chunk = ChunkMetadata {
-            chunk_id: crate::types::ChunkId::new(),
-            series_id: 1,
-            path: PathBuf::from("/tmp/chunk.gor"),
-            start_timestamp: 300,
-            end_timestamp: 400,
-            point_count: 100,
-            size_bytes: 1024,
-            uncompressed_size: 0,
-            compression: crate::storage::chunk::CompressionType::Gorilla,
-            created_at: 0,
-            last_accessed: 0,
-        };
+        let after_chunk = make_chunk(1, 300, 400, 100);
         assert!(!scan.chunk_overlaps_time_range(&after_chunk));
     }
 
     #[test]
-    fn test_no_time_range_includes_all() {
+    fn test_chunk_time_overlap_exact_boundary() {
+        let dir = tempdir().unwrap();
         let storage = Arc::new(
-            LocalDiskEngine::new("/tmp/test_tsdb2".into()).expect("Failed to create engine"),
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector).with_time_range(TimeRange {
+            start: 100,
+            end: 200,
+        });
+
+        // Chunk ending exactly at query start
+        let edge_before = make_chunk(1, 50, 100, 50);
+        assert!(scan.chunk_overlaps_time_range(&edge_before)); // includes boundary
+
+        // Chunk starting exactly at query end
+        let edge_after = make_chunk(1, 200, 250, 50);
+        assert!(scan.chunk_overlaps_time_range(&edge_after)); // includes boundary
+    }
+
+    #[test]
+    fn test_chunk_time_overlap_contained() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector).with_time_range(TimeRange {
+            start: 100,
+            end: 200,
+        });
+
+        // Chunk fully contained in query range
+        let contained = make_chunk(1, 120, 180, 60);
+        assert!(scan.chunk_overlaps_time_range(&contained));
+
+        // Query fully contained in chunk range
+        let containing = make_chunk(1, 50, 250, 200);
+        assert!(scan.chunk_overlaps_time_range(&containing));
+    }
+
+    #[test]
+    fn test_no_time_range_includes_all() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
         );
         let selector = SeriesSelector::by_id(1);
 
         // Query without time range should include all chunks
         let scan = StorageScanOperator::new(storage, selector);
 
-        let any_chunk = ChunkMetadata {
-            chunk_id: crate::types::ChunkId::new(),
-            series_id: 1,
-            path: PathBuf::from("/tmp/chunk.gor"),
-            start_timestamp: 1000000,
-            end_timestamp: 2000000,
-            point_count: 1000,
-            size_bytes: 10240,
-            uncompressed_size: 0,
-            compression: crate::storage::chunk::CompressionType::Gorilla,
-            created_at: 0,
-            last_accessed: 0,
-        };
-
+        let any_chunk = make_chunk(1, 1000000, 2000000, 1000);
         assert!(scan.chunk_overlaps_time_range(&any_chunk));
     }
 
+    // ===== Estimated cardinality tests =====
+
     #[test]
     fn test_estimated_cardinality() {
+        let dir = tempdir().unwrap();
         let storage = Arc::new(
-            LocalDiskEngine::new("/tmp/test_tsdb3".into()).expect("Failed to create engine"),
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
         );
         let selector = SeriesSelector::by_id(1);
 
         let mut scan = StorageScanOperator::new(storage, selector);
 
-        // Manually set chunks for testing
-        scan.chunks = vec![
-            ChunkMetadata {
-                chunk_id: crate::types::ChunkId::new(),
-                series_id: 1,
-                path: PathBuf::from("/tmp/chunk1.gor"),
-                start_timestamp: 0,
-                end_timestamp: 100,
-                point_count: 100,
-                size_bytes: 1024,
-                uncompressed_size: 0,
-                compression: crate::storage::chunk::CompressionType::Gorilla,
-                created_at: 0,
-                last_accessed: 0,
-            },
-            ChunkMetadata {
-                chunk_id: crate::types::ChunkId::new(),
-                series_id: 1,
-                path: PathBuf::from("/tmp/chunk2.gor"),
-                start_timestamp: 100,
-                end_timestamp: 200,
-                point_count: 200,
-                size_bytes: 2048,
-                uncompressed_size: 0,
-                compression: crate::storage::chunk::CompressionType::Gorilla,
-                created_at: 0,
-                last_accessed: 0,
-            },
-        ];
+        scan.chunks = vec![make_chunk(1, 0, 100, 100), make_chunk(1, 100, 200, 200)];
 
         assert_eq!(scan.estimated_cardinality(), 300);
+    }
+
+    #[test]
+    fn test_estimated_cardinality_empty() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector);
+        assert_eq!(scan.estimated_cardinality(), 0);
+    }
+
+    #[test]
+    fn test_estimated_cardinality_single_chunk() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let mut scan = StorageScanOperator::new(storage, selector);
+        scan.chunks = vec![make_chunk(1, 0, 100, 500)];
+
+        assert_eq!(scan.estimated_cardinality(), 500);
+    }
+
+    // ===== Operator trait tests =====
+
+    #[test]
+    fn test_operator_name() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let scan = StorageScanOperator::new(storage, selector);
+        assert_eq!(scan.name(), "StorageScan");
+    }
+
+    #[test]
+    fn test_reset() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let mut scan = StorageScanOperator::new(storage, selector);
+
+        // Simulate some state
+        scan.current_chunk_idx = 5;
+        scan.buffer_position = 100;
+        scan.exhausted = true;
+        scan.point_buffer = vec![DataPoint::new(1, 1000, 42.0)];
+
+        scan.reset();
+
+        assert_eq!(scan.current_chunk_idx, 0);
+        assert_eq!(scan.buffer_position, 0);
+        assert!(!scan.exhausted);
+        assert!(scan.point_buffer.is_empty());
+    }
+
+    // ===== Initialize tests =====
+
+    #[test]
+    fn test_initialize_without_series_id() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+
+        // Selector without series ID
+        let selector = SeriesSelector {
+            series_id: None,
+            measurement: Some("test".to_string()),
+            tag_filters: vec![],
+        };
+
+        let mut scan = StorageScanOperator::new(storage, selector);
+
+        // Initialize should mark as exhausted when no series ID
+        let result = scan.initialize();
+        assert!(result.is_ok());
+        assert!(scan.initialized);
+        assert!(scan.exhausted);
+    }
+
+    #[test]
+    fn test_initialize_idempotent() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let mut scan = StorageScanOperator::new(storage, selector);
+
+        // First init
+        scan.initialize().unwrap();
+        assert!(scan.initialized);
+
+        // Second init should be no-op
+        let chunk_count = scan.chunks.len();
+        scan.initialize().unwrap();
+        assert_eq!(scan.chunks.len(), chunk_count);
+    }
+
+    // ===== Form batch tests =====
+
+    #[test]
+    fn test_form_batch_empty_buffer() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let mut scan = StorageScanOperator::new(storage, selector);
+        let batch = scan.form_batch();
+
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn test_form_batch_with_data() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine"),
+        );
+        let selector = SeriesSelector::by_id(1);
+
+        let mut scan = StorageScanOperator::new(storage, selector).with_batch_size(2);
+
+        // Add some test data to buffer
+        scan.point_buffer = vec![
+            DataPoint::new(1, 1000, 1.0),
+            DataPoint::new(1, 2000, 2.0),
+            DataPoint::new(1, 3000, 3.0),
+        ];
+
+        // First batch should have 2 points (batch size)
+        let batch1 = scan.form_batch();
+        assert_eq!(batch1.len(), 2);
+
+        // Second batch should have 1 point (remaining)
+        let batch2 = scan.form_batch();
+        assert_eq!(batch2.len(), 1);
+
+        // Third batch should be empty
+        let batch3 = scan.form_batch();
+        assert!(batch3.is_empty());
+    }
+
+    // ===== Predicate filtering tests =====
+
+    #[test]
+    fn test_predicate_gt() {
+        let pred = Predicate::gt("value", 50.0);
+        assert!(pred.evaluate(60.0));
+        assert!(!pred.evaluate(50.0));
+        assert!(!pred.evaluate(40.0));
+    }
+
+    #[test]
+    fn test_predicate_gte() {
+        let pred = Predicate::gte("value", 50.0);
+        assert!(pred.evaluate(60.0));
+        assert!(pred.evaluate(50.0));
+        assert!(!pred.evaluate(40.0));
+    }
+
+    #[test]
+    fn test_predicate_lt() {
+        let pred = Predicate::lt("value", 50.0);
+        assert!(pred.evaluate(40.0));
+        assert!(!pred.evaluate(50.0));
+        assert!(!pred.evaluate(60.0));
+    }
+
+    #[test]
+    fn test_predicate_lte() {
+        let pred = Predicate::lte("value", 50.0);
+        assert!(pred.evaluate(40.0));
+        assert!(pred.evaluate(50.0));
+        assert!(!pred.evaluate(60.0));
+    }
+
+    #[test]
+    fn test_predicate_eq() {
+        let pred = Predicate::eq("value", 42.0);
+        assert!(pred.evaluate(42.0));
+        assert!(!pred.evaluate(41.0));
+        assert!(!pred.evaluate(43.0));
+    }
+
+    #[test]
+    fn test_predicate_ne() {
+        let pred = Predicate::ne("value", 42.0);
+        assert!(!pred.evaluate(42.0));
+        assert!(pred.evaluate(41.0));
+        assert!(pred.evaluate(43.0));
+    }
+
+    // ===== StorageQueryExt tests =====
+
+    #[test]
+    fn test_storage_query_ext_query_chunks_for_series() {
+        let dir = tempdir().unwrap();
+        let storage =
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine");
+
+        // Query for non-existent series should return empty
+        let chunks = storage.query_chunks_for_series(999);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_storage_query_ext_query_all_series() {
+        let dir = tempdir().unwrap();
+        let storage =
+            LocalDiskEngine::new(dir.path().to_path_buf()).expect("Failed to create engine");
+
+        // Empty storage should return empty series list
+        let series = storage.query_all_series();
+        assert!(series.is_empty());
     }
 }

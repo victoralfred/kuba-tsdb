@@ -446,4 +446,325 @@ mod tests {
         assert_eq!(stats.records_written, 0);
         assert_eq!(stats.syncs, 0);
     }
+
+    // ===== WalStatsSnapshot tests =====
+
+    #[test]
+    fn test_wal_stats_snapshot_default() {
+        let stats = WalStatsSnapshot::default();
+
+        assert_eq!(stats.records_written, 0);
+        assert_eq!(stats.records_recovered, 0);
+        assert_eq!(stats.bytes_written, 0);
+        assert_eq!(stats.syncs, 0);
+        assert_eq!(stats.rotations, 0);
+        assert_eq!(stats.active_segment_size, 0);
+        assert_eq!(stats.sealed_segment_count, 0);
+    }
+
+    #[test]
+    fn test_wal_stats_snapshot_clone() {
+        let stats = WalStatsSnapshot {
+            records_written: 100,
+            records_recovered: 50,
+            bytes_written: 1024,
+            syncs: 10,
+            rotations: 5,
+            active_segment_size: 512,
+            sealed_segment_count: 3,
+        };
+
+        let cloned = stats.clone();
+
+        assert_eq!(cloned.records_written, 100);
+        assert_eq!(cloned.records_recovered, 50);
+        assert_eq!(cloned.bytes_written, 1024);
+        assert_eq!(cloned.syncs, 10);
+        assert_eq!(cloned.rotations, 5);
+        assert_eq!(cloned.active_segment_size, 512);
+        assert_eq!(cloned.sealed_segment_count, 3);
+    }
+
+    #[test]
+    fn test_wal_stats_snapshot_debug() {
+        let stats = WalStatsSnapshot {
+            records_written: 42,
+            records_recovered: 0,
+            bytes_written: 1000,
+            syncs: 5,
+            rotations: 2,
+            active_segment_size: 256,
+            sealed_segment_count: 1,
+        };
+
+        let debug_str = format!("{:?}", stats);
+
+        assert!(debug_str.contains("WalStatsSnapshot"));
+        assert!(debug_str.contains("records_written: 42"));
+        assert!(debug_str.contains("bytes_written: 1000"));
+        assert!(debug_str.contains("syncs: 5"));
+        assert!(debug_str.contains("rotations: 2"));
+    }
+
+    #[test]
+    fn test_wal_stats_snapshot_large_values() {
+        let stats = WalStatsSnapshot {
+            records_written: u64::MAX,
+            records_recovered: u64::MAX,
+            bytes_written: u64::MAX,
+            syncs: u64::MAX,
+            rotations: u64::MAX,
+            active_segment_size: usize::MAX,
+            sealed_segment_count: usize::MAX,
+        };
+
+        assert_eq!(stats.records_written, u64::MAX);
+        assert_eq!(stats.active_segment_size, usize::MAX);
+    }
+
+    // ===== WalManager tests =====
+
+    #[tokio::test]
+    async fn test_wal_manager_directory_accessor() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        assert_eq!(wal.directory(), dir.path());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_current_sequence() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        assert_eq!(wal.current_sequence(), 0);
+
+        // Generate some sequences
+        wal.next_sequence();
+        wal.next_sequence();
+
+        assert_eq!(wal.current_sequence(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_sequence_thread_safety() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = Arc::new(WalManager::new(config).await.unwrap());
+
+        // Generate many sequences to test thread safety
+        for i in 0..100 {
+            assert_eq!(wal.next_sequence(), i);
+        }
+
+        assert_eq!(wal.current_sequence(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_stats_initial() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        let stats = wal.stats();
+
+        assert_eq!(stats.records_written, 0);
+        assert_eq!(stats.records_recovered, 0);
+        assert_eq!(stats.bytes_written, 0);
+        assert_eq!(stats.syncs, 0);
+        assert_eq!(stats.rotations, 0);
+        assert_eq!(stats.sealed_segment_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_creates_directory() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("wal").join("nested");
+
+        let config = WalConfig {
+            directory: subdir.clone(),
+            segment_size: 1024 * 1024,
+            sync_mode: SyncMode::Immediate,
+            write_buffer_size: 1000,
+            max_segments: 10,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+        assert!(subdir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_config_validation() {
+        let dir = tempdir().unwrap();
+
+        // Invalid config with zero segment size
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 0, // Invalid
+            sync_mode: SyncMode::Immediate,
+            write_buffer_size: 1000,
+            max_segments: 10,
+        };
+
+        let result = WalManager::new(config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_sync_without_active_segment() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        // Sync before any segment is created should work
+        let result = wal.sync().await;
+        assert!(result.is_ok());
+
+        let stats = wal.stats();
+        assert_eq!(stats.syncs, 1);
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_write_batch_empty() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        // Writing empty batch should return current sequence
+        let result = wal.write_batch(vec![]).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        // Records written should still be 0
+        let stats = wal.stats();
+        assert_eq!(stats.records_written, 0);
+    }
+
+    // ===== Segment ID tests =====
+
+    #[tokio::test]
+    async fn test_wal_manager_next_segment_id_initial() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        // Initial segment ID should be 1 (no active or sealed segments)
+        let id = wal.next_segment_id();
+        assert_eq!(id, 1);
+    }
+
+    // ===== Config variations =====
+
+    #[tokio::test]
+    async fn test_wal_manager_with_batch_size_sync() {
+        let dir = tempdir().unwrap();
+
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 1024 * 1024,
+            sync_mode: SyncMode::BatchSize(100),
+            write_buffer_size: 1000,
+            max_segments: 10,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_with_interval_sync() {
+        let dir = tempdir().unwrap();
+
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 1024 * 1024,
+            sync_mode: SyncMode::Interval(100),
+            write_buffer_size: 1000,
+            max_segments: 10,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_with_no_sync() {
+        let dir = tempdir().unwrap();
+
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 1024 * 1024,
+            sync_mode: SyncMode::None,
+            write_buffer_size: 1000,
+            max_segments: 10,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_small_segment_size() {
+        let dir = tempdir().unwrap();
+
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 4096, // Minimum valid size
+            sync_mode: SyncMode::Immediate,
+            write_buffer_size: 100,
+            max_segments: 5,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wal_manager_large_write_buffer() {
+        let dir = tempdir().unwrap();
+
+        let config = WalConfig {
+            directory: dir.path().to_path_buf(),
+            segment_size: 1024 * 1024,
+            sync_mode: SyncMode::Immediate,
+            write_buffer_size: 10000,
+            max_segments: 10,
+        };
+
+        let wal = WalManager::new(config).await;
+        assert!(wal.is_ok());
+    }
+
+    // ===== Cleanup tests =====
+
+    #[tokio::test]
+    async fn test_wal_manager_cleanup_no_segments() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        // Cleanup with no sealed segments
+        let removed = wal.cleanup(100).await.unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    // ===== Stats accumulation tests =====
+
+    #[tokio::test]
+    async fn test_wal_stats_multiple_syncs() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path());
+        let wal = WalManager::new(config).await.unwrap();
+
+        // Multiple syncs should accumulate
+        wal.sync().await.unwrap();
+        wal.sync().await.unwrap();
+        wal.sync().await.unwrap();
+
+        let stats = wal.stats();
+        assert_eq!(stats.syncs, 3);
+    }
 }

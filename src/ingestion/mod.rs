@@ -497,12 +497,49 @@ impl PipelineStats {
 mod tests {
     use super::*;
 
+    // ===== IngestionConfig tests =====
+
     #[test]
     fn test_ingestion_config_default() {
         let config = IngestionConfig::default();
         assert!(config.validate().is_ok());
         assert!(config.channel_buffer_size > 0);
+        assert_eq!(config.channel_buffer_size, 10_000);
     }
+
+    #[test]
+    fn test_ingestion_config_validation() {
+        let config = IngestionConfig {
+            channel_buffer_size: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("channel_buffer_size must be > 0"));
+    }
+
+    #[test]
+    fn test_ingestion_config_clone() {
+        let config = IngestionConfig {
+            channel_buffer_size: 5000,
+            ..Default::default()
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.channel_buffer_size, 5000);
+    }
+
+    #[test]
+    fn test_ingestion_config_debug() {
+        let config = IngestionConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("IngestionConfig"));
+        assert!(debug_str.contains("channel_buffer_size"));
+    }
+
+    // ===== IngestionConfigBuilder tests =====
 
     #[test]
     fn test_ingestion_config_builder() {
@@ -513,11 +550,239 @@ mod tests {
     }
 
     #[test]
-    fn test_ingestion_config_validation() {
-        let config = IngestionConfig {
-            channel_buffer_size: 0,
+    fn test_ingestion_config_builder_default() {
+        let builder = IngestionConfigBuilder::default();
+        let debug_str = format!("{:?}", builder);
+        assert!(debug_str.contains("IngestionConfigBuilder"));
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_batch() {
+        let batch_config = BatchConfig::default();
+        let config = IngestionConfig::builder()
+            .batch(batch_config)
+            .build()
+            .unwrap();
+
+        // Just verify it builds with custom batch config
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_buffer() {
+        let buffer_config = BufferConfig::default();
+        let config = IngestionConfig::builder()
+            .buffer(buffer_config)
+            .build()
+            .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_writer() {
+        let writer_config = WriterConfig::default();
+        let config = IngestionConfig::builder()
+            .writer(writer_config)
+            .build()
+            .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_backpressure() {
+        let bp_config = BackpressureConfig::default();
+        let config = IngestionConfig::builder()
+            .backpressure(bp_config)
+            .build()
+            .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_chaining() {
+        let config = IngestionConfig::builder()
+            .batch(BatchConfig::default())
+            .buffer(BufferConfig::default())
+            .writer(WriterConfig::default())
+            .backpressure(BackpressureConfig::default())
+            .channel_buffer_size(20000)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.channel_buffer_size, 20000);
+    }
+
+    #[test]
+    fn test_ingestion_config_builder_validation_fails() {
+        let config = IngestionConfig::builder().channel_buffer_size(0).build();
+
+        assert!(config.is_err());
+    }
+
+    // ===== PipelineStats tests =====
+
+    #[test]
+    fn test_pipeline_stats_default() {
+        let stats = PipelineStats::default();
+        assert_eq!(stats.points_received, 0);
+        assert_eq!(stats.points_written, 0);
+        assert_eq!(stats.points_rejected, 0);
+        assert_eq!(stats.batches_processed, 0);
+        assert_eq!(stats.buffer_size, 0);
+        assert_eq!(stats.active_series, 0);
+        assert!(!stats.backpressure_active);
+        assert_eq!(stats.memory_used_bytes, 0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_clone() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_written: 90,
+            points_rejected: 10,
+            batches_processed: 5,
+            buffer_size: 50,
+            active_series: 3,
+            backpressure_active: true,
+            memory_used_bytes: 1024,
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.points_received, 100);
+        assert_eq!(cloned.points_rejected, 10);
+        assert!(cloned.backpressure_active);
+    }
+
+    #[test]
+    fn test_pipeline_stats_debug() {
+        let stats = PipelineStats::default();
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("PipelineStats"));
+        assert!(debug_str.contains("points_received"));
+    }
+
+    #[test]
+    fn test_pipeline_stats_display() {
+        let stats = PipelineStats {
+            points_received: 1000,
+            points_written: 950,
+            points_rejected: 50,
+            batches_processed: 10,
+            buffer_size: 100,
+            active_series: 5,
+            backpressure_active: false,
+            memory_used_bytes: 2048,
+        };
+
+        let display = stats.to_string();
+        assert!(display.contains("received=1000"));
+        assert!(display.contains("written=950"));
+        assert!(display.contains("rejected=50"));
+        assert!(display.contains("batches=10"));
+        assert!(display.contains("buffered=100"));
+        assert!(display.contains("series=5"));
+        assert!(display.contains("backpressure=false"));
+        assert!(display.contains("memory=2048"));
+    }
+
+    #[test]
+    fn test_pipeline_stats_write_success_rate() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_written: 80,
             ..Default::default()
         };
-        assert!(config.validate().is_err());
+
+        assert!((stats.write_success_rate() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pipeline_stats_write_success_rate_zero_received() {
+        let stats = PipelineStats::default();
+        assert_eq!(stats.write_success_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_write_success_rate_all_written() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_written: 100,
+            ..Default::default()
+        };
+
+        assert_eq!(stats.write_success_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_rejection_rate() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_rejected: 20,
+            ..Default::default()
+        };
+
+        assert!((stats.rejection_rate() - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pipeline_stats_rejection_rate_zero_received() {
+        let stats = PipelineStats::default();
+        assert_eq!(stats.rejection_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_rejection_rate_no_rejections() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_rejected: 0,
+            ..Default::default()
+        };
+
+        assert_eq!(stats.rejection_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_rejection_rate_all_rejected() {
+        let stats = PipelineStats {
+            points_received: 100,
+            points_rejected: 100,
+            ..Default::default()
+        };
+
+        assert_eq!(stats.rejection_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_equality() {
+        let stats1 = PipelineStats {
+            points_received: 100,
+            points_written: 90,
+            ..Default::default()
+        };
+
+        let stats2 = PipelineStats {
+            points_received: 100,
+            points_written: 90,
+            ..Default::default()
+        };
+
+        let stats3 = PipelineStats {
+            points_received: 200,
+            points_written: 90,
+            ..Default::default()
+        };
+
+        assert_eq!(stats1, stats2);
+        assert_ne!(stats1, stats3);
+    }
+
+    // ===== Constant tests =====
+
+    #[test]
+    fn test_max_ingest_batch_size() {
+        assert_eq!(MAX_INGEST_BATCH_SIZE, 100_000);
     }
 }
