@@ -1839,11 +1839,9 @@ async fn init_database(
 fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
     if cors_origins.is_empty() {
         // Permissive CORS for development - allow any origin
+        // Using very_permissive() which properly handles preflight OPTIONS requests
         info!("CORS: Allowing all origins (development mode)");
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
-            .allow_headers(Any)
+        CorsLayer::very_permissive()
     } else {
         // Restrictive CORS for production - only allow specified origins
         info!("CORS: Restricting to {} allowed origins", cors_origins.len());
@@ -1856,6 +1854,7 @@ fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
             .allow_origin(origins)
             .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
             .allow_headers(Any)
+            .allow_credentials(false)
     }
 }
 
