@@ -70,11 +70,12 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use tower_http::cors::{Any, CorsLayer};
 use gorilla_tsdb::{
     compression::gorilla::GorillaCompressor,
     config::ApplicationConfig,
@@ -130,6 +131,9 @@ pub struct ServerConfig {
 
     /// Metrics histogram reset interval in seconds (0 = disabled)
     pub metrics_reset_interval_secs: u64,
+
+    /// CORS allowed origins (empty = allow all origins for development)
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -153,6 +157,7 @@ impl From<ApplicationConfig> for ServerConfig {
             subscription_cleanup_interval_secs: 300, // 5 minutes default
             subscription_max_age_secs: 3600,         // 1 hour default
             metrics_reset_interval_secs: 0,          // Disabled by default
+            cors_allowed_origins: app_config.security.cors_allowed_origins,
         }
     }
 }
@@ -1827,8 +1832,38 @@ async fn init_database(
     Ok((db, storage))
 }
 
+/// Build CORS layer from configuration
+///
+/// If cors_allowed_origins is empty, allows all origins (permissive for development).
+/// If cors_allowed_origins has entries, only those origins are allowed.
+fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
+    if cors_origins.is_empty() {
+        // Permissive CORS for development - allow any origin
+        info!("CORS: Allowing all origins (development mode)");
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+            .allow_headers(Any)
+    } else {
+        // Restrictive CORS for production - only allow specified origins
+        info!("CORS: Restricting to {} allowed origins", cors_origins.len());
+        let origins: Vec<HeaderValue> = cors_origins
+            .iter()
+            .filter_map(|origin| origin.parse::<HeaderValue>().ok())
+            .collect();
+
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+            .allow_headers(Any)
+    }
+}
+
 /// Build the router with all endpoints
 fn build_router(state: Arc<AppState>) -> Router {
+    // Build CORS layer from configuration
+    let cors = build_cors_layer(&state.config.cors_allowed_origins);
+
     Router::new()
         // Health and metrics
         .route("/health", get(health))
@@ -1842,6 +1877,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/series", post(register_series))
         .route("/api/v1/series/find", get(find_series))
         .route("/api/v1/stats", get(get_stats))
+        .layer(cors)
         .with_state(state)
 }
 
