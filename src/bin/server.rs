@@ -312,10 +312,21 @@ struct GroupedAggregationResult {
 }
 
 /// Single point in query response
+///
+/// Includes optional series identification for multi-series queries.
+/// When a SELECT query matches multiple series (e.g., same metric with different tags),
+/// the `series_id` and `tags` fields indicate which series each point belongs to.
 #[derive(Debug, Serialize)]
 struct QueryPoint {
     timestamp: i64,
     value: f64,
+    /// Series identifier (included in multi-series SELECT queries)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_id: Option<SeriesId>,
+    /// Tag key-value pairs for this series (e.g., {"host": "server1"})
+    /// Only populated when the index has tag metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<HashMap<String, String>>,
 }
 
 /// Register series request
@@ -1455,12 +1466,15 @@ async fn query_points(
                 }
             } else {
                 // Return raw points (with limit)
+                // Include series_id for consistency with SQL/PromQL endpoint
                 let response_points: Vec<QueryPoint> = points
                     .into_iter()
                     .take(params.limit)
                     .map(|p| QueryPoint {
                         timestamp: p.timestamp,
                         value: p.value,
+                        series_id: Some(p.series_id),
+                        tags: None, // Tags not yet fetched for basic query endpoint
                     })
                     .collect();
 
@@ -1816,21 +1830,24 @@ async fn execute_sql_promql_query(
             // Format results based on requested format
             let (data, csv_output) = match req.format.to_lowercase().as_str() {
                 "csv" => {
-                    // Generate CSV output
-                    let mut csv = String::from("timestamp,value\n");
+                    // Generate CSV output with series_id for multi-series queries
+                    let mut csv = String::from("timestamp,value,series_id\n");
                     for p in &points {
-                        csv.push_str(&format!("{},{}\n", p.timestamp, p.value));
+                        csv.push_str(&format!("{},{},{}\n", p.timestamp, p.value, p.series_id));
                     }
                     (None, Some(csv))
                 }
                 _ => {
                     // JSON output (default)
+                    // Include series_id so users can identify which series each point belongs to
+                    // This is essential for multi-series queries (same metric with different tags)
                     let json_points: Vec<serde_json::Value> = points
                         .iter()
                         .map(|p| {
                             serde_json::json!({
                                 "timestamp": p.timestamp,
-                                "value": p.value
+                                "value": p.value,
+                                "series_id": p.series_id
                             })
                         })
                         .collect();
