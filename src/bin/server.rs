@@ -75,7 +75,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tower_http::cors::{Any, CorsLayer};
 use gorilla_tsdb::{
     compression::gorilla::GorillaCompressor,
     config::ApplicationConfig,
@@ -92,6 +91,7 @@ use gorilla_tsdb::{
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::signal;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 
 // =============================================================================
@@ -1844,7 +1844,10 @@ fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
         CorsLayer::very_permissive()
     } else {
         // Restrictive CORS for production - only allow specified origins
-        info!("CORS: Restricting to {} allowed origins", cors_origins.len());
+        info!(
+            "CORS: Restricting to {} allowed origins",
+            cors_origins.len()
+        );
         let origins: Vec<HeaderValue> = cors_origins
             .iter()
             .filter_map(|origin| origin.parse::<HeaderValue>().ok())
@@ -1852,7 +1855,13 @@ fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
 
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
             .allow_headers(Any)
             .allow_credentials(false)
     }
