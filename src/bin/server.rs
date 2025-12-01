@@ -453,12 +453,12 @@ fn default_language() -> String {
     "auto".to_string()
 }
 
-/// Response from SQL/PromQL query execution (Datadog-compatible format)
+/// Response from SQL/PromQL query execution (Timeseries-compatible format)
 #[derive(Debug, Serialize)]
 struct SqlPromqlResponse {
     /// Response status ("ok" or "error")
     status: String,
-    /// Series data (Datadog-compatible format)
+    /// Series data (Timeseries-compatible format)
     /// Each entry has: metric, scope, tag_set, pointlist, length
     #[serde(skip_serializing_if = "Option::is_none")]
     series: Option<Vec<SeriesData>>,
@@ -493,10 +493,10 @@ struct SqlAggregationResult {
     groups: Option<Vec<GroupedAggregationResult>>,
 }
 
-/// Series data for chart visualization (Datadog-compatible format)
+/// Series data for chart visualization (Timeseries-compatible format)
 ///
 /// Each series represents a distinct time-series identified by its metric and tags.
-/// The pointlist format matches Datadog's API for easy frontend integration.
+/// The pointlist format matches Timeseries's API for easy frontend integration.
 #[derive(Debug, Serialize, Clone)]
 struct SeriesData {
     /// Metric name (e.g., "system.cpu.user")
@@ -505,7 +505,7 @@ struct SeriesData {
     scope: String,
     /// Tag set as array of "key:value" strings (e.g., ["host:server1", "region:us-east"])
     tag_set: Vec<String>,
-    /// Data points as [timestamp, value] pairs (Datadog pointlist format)
+    /// Data points as [timestamp, value] pairs (Timeseries pointlist format)
     pointlist: Vec<[f64; 2]>,
     /// Number of points in the series
     length: usize,
@@ -677,7 +677,7 @@ mod query_router {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Query each series separately and build Datadog-compatible series data
+        // Query each series separately and build Timeseries-compatible series data
         let mut series_data: Vec<SeriesData> = Vec::new();
         let mut all_points: Vec<DataPoint> = Vec::new();
 
@@ -706,7 +706,7 @@ mod query_router {
 
                     let length = pointlist.len();
 
-                    // Add to series data (Datadog-compatible format)
+                    // Add to series data (Timeseries-compatible format)
                     series_data.push(SeriesData {
                         metric: metric_name.clone(),
                         scope,

@@ -358,7 +358,7 @@ fn parse_vector_selector_inner(input: &str) -> IResult<&str, VectorSelectorResul
 
 /// Parse metric name
 fn parse_metric_name(input: &str) -> IResult<&str, &str> {
-    // Allow dots (.) in metric names to support Datadog-style naming (e.g., system.cpu)
+    // Allow dots (.) in metric names to support Timeseries-style naming (e.g., system.cpu)
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == ':' || c == '.')(input)
 }
 
