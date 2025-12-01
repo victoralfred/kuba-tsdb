@@ -465,6 +465,28 @@ impl TimeSeriesDB {
             .map_err(Error::Index)
     }
 
+    /// Get tags for multiple series in batch
+    ///
+    /// Efficiently fetches tag metadata for multiple series IDs.
+    /// Used for GROUP BY support and displaying series labels in charts.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_ids` - List of series IDs to fetch tags for
+    ///
+    /// # Returns
+    ///
+    /// HashMap mapping series_id -> tags (HashMap<String, String>)
+    pub async fn get_series_tags_batch(
+        &self,
+        series_ids: &[SeriesId],
+    ) -> Result<HashMap<SeriesId, HashMap<String, String>>> {
+        self.index
+            .get_series_tags_batch(series_ids)
+            .await
+            .map_err(Error::Index)
+    }
+
     /// Delete a series and all its data
     ///
     /// # Warning
