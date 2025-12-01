@@ -553,8 +553,11 @@ mod query_router {
             Some(id) => vec![id],
             None => {
                 // Look up series by measurement name using the index
+                // **FIX**: Use selector's tag filter instead of TagFilter::All
+                // This enables tag-based filtering from PromQL/SQL queries
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -603,11 +606,14 @@ mod query_router {
         lang: QueryLanguage,
     ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
         // Get series IDs
+        // **FIX**: Use selector's tag filter instead of TagFilter::All
+        // This enables tag-based filtering for aggregations like sum(cpu{host="h1"})
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -672,11 +678,14 @@ mod query_router {
         lang: QueryLanguage,
     ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
         // Get series IDs
+        // **FIX**: Use selector's tag filter instead of TagFilter::All
+        // This enables tag-based filtering for downsampled queries
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -721,11 +730,14 @@ mod query_router {
         lang: QueryLanguage,
     ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
         // Get series IDs
+        // **FIX**: Use selector's tag filter instead of TagFilter::All
+        // This enables tag-based filtering for latest value queries
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {

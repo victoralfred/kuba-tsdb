@@ -35,11 +35,34 @@ use nom::{
 
 use crate::query::ast::{
     AggregateQuery, Aggregation, AggregationFunction, FillStrategy, Query, SelectQuery,
-    SeriesSelector, WindowSpec, WindowType,
+    SeriesSelector, TagMatcher, WindowSpec, WindowType,
 };
 use crate::query::error::{QueryError, QueryResult};
 use crate::types::TimeRange;
 use std::time::Duration;
+
+// ============================================================================
+// Label Match Operators
+// ============================================================================
+
+/// PromQL label matching operators
+///
+/// Supports all four PromQL label matching semantics:
+/// - `=`  : Exact string equality
+/// - `!=` : String inequality
+/// - `=~` : Regex match
+/// - `!~` : Regex non-match
+#[derive(Debug, Clone, PartialEq)]
+pub enum LabelMatchOp {
+    /// Exact equality: label="value"
+    Equals,
+    /// Inequality: label!="value"
+    NotEquals,
+    /// Regex match: label=~"pattern"
+    RegexMatch,
+    /// Regex non-match: label!~"pattern"
+    RegexNotMatch,
+}
 
 /// Parse a PromQL query string into a Query AST
 pub fn parse_promql(input: &str) -> QueryResult<Query> {
@@ -83,8 +106,8 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
     let (input, _) = char('(')(input)?;
     let (input, _) = multispace0(input)?;
 
-    // Parse inner vector selector
-    let (input, (selector, range, _labels)) = parse_vector_selector_inner(input)?;
+    // Parse inner vector selector (labels are now included in selector)
+    let (input, (selector, range)) = parse_vector_selector_inner(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
@@ -179,8 +202,8 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
     let (input, _) = char('(')(input)?;
     let (input, _) = multispace0(input)?;
 
-    // Parse inner vector selector (must have range)
-    let (input, (selector, range, _labels)) = parse_vector_selector_inner(input)?;
+    // Parse inner vector selector (labels are now included in selector)
+    let (input, (selector, range)) = parse_vector_selector_inner(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
@@ -238,7 +261,8 @@ fn parse_rate_function(input: &str) -> IResult<&str, AggregationFunction> {
 
 /// Parse vector selector: `metric_name{labels}[range]`
 fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
-    let (input, (selector, range, _labels)) = parse_vector_selector_inner(input)?;
+    // Labels are now included in the selector (no longer returned separately)
+    let (input, (selector, range)) = parse_vector_selector_inner(input)?;
 
     // Parse optional offset
     let (input, offset) = opt(preceded(
@@ -286,9 +310,14 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
 }
 
 /// Parsed vector selector result type
-type VectorSelectorResult = (SeriesSelector, Option<Duration>, Vec<(String, String)>);
+/// Returns (selector_with_tags, optional_range) - labels are now integrated into selector
+type VectorSelectorResult = (SeriesSelector, Option<Duration>);
 
 /// Parse vector selector components
+///
+/// Parses metric name, label matchers, and optional range.
+/// **FIXED**: Labels are now properly added to the SeriesSelector's tag_filters
+/// instead of being returned separately and discarded by callers.
 #[allow(clippy::type_complexity)]
 fn parse_vector_selector_inner(input: &str) -> IResult<&str, VectorSelectorResult> {
     // Parse metric name
@@ -301,12 +330,30 @@ fn parse_vector_selector_inner(input: &str) -> IResult<&str, VectorSelectorResul
     // Parse optional range
     let (input, range) = opt(parse_range).parse(input)?;
 
-    // Build selector
-    let selector = SeriesSelector::by_measurement(metric_name).map_err(|_| {
+    // Build selector with tag filters from labels
+    let mut selector = SeriesSelector::by_measurement(metric_name).map_err(|_| {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
     })?;
 
-    Ok((input, (selector, range, labels)))
+    // **FIX**: Convert parsed labels to TagMatchers and add to selector
+    // Previously, labels were returned but never added to the selector
+    for (key, op, value) in labels {
+        let matcher = match op {
+            LabelMatchOp::Equals => TagMatcher::Equals { key, value },
+            LabelMatchOp::NotEquals => TagMatcher::NotEquals { key, value },
+            LabelMatchOp::RegexMatch => TagMatcher::Regex {
+                key,
+                pattern: value,
+            },
+            LabelMatchOp::RegexNotMatch => TagMatcher::NotRegex {
+                key,
+                pattern: value,
+            },
+        };
+        selector.tag_filters.push(matcher);
+    }
+
+    Ok((input, (selector, range)))
 }
 
 /// Parse metric name
@@ -315,8 +362,11 @@ fn parse_metric_name(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == ':' || c == '.')(input)
 }
 
-/// Parse label matchers: {label1="value1", label2="value2"}
-fn parse_label_matchers(input: &str) -> IResult<&str, Vec<(String, String)>> {
+/// Parse label matchers: {label1="value1", label2!="value2", label3=~"pattern"}
+///
+/// Parses the full label matcher block including all operators.
+/// Returns a list of (key, operator, value) tuples.
+fn parse_label_matchers(input: &str) -> IResult<&str, Vec<(String, LabelMatchOp, String)>> {
     delimited(
         (multispace0, char('{')),
         separated_list0((multispace0, char(','), multispace0), parse_label_matcher),
@@ -325,19 +375,31 @@ fn parse_label_matchers(input: &str) -> IResult<&str, Vec<(String, String)>> {
     .parse(input)
 }
 
-/// Parse single label matcher
-fn parse_label_matcher(input: &str) -> IResult<&str, (String, String)> {
+/// Parse single label matcher with operator
+///
+/// Captures the full label matcher including the operator type for proper
+/// tag filtering. Supports all four PromQL operators: =, !=, =~, !~
+///
+/// # Returns
+/// Tuple of (label_name, operator, value)
+fn parse_label_matcher(input: &str) -> IResult<&str, (String, LabelMatchOp, String)> {
     let (input, _) = multispace0(input)?;
     let (input, label) = parse_label_name(input)?;
     let (input, _) = multispace0(input)?;
 
-    // Parse operator
-    let (input, _op) = alt((tag("=~"), tag("!~"), tag("!="), tag("="))).parse(input)?;
+    // Parse operator and CAPTURE it (fix for BUG: operator was discarded)
+    let (input, op) = alt((
+        value(LabelMatchOp::RegexMatch, tag("=~")),
+        value(LabelMatchOp::RegexNotMatch, tag("!~")),
+        value(LabelMatchOp::NotEquals, tag("!=")),
+        value(LabelMatchOp::Equals, tag("=")),
+    ))
+    .parse(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, val) = parse_string_value(input)?;
 
-    Ok((input, (label.to_string(), val.to_string())))
+    Ok((input, (label.to_string(), op, val.to_string())))
 }
 
 /// Parse label name
@@ -434,6 +496,7 @@ fn current_time_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::ast::TagMatcher;
 
     #[test]
     fn test_parse_simple_metric() {
@@ -451,12 +514,102 @@ mod tests {
     fn test_parse_metric_with_labels() {
         let result = parse_promql("cpu_usage{host=\"server01\"}");
         assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Select(q) => {
+                // **NEW TEST**: Verify labels are now added to selector
+                assert_eq!(q.selector.tag_filters.len(), 1);
+                match &q.selector.tag_filters[0] {
+                    TagMatcher::Equals { key, value } => {
+                        assert_eq!(key, "host");
+                        assert_eq!(value, "server01");
+                    }
+                    _ => panic!("Expected Equals matcher"),
+                }
+            }
+            _ => panic!("Expected Select query"),
+        }
     }
 
     #[test]
     fn test_parse_metric_with_multiple_labels() {
         let result = parse_promql("cpu_usage{host=\"server01\", region=\"us-east\"}");
         assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Select(q) => {
+                // **NEW TEST**: Verify multiple labels are added to selector
+                assert_eq!(q.selector.tag_filters.len(), 2);
+            }
+            _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_parse_label_operators() {
+        // Test all four label operators: =, !=, =~, !~
+
+        // Test equality (=)
+        let result = parse_promql("cpu{host=\"server01\"}");
+        assert!(result.is_ok());
+        if let Query::Select(q) = result.unwrap() {
+            assert!(matches!(
+                &q.selector.tag_filters[0],
+                TagMatcher::Equals { .. }
+            ));
+        }
+
+        // Test inequality (!=)
+        let result = parse_promql("cpu{host!=\"server01\"}");
+        assert!(result.is_ok());
+        if let Query::Select(q) = result.unwrap() {
+            assert!(matches!(
+                &q.selector.tag_filters[0],
+                TagMatcher::NotEquals { .. }
+            ));
+        }
+
+        // Test regex match (=~)
+        let result = parse_promql("cpu{host=~\"server.*\"}");
+        assert!(result.is_ok());
+        if let Query::Select(q) = result.unwrap() {
+            match &q.selector.tag_filters[0] {
+                TagMatcher::Regex { key, pattern } => {
+                    assert_eq!(key, "host");
+                    assert_eq!(pattern, "server.*");
+                }
+                _ => panic!("Expected Regex matcher"),
+            }
+        }
+
+        // Test regex non-match (!~)
+        let result = parse_promql("cpu{host!~\"test.*\"}");
+        assert!(result.is_ok());
+        if let Query::Select(q) = result.unwrap() {
+            assert!(matches!(
+                &q.selector.tag_filters[0],
+                TagMatcher::NotRegex { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn test_aggregation_preserves_labels() {
+        // Verify labels are preserved in aggregation queries
+        let result = parse_promql("sum(http_requests{status=\"200\", method=\"GET\"})");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Aggregate(q) => {
+                assert_eq!(q.selector.tag_filters.len(), 2);
+                // Verify the first filter
+                match &q.selector.tag_filters[0] {
+                    TagMatcher::Equals { key, value } => {
+                        assert_eq!(key, "status");
+                        assert_eq!(value, "200");
+                    }
+                    _ => panic!("Expected Equals matcher"),
+                }
+            }
+            _ => panic!("Expected Aggregate query"),
+        }
     }
 
     #[test]

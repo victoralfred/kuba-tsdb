@@ -674,6 +674,19 @@ impl SeriesSelector {
     }
 
     /// Convert to TagFilter for index lookup
+    ///
+    /// Extracts only `Equals` matchers for use with Redis SINTER index lookup.
+    /// Non-equality matchers (!=, =~, !~) require post-filtering after index lookup.
+    ///
+    /// Returns `TagFilter::All` if no exact matches are specified, which is more
+    /// efficient than an empty `TagFilter::Exact` (avoids unnecessary SINTER call).
+    ///
+    /// # Example
+    /// ```
+    /// // cpu{host="server01", region=~"us-.*"}
+    /// // -> TagFilter::Exact({host: "server01"})
+    /// // Note: region filter requires post-filtering
+    /// ```
     pub fn to_tag_filter(&self) -> TagFilter {
         let mut filters = HashMap::new();
         for matcher in &self.tag_filters {
@@ -681,7 +694,24 @@ impl SeriesSelector {
                 filters.insert(key.clone(), value.clone());
             }
         }
-        TagFilter::Exact(filters)
+
+        // **FIX**: Return All when no exact matches (more efficient)
+        // An empty Exact filter would still trigger SINTER with no keys
+        if filters.is_empty() {
+            TagFilter::All
+        } else {
+            TagFilter::Exact(filters)
+        }
+    }
+
+    /// Check if this selector has non-equality matchers that require post-filtering
+    ///
+    /// When true, results from `find_series()` must be filtered again using
+    /// `matches_series()` to apply NotEquals, Regex, and NotRegex matchers.
+    pub fn requires_post_filter(&self) -> bool {
+        self.tag_filters
+            .iter()
+            .any(|m| !matches!(m, TagMatcher::Equals { .. }))
     }
 }
 
@@ -1214,6 +1244,63 @@ mod tests {
             }
             _ => panic!("Expected Exact filter"),
         }
+    }
+
+    #[test]
+    fn test_to_tag_filter_returns_all_when_empty() {
+        // When no Equals matchers exist, should return TagFilter::All
+        let selector = SeriesSelector::by_measurement("cpu").unwrap();
+
+        let filter = selector.to_tag_filter();
+        assert!(matches!(filter, TagFilter::All));
+    }
+
+    #[test]
+    fn test_to_tag_filter_ignores_non_equals() {
+        // Non-equality matchers should not be included in TagFilter
+        // They require post-filtering
+        let mut selector = SeriesSelector::by_measurement("cpu").unwrap();
+        selector.tag_filters.push(TagMatcher::NotEquals {
+            key: "env".to_string(),
+            value: "test".to_string(),
+        });
+        selector.tag_filters.push(TagMatcher::Regex {
+            key: "host".to_string(),
+            pattern: "server.*".to_string(),
+        });
+
+        // Should return All because no Equals matchers
+        let filter = selector.to_tag_filter();
+        assert!(matches!(filter, TagFilter::All));
+
+        // Should require post-filtering
+        assert!(selector.requires_post_filter());
+    }
+
+    #[test]
+    fn test_mixed_matchers_only_includes_equals() {
+        let mut selector = SeriesSelector::by_measurement("cpu")
+            .unwrap()
+            .with_tag("dc", "us-east");
+        selector.tag_filters.push(TagMatcher::NotEquals {
+            key: "env".to_string(),
+            value: "test".to_string(),
+        });
+
+        let filter = selector.to_tag_filter();
+        match filter {
+            TagFilter::Exact(tags) => {
+                // Only the Equals matcher should be included
+                assert_eq!(tags.len(), 1);
+                assert_eq!(tags.get("dc"), Some(&"us-east".to_string()));
+                // NotEquals should not be in the filter
+                assert!(!tags.contains_key("env"));
+            }
+            _ => panic!("Expected Exact filter"),
+        }
+
+        // Should still require post-filtering for NotEquals
+        assert!(selector.requires_post_filter());
     }
 
     #[test]
