@@ -505,14 +505,25 @@ pub async fn query_points(
 // SQL/PromQL Query Handler
 // =============================================================================
 
-/// Execute SQL or PromQL query
+/// Execute SQL or PromQL query with result caching
+///
+/// SELECT queries are cached based on their AST hash. Cache hits
+/// return immediately without database access.
 pub async fn execute_sql_promql_query(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SqlPromqlRequest>,
 ) -> impl IntoResponse {
     info!(query = %req.query, language = %req.language, "Executing SQL/PromQL query");
 
-    match query_router::execute_query(&state.db, &req.query, &req.language).await {
+    // Execute with caching enabled
+    match query_router::execute_query_with_cache(
+        &state.db,
+        &req.query,
+        &req.language,
+        Some(&state.query_cache),
+    )
+    .await
+    {
         Ok((language, query_type, _points, agg_execution_result, series_data)) => {
             let (from_date, to_date) = series_data
                 .as_ref()
