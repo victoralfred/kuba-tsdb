@@ -53,7 +53,10 @@ use gorilla_tsdb::{
         CacheConfig as QueryCacheConfig, QueryCache,
         subscription::{SubscriptionConfig, SubscriptionManager},
     },
-    redis::{RedisConfig as RedisPoolConfig, RedisTimeIndex},
+    redis::{
+        setup_cache_invalidation, InvalidationPublisher, RedisConfig as RedisPoolConfig,
+        RedisTimeIndex,
+    },
     storage::LocalDiskEngine,
 };
 use handlers::AppState;
@@ -298,6 +301,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_cache = Arc::new(QueryCache::new(query_cache_config));
     info!("Query result cache initialized (128 MB max, 60s TTL)");
 
+    // Set up Redis Pub/Sub cache invalidation if Redis is enabled
+    // This enables cross-node cache coherence in multi-instance deployments
+    let invalidation_publisher = if app_config.redis.enabled {
+        // Set up the subscriber (listens for invalidation events from other nodes)
+        match setup_cache_invalidation(&app_config.redis.url, query_cache.clone()).await {
+            Ok(_subscriber) => {
+                info!("Redis Pub/Sub cache invalidation subscriber enabled");
+            }
+            Err(e) => {
+                // Non-fatal: local invalidation still works, just no cross-node sync
+                tracing::warn!(
+                    error = %e,
+                    "Failed to set up Redis Pub/Sub subscriber, continuing with local-only invalidation"
+                );
+            }
+        }
+
+        // Set up the publisher (publishes invalidation events on writes)
+        match InvalidationPublisher::new(&app_config.redis.url) {
+            Ok(publisher) => {
+                info!("Redis Pub/Sub cache invalidation publisher enabled");
+                Some(publisher)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to create Redis Pub/Sub publisher, writes will not notify other nodes"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create app state
     let state = Arc::new(AppState {
         db,
@@ -305,6 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config.clone(),
         subscriptions,
         query_cache,
+        invalidation_publisher,
     });
 
     // Build router

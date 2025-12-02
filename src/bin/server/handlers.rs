@@ -22,6 +22,7 @@ use axum::{
 use gorilla_tsdb::engine::TimeSeriesDB;
 use gorilla_tsdb::query::subscription::SubscriptionManager;
 use gorilla_tsdb::query::SharedQueryCache;
+use gorilla_tsdb::redis::InvalidationPublisher;
 use gorilla_tsdb::storage::LocalDiskEngine;
 use gorilla_tsdb::types::{DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
@@ -47,6 +48,9 @@ pub struct AppState {
     pub subscriptions: Arc<SubscriptionManager>,
     /// Query result cache for reducing query latency
     pub query_cache: SharedQueryCache,
+    /// Optional Pub/Sub publisher for cross-node cache invalidation
+    /// Present when Redis is enabled and Pub/Sub setup succeeds
+    pub invalidation_publisher: Option<InvalidationPublisher>,
 }
 
 // =============================================================================
@@ -299,6 +303,28 @@ pub async fn write_points(
         Ok(chunk_id) => {
             // Invalidate any cached queries for this series to ensure freshness
             state.query_cache.invalidate_series(series_id);
+
+            // Publish invalidation event to Redis for cross-node cache coherence
+            if let Some(ref publisher) = state.invalidation_publisher {
+                let metric = req.metric.as_deref().unwrap_or("unknown");
+                let tags: Vec<String> = req
+                    .tags
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", k, v))
+                    .collect();
+
+                // Fire-and-forget: don't block the write response on Pub/Sub
+                let publisher = publisher.clone();
+                let metric = metric.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = publisher
+                        .publish_series_write(series_id, &metric, &tags)
+                        .await
+                    {
+                        warn!(error = %e, series_id = series_id, "Failed to publish cache invalidation");
+                    }
+                });
+            }
 
             (
                 StatusCode::OK,

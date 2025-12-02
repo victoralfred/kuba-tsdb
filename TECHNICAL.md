@@ -192,6 +192,13 @@ tsdb_query_cache_evictions
 tsdb_query_cache_invalidations
 ```
 
+### Cross-Node Cache Invalidation (Pub/Sub)
+When Redis is enabled, the server uses Redis Pub/Sub for cross-node cache coherence:
+- **Publisher**: Fires on every write, notifying other nodes
+- **Subscriber**: Listens for invalidation events and clears local cache
+- **Channels**: `tsdb:invalidate:series`, `tsdb:invalidate:chunk`, `tsdb:invalidate:metadata`
+- **Non-blocking**: Write operations don't wait for Pub/Sub
+
 ## Redis Integration
 
 Full-featured Redis-based time-series indexing:
