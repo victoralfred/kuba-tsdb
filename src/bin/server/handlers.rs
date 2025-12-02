@@ -20,6 +20,8 @@ use axum::{
     Json,
 };
 use gorilla_tsdb::engine::TimeSeriesDB;
+use gorilla_tsdb::query::ast::{Query as AstQuery, SelectQuery, SeriesSelector};
+use gorilla_tsdb::query::result::QueryResult;
 use gorilla_tsdb::query::subscription::SubscriptionManager;
 use gorilla_tsdb::query::SharedQueryCache;
 use gorilla_tsdb::redis::InvalidationPublisher;
@@ -356,7 +358,10 @@ pub async fn write_points(
 // Query Handlers
 // =============================================================================
 
-/// Query data points (REST API)
+/// Query data points (REST API) with result caching
+///
+/// Results are cached based on (series_id, time_range, limit) for 60 seconds.
+/// Cache is automatically invalidated when data is written to the series.
 pub async fn query_points(
     State(state): State<Arc<AppState>>,
     Query(params): Query<QueryParams>,
@@ -437,11 +442,77 @@ pub async fn query_points(
         },
     };
 
+    // Build a Query AST for cache key generation
+    let select_query =
+        SelectQuery::new(SeriesSelector::by_id(series_id), time_range).with_limit(params.limit);
+    let cache_query = AstQuery::Select(select_query);
+
+    // Check cache first
+    if let Some(cached_result) = state.query_cache.get(&cache_query) {
+        tracing::debug!(series_id = series_id, "REST API query cache hit");
+
+        // Convert cached result back to response
+        let points: Vec<QueryPoint> = match cached_result.data {
+            gorilla_tsdb::query::result::ResultData::Rows(rows) => rows
+                .iter()
+                .map(|r| QueryPoint {
+                    timestamp: r.timestamp,
+                    value: r.value,
+                    series_id: None,
+                    tags: None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+
+        // Apply aggregation if requested (on cached data)
+        if let Some(ref agg_func) = params.aggregation {
+            let data_points: Vec<DataPoint> = points
+                .iter()
+                .map(|p| DataPoint::new(series_id, p.timestamp, p.value))
+                .collect();
+            if let Some(agg_value) = compute_aggregation(agg_func, &data_points) {
+                return (
+                    StatusCode::OK,
+                    Json(QueryResponse {
+                        success: true,
+                        series_id: Some(series_id),
+                        points: vec![],
+                        aggregation: Some(AggregationResult {
+                            function: agg_func.clone(),
+                            value: agg_value,
+                            point_count: points.len(),
+                            groups: None,
+                        }),
+                        error: None,
+                    }),
+                );
+            }
+        }
+
+        return (
+            StatusCode::OK,
+            Json(QueryResponse {
+                success: true,
+                series_id: Some(series_id),
+                points,
+                aggregation: None,
+                error: None,
+            }),
+        );
+    }
+
+    // Cache miss - execute query
     match state.db.query(series_id, time_range).await {
         Ok(mut points) => {
             points.sort_by_key(|p| p.timestamp);
             let total_points = points.len();
             points.truncate(params.limit);
+
+            // Cache the result
+            let cache_result = QueryResult::from_points(points.clone());
+            state.query_cache.put(&cache_query, cache_result);
+            tracing::debug!(series_id = series_id, "REST API query cached");
 
             // Apply aggregation if requested
             if let Some(ref agg_func) = params.aggregation {
