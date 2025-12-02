@@ -1,4 +1,4 @@
-name: "Snyk Code Scan"
+name: Snyk Code Scan
 
 on:
   push:
@@ -17,17 +17,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust (optional for Snyk Code)
-        uses: tj-actions/changed-files@c65cd883420fd2eb864698a825fc4162dd94482c # v44
-
       - name: Install Snyk CLI
-        run: |
-          curl -sL https://snyk.io/install.sh | bash
-          echo "${HOME}/.snyk" >> $GITHUB_PATH
+        uses: snyk/actions/setup@v4
 
-      - name: Run Snyk Code Scan
+      - name: Add Snyk to PATH
+        run: echo "${HOME}/.snyk" >> $GITHUB_PATH
+
+      - name: Run Snyk Code scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           snyk code test --json > snyk-report.json
-          snyk code test  # human readable
+          snyk code test
+      - name: Upload Snyk Code report
+        uses: actions/upload-artifact@v3
+        with:
+          name: snyk-code-report
