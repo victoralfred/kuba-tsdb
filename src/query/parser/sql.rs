@@ -356,9 +356,9 @@ fn parse_where_clause(input: &str) -> IResult<&str, WhereClauseResult> {
         }
     }
 
-    let now = current_time_nanos();
+    let now = current_time_ms();
     let time_range = TimeRange {
-        start: start_time.unwrap_or(now - 3_600_000_000_000),
+        start: start_time.unwrap_or(now - 3_600_000), // Default: 1 hour ago in ms
         end: end_time.unwrap_or(now),
     };
 
@@ -427,9 +427,9 @@ fn parse_relative_time(input: &str) -> IResult<&str, i64> {
     ))
     .parse(input)?;
 
-    let now = current_time_nanos();
+    let now = current_time_ms();
     let result = if let Some(duration) = offset {
-        now - (duration.as_nanos() as i64)
+        now - (duration.as_millis() as i64)
     } else {
         now
     };
@@ -664,19 +664,19 @@ fn parse_string_literal(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-/// Get current time in nanoseconds
-fn current_time_nanos() -> i64 {
+/// Get current time in milliseconds (matches database storage format)
+fn current_time_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as i64
+        .as_millis() as i64
 }
 
-/// Get default time range (last hour)
+/// Get default time range (last hour) in milliseconds
 fn default_time_range() -> TimeRange {
-    let now = current_time_nanos();
+    let now = current_time_ms();
     TimeRange {
-        start: now - 3_600_000_000_000,
+        start: now - 3_600_000, // 1 hour in milliseconds
         end: now,
     }
 }

@@ -33,9 +33,14 @@ pub struct WriteRequest {
 }
 
 /// Single point in write request
+///
+/// Both `timestamp` and `value` are required fields.
+/// The value must be a valid JSON number (not null or string).
 #[derive(Debug, Deserialize)]
 pub struct WritePoint {
+    /// Unix timestamp in milliseconds
     pub timestamp: i64,
+    /// Numeric value (required, must be a valid number)
     pub value: f64,
 }
 
