@@ -18,7 +18,7 @@ use super::aggregation::{
 use super::types::{AggregateExecutionResult, GroupedAggregationResult, SeriesData};
 use gorilla_tsdb::engine::TimeSeriesDB;
 use gorilla_tsdb::query::ast::{AggregateQuery, DownsampleQuery, LatestQuery, SelectQuery};
-use gorilla_tsdb::query::result::{QueryResult, ResultData, SeriesResult};
+use gorilla_tsdb::query::result::{QueryResult, ResultData, ResultRow, SeriesResult};
 use gorilla_tsdb::query::SharedQueryCache;
 use gorilla_tsdb::query::{
     parse_promql, parse_sql, AggregationFunction as QueryAggFunction, Query as ParsedQuery,
@@ -146,14 +146,40 @@ pub async fn execute_query_with_cache(
         }
         ParsedQuery::Aggregate(q) => {
             let (lang, qtype, points, agg_result) = execute_aggregate(db, q.clone(), lang).await?;
+
+            // Cache aggregate results (they're expensive to compute)
+            if let Some(query_cache) = cache {
+                let query_result = QueryResult::from_rows(
+                    points.iter().map(|p| ResultRow::from(*p)).collect(),
+                );
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached AGGREGATE query result");
+            }
+
             Ok((lang, qtype, points, Some(agg_result), None))
         }
         ParsedQuery::Downsample(q) => {
             let (lang, qtype, points) = execute_downsample(db, q.clone(), lang).await?;
+
+            // Cache downsample results
+            if let Some(query_cache) = cache {
+                let query_result = QueryResult::from_points(points.clone());
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached DOWNSAMPLE query result");
+            }
+
             Ok((lang, qtype, points, None, None))
         }
         ParsedQuery::Latest(q) => {
             let (lang, qtype, points) = execute_latest(db, q.clone(), lang).await?;
+
+            // Cache latest results (short TTL would be ideal, but using default)
+            if let Some(query_cache) = cache {
+                let query_result = QueryResult::from_points(points.clone());
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached LATEST query result");
+            }
+
             Ok((lang, qtype, points, None, None))
         }
         ParsedQuery::Explain(_inner) => Ok((lang, "explain".to_string(), vec![], None, None)),
