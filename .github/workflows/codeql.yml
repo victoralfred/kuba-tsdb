@@ -40,7 +40,7 @@ jobs:
       # Rust toolchain - only needed for Rust
       - name: Install Rust toolchain
         if: matrix.language == 'rust'
-        uses: dtolnay/rust-toolchain@stable
+        uses: tj-actions/changed-files@c65cd883420fd2eb864698a825fc4162dd94482c # v44
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
