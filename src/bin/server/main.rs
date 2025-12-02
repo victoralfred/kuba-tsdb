@@ -49,7 +49,10 @@ use gorilla_tsdb::{
     compression::gorilla::GorillaCompressor,
     config::ApplicationConfig,
     engine::{DatabaseConfig, TimeSeriesDBBuilder},
-    query::subscription::{SubscriptionConfig, SubscriptionManager},
+    query::{
+        CacheConfig as QueryCacheConfig, QueryCache,
+        subscription::{SubscriptionConfig, SubscriptionManager},
+    },
     redis::{RedisConfig as RedisPoolConfig, RedisTimeIndex},
     storage::LocalDiskEngine,
 };
@@ -289,12 +292,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let subscriptions = Arc::new(SubscriptionManager::new(subscription_config));
 
+    // Create query result cache with default configuration
+    // 128 MB max size, 10K max entries, 60s TTL
+    let query_cache_config = QueryCacheConfig::default();
+    let query_cache = Arc::new(QueryCache::new(query_cache_config));
+    info!("Query result cache initialized (128 MB max, 60s TTL)");
+
     // Create app state
     let state = Arc::new(AppState {
         db,
         storage,
         config: config.clone(),
         subscriptions,
+        query_cache,
     });
 
     // Build router

@@ -1,7 +1,14 @@
-# Build artifacts
+# ==============================================================================
+# Docker Build Context Exclusions
+# Minimizes build context size for faster builds and smaller layers
+# ==============================================================================
+
+# Build artifacts (Rust/Cargo)
 target/
 debug/
 release/
+*.rlib
+*.rmeta
 
 # IDE and editor files
 .idea/
@@ -9,29 +16,64 @@ release/
 *.swp
 *.swo
 *~
+.*.sw?
 
-# Git
+# Version control
 .git/
 .gitignore
+.gitattributes
 
-# Documentation (not needed in image)
+# Documentation (not needed in production image)
 *.md
+!README.md
 docs/
 
 # Test files and coverage
 coverage/
 *.profraw
 *.profdata
+tarpaulin-report.html
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.bak
+*.old
 
-# OS files
+# OS-specific files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Rust specific
 **/*.rs.bk
 Cargo.lock.bak
+
+# Docker files (prevent recursive context)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Monitoring and deployment configs (not needed in image)
+monitoring/
+*.sh
+
+# GitHub specific
+.github/
+
+# Local configuration (may contain secrets)
+*.local
+*.local.*
+.env
+.env.*
+!.env.example
+
+# Benchmark results
+*.bench
+criterion/
+
+# Application data (should be mounted as volume)
+data/
+*.db
+*.wal

@@ -165,6 +165,33 @@ pub enum CompressionType {
 }
 ```
 
+## Caching Architecture
+
+Multi-tier caching for optimal performance:
+
+### Storage Cache (Chunk Data)
+- **Sharded LRU**: 16 shards for lock contention reduction
+- **Watermark Eviction**: High/low watermarks (90%/70%) for smooth eviction
+- **256 MB Default**: Configurable via `[cache]` section
+- **Background Eviction**: Non-blocking eviction thread
+
+### Query Result Cache
+- **LRU + TTL**: Combined eviction strategy
+- **128 MB / 10K entries**: Default limits
+- **60-second TTL**: Configurable freshness
+- **Series-based Invalidation**: Automatic cache invalidation on writes
+- **Hit/Miss Statistics**: Exposed via `/api/v1/stats` and Prometheus metrics
+
+### Cache Metrics (Prometheus)
+```
+tsdb_query_cache_hits
+tsdb_query_cache_misses
+tsdb_query_cache_entries
+tsdb_query_cache_size_bytes
+tsdb_query_cache_evictions
+tsdb_query_cache_invalidations
+```
+
 ## Redis Integration
 
 Full-featured Redis-based time-series indexing:
@@ -237,11 +264,18 @@ scan_interval_seconds = 300
 max_chunks_per_scan = 100
 
 [cache]
+# Storage cache (chunk data)
 max_size_bytes = 268435456      # 256MB
 num_shards = 16
 low_watermark = 0.7
 high_watermark = 0.9
 eviction_interval_ms = 1000
+
+# Query result cache is built-in with defaults:
+# - max_size_bytes = 128MB
+# - max_entries = 10,000
+# - default_ttl = 60 seconds
+# - Automatic invalidation on writes
 
 [security]
 rate_limit_points_per_sec = 10000000
