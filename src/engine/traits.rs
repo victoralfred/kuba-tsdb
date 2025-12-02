@@ -270,6 +270,33 @@ pub trait TimeIndex: Send + Sync + 'static {
         tag_filter: &TagFilter,
     ) -> Result<Vec<SeriesId>, IndexError>;
 
+    /// Get tags for multiple series in a batch operation
+    ///
+    /// This method is essential for GROUP BY support. It efficiently fetches
+    /// tag metadata for multiple series, enabling grouping of aggregation
+    /// results by tag values.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_ids` - List of series IDs to fetch tags for
+    ///
+    /// # Returns
+    ///
+    /// HashMap mapping series_id -> tags (HashMap<String, String>)
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns empty tags for all series. Index backends should override
+    /// this with an efficient batch implementation.
+    async fn get_series_tags_batch(
+        &self,
+        series_ids: &[SeriesId],
+    ) -> Result<HashMap<SeriesId, HashMap<String, String>>, IndexError> {
+        // Default implementation returns empty tags for each series
+        // Redis implementation overrides with efficient batch fetch
+        Ok(series_ids.iter().map(|&id| (id, HashMap::new())).collect())
+    }
+
     /// Update chunk status
     async fn update_chunk_status(
         &self,

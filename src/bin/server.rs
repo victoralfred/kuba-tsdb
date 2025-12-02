@@ -286,17 +286,45 @@ struct QueryResponse {
 struct AggregationResult {
     /// Name of the aggregation function applied
     function: String,
-    /// Computed aggregation value
+    /// Computed aggregation value (scalar result when no GROUP BY)
     value: f64,
     /// Number of points used in the aggregation
+    point_count: usize,
+    /// Grouped results (only present when GROUP BY is used)
+    /// Each group contains tag values and the aggregated result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    groups: Option<Vec<GroupedAggregationResult>>,
+}
+
+/// Result for a single group in a GROUP BY aggregation (Timeseries-compatible)
+#[derive(Debug, Serialize, Clone)]
+struct GroupedAggregationResult {
+    /// Scope string (e.g., "host:server1,region:us-east")
+    scope: String,
+    /// Tag set as array of "key:value" strings
+    tag_set: Vec<String>,
+    /// Aggregated value for this group
+    value: f64,
+    /// Number of points in this group
     point_count: usize,
 }
 
 /// Single point in query response
+///
+/// Includes optional series identification for multi-series queries.
+/// When a SELECT query matches multiple series (e.g., same metric with different tags),
+/// the `series_id` and `tags` fields indicate which series each point belongs to.
 #[derive(Debug, Serialize)]
 struct QueryPoint {
     timestamp: i64,
     value: f64,
+    /// Series identifier (included in multi-series SELECT queries)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_id: Option<SeriesId>,
+    /// Tag key-value pairs for this series (e.g., {"host": "server1"})
+    /// Only populated when the index has tag metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<HashMap<String, String>>,
 }
 
 /// Register series request
@@ -405,8 +433,9 @@ struct SqlPromqlRequest {
     #[serde(alias = "q")]
     query: String,
 
-    /// Output format: "json" (default), "csv", or "table"
+    /// Output format: "json" (default) - reserved for future CSV support
     #[serde(default = "default_format")]
+    #[allow(dead_code)]
     format: String,
 
     /// Force a specific query language: "sql", "promql", or "auto" (default)
@@ -422,31 +451,30 @@ fn default_language() -> String {
     "auto".to_string()
 }
 
-/// Response from SQL/PromQL query execution
+/// Response from SQL/PromQL query execution (Timeseries-compatible format)
 #[derive(Debug, Serialize)]
 struct SqlPromqlResponse {
-    success: bool,
-    /// Detected query language
+    /// Response status ("ok" or "error")
+    status: String,
+    /// Series data (Timeseries-compatible format)
+    /// Each entry has: metric, scope, tag_set, pointlist, length
     #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
+    series: Option<Vec<SeriesData>>,
+    /// Start of time range (milliseconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_date: Option<i64>,
+    /// End of time range (milliseconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to_date: Option<i64>,
     /// Query type (select, aggregate, downsample, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     query_type: Option<String>,
-    /// Number of rows returned
+    /// Detected query language
     #[serde(skip_serializing_if = "Option::is_none")]
-    row_count: Option<usize>,
-    /// Result data (format depends on output format)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<serde_json::Value>,
-    /// CSV output (only if format=csv)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    csv: Option<String>,
+    language: Option<String>,
     /// Aggregation result (for aggregate queries)
     #[serde(skip_serializing_if = "Option::is_none")]
     aggregation: Option<SqlAggregationResult>,
-    /// Warnings from query execution
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    warnings: Vec<String>,
     /// Error message if failed
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -458,6 +486,27 @@ struct SqlAggregationResult {
     function: String,
     value: f64,
     point_count: usize,
+    /// Grouped results (only present when GROUP BY is used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    groups: Option<Vec<GroupedAggregationResult>>,
+}
+
+/// Series data for chart visualization (Timeseries-compatible format)
+///
+/// Each series represents a distinct time-series identified by its metric and tags.
+/// The pointlist format matches Timeseries's API for easy frontend integration.
+#[derive(Debug, Serialize, Clone)]
+struct SeriesData {
+    /// Metric name (e.g., "system.cpu.user")
+    metric: String,
+    /// Human-readable scope string (e.g., "host:server1,region:us-east")
+    scope: String,
+    /// Tag set as array of "key:value" strings (e.g., ["host:server1", "region:us-east"])
+    tag_set: Vec<String>,
+    /// Data points as [timestamp, value] pairs (Timeseries pointlist format)
+    pointlist: Vec<[f64; 2]>,
+    /// Number of points in the series
+    length: usize,
 }
 
 // =============================================================================
@@ -492,11 +541,31 @@ mod query_router {
     /// Execute a query string against the database
     ///
     /// Auto-detects the query language and routes to appropriate parser.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - `QueryLanguage`: Detected query language
+    /// - `String`: Query type (select, aggregate, etc.)
+    /// - `Vec<DataPoint>`: Raw data points (for backward compatibility)
+    /// - `Option<(String, f64)>`: Scalar aggregation result
+    /// - `Option<Vec<GroupedAggregationResult>>`: GROUP BY aggregation results
+    /// - `Option<Vec<SeriesData>>`: Series-grouped data for SELECT queries (for charts)
     pub async fn execute_query(
         db: &TimeSeriesDB,
         query_str: &str,
         language: &str,
-    ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
+    ) -> Result<
+        (
+            QueryLanguage,
+            String,
+            Vec<DataPoint>,
+            Option<(String, f64)>,
+            Option<Vec<GroupedAggregationResult>>,
+            Option<Vec<SeriesData>>,
+        ),
+        String,
+    > {
         // Detect and parse query
         let (parsed, lang) = match language.to_lowercase().as_str() {
             "sql" => {
@@ -523,14 +592,28 @@ mod query_router {
         };
 
         // Execute based on query type
+        // Note: Only Aggregate returns grouped results (5th element)
+        // Note: Only Select returns series data (6th element)
         match parsed {
-            ParsedQuery::Select(q) => execute_select(db, q, lang).await,
-            ParsedQuery::Aggregate(q) => execute_aggregate(db, q, lang).await,
-            ParsedQuery::Downsample(q) => execute_downsample(db, q, lang).await,
-            ParsedQuery::Latest(q) => execute_latest(db, q, lang).await,
+            ParsedQuery::Select(q) => {
+                let (lang, qtype, points, agg, series_data) = execute_select(db, q, lang).await?;
+                Ok((lang, qtype, points, agg, None, series_data))
+            }
+            ParsedQuery::Aggregate(q) => {
+                let (lang, qtype, points, agg, groups) = execute_aggregate(db, q, lang).await?;
+                Ok((lang, qtype, points, agg, groups, None))
+            }
+            ParsedQuery::Downsample(q) => {
+                let (lang, qtype, points, agg) = execute_downsample(db, q, lang).await?;
+                Ok((lang, qtype, points, agg, None, None))
+            }
+            ParsedQuery::Latest(q) => {
+                let (lang, qtype, points, agg) = execute_latest(db, q, lang).await?;
+                Ok((lang, qtype, points, agg, None, None))
+            }
             ParsedQuery::Explain(_inner) => {
                 // For EXPLAIN, return the query plan description
-                Ok((lang, "explain".to_string(), vec![], None))
+                Ok((lang, "explain".to_string(), vec![], None, None, None))
             }
             ParsedQuery::Stream(_) => {
                 // Stream queries are not supported via HTTP (requires WebSocket)
@@ -543,18 +626,32 @@ mod query_router {
     }
 
     /// Execute a SELECT query
+    ///
+    /// Returns series-grouped data for chart visualization. Each series is identified
+    /// by its tags (e.g., host, region) and contains its own timeline of data points.
     async fn execute_select(
         db: &TimeSeriesDB,
         q: SelectQuery,
         lang: QueryLanguage,
-    ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
+    ) -> Result<
+        (
+            QueryLanguage,
+            String,
+            Vec<DataPoint>,
+            Option<(String, f64)>,
+            Option<Vec<SeriesData>>,
+        ),
+        String,
+    > {
         // Get series IDs from selector
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 // Look up series by measurement name using the index
+                // Uses selector's tag filter for filtering
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -565,23 +662,70 @@ mod query_router {
 
         // Return empty if no series found
         if series_ids.is_empty() {
-            return Ok((lang, "select".to_string(), vec![], None));
+            return Ok((lang, "select".to_string(), vec![], None, Some(vec![])));
         }
 
-        // Query all matching series and merge results
-        // This collects data from ALL series with the same metric name
+        // Fetch tags for all series in batch (for chart labels)
+        let series_tags = db
+            .get_series_tags_batch(&series_ids)
+            .await
+            .unwrap_or_default();
+
+        // Get metric name from selector
+        let metric_name = q
+            .selector
+            .measurement
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Query each series separately and build Timeseries-compatible series data
+        let mut series_data: Vec<SeriesData> = Vec::new();
         let mut all_points: Vec<DataPoint> = Vec::new();
+
         for series_id in &series_ids {
             match db.query(*series_id, q.time_range).await {
-                Ok(points) => all_points.extend(points),
+                Ok(mut points) => {
+                    // Sort points by timestamp within this series
+                    points.sort_by_key(|p| p.timestamp);
+
+                    // Get tags for this series
+                    let tags = series_tags.get(series_id).cloned().unwrap_or_default();
+
+                    // Build tag_set as ["key:value", ...] format
+                    let mut tag_set: Vec<String> =
+                        tags.iter().map(|(k, v)| format!("{}:{}", k, v)).collect();
+                    tag_set.sort(); // Consistent ordering
+
+                    // Build scope string (e.g., "host:server1,region:us-east")
+                    let scope = tag_set.join(",");
+
+                    // Convert to pointlist format [[timestamp, value], ...]
+                    let pointlist: Vec<[f64; 2]> = points
+                        .iter()
+                        .map(|p| [p.timestamp as f64, p.value])
+                        .collect();
+
+                    let length = pointlist.len();
+
+                    // Add to series data (Timeseries-compatible format)
+                    series_data.push(SeriesData {
+                        metric: metric_name.clone(),
+                        scope,
+                        tag_set,
+                        pointlist,
+                        length,
+                    });
+
+                    // Also collect all points for backward compatibility
+                    all_points.extend(points);
+                }
                 Err(e) => {
-                    // Log but continue with other series
                     tracing::warn!("Error querying series {}: {}", series_id, e);
                 }
             }
         }
 
-        // Sort all points by timestamp for consistent ordering
+        // Sort all_points by timestamp for backward-compatible flat list
         all_points.sort_by_key(|p| p.timestamp);
 
         // Apply limit and offset
@@ -593,21 +737,51 @@ mod query_router {
             result_points = result_points.into_iter().take(limit).collect();
         }
 
-        Ok((lang, "select".to_string(), result_points, None))
+        Ok((
+            lang,
+            "select".to_string(),
+            result_points,
+            None,
+            Some(series_data),
+        ))
     }
 
-    /// Execute an AGGREGATE query
+    /// Execute an AGGREGATE query with optional GROUP BY support
+    ///
+    /// When `group_by` tags are specified, the result includes grouped aggregations.
+    /// Each group contains the aggregated value for series sharing the same tag values.
+    ///
+    /// # Returns
+    ///
+    /// Extended tuple with optional grouped results:
+    /// - `QueryLanguage`: The query language used
+    /// - `String`: Query type ("aggregate")
+    /// - `Vec<DataPoint>`: Empty (aggregations don't return raw points)
+    /// - `Option<(String, f64)>`: Scalar result (total aggregation)
+    /// - `Option<Vec<GroupedAggregationResult>>`: Grouped results (if GROUP BY)
     async fn execute_aggregate(
         db: &TimeSeriesDB,
         q: AggregateQuery,
         lang: QueryLanguage,
-    ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
-        // Get series IDs
+    ) -> Result<
+        (
+            QueryLanguage,
+            String,
+            Vec<DataPoint>,
+            Option<(String, f64)>,
+            Option<Vec<GroupedAggregationResult>>,
+        ),
+        String,
+    > {
+        let func_name = format!("{:?}", q.aggregation.function).to_lowercase();
+
+        // Get series IDs using selector's tag filter
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -621,48 +795,152 @@ mod query_router {
                 lang,
                 "aggregate".to_string(),
                 vec![],
-                Some((
-                    format!("{:?}", q.aggregation.function).to_lowercase(),
-                    f64::NAN,
-                )),
+                Some((func_name, f64::NAN)),
+                None,
             ));
         }
 
-        // Query all matching series and merge results for aggregation
-        let mut all_points: Vec<DataPoint> = Vec::new();
-        for series_id in &series_ids {
-            match db.query(*series_id, q.time_range).await {
-                Ok(points) => all_points.extend(points),
-                Err(e) => {
-                    tracing::warn!("Error querying series {}: {}", series_id, e);
-                }
-            }
-        }
+        // Check if GROUP BY is requested
+        let group_by_tags = &q.aggregation.group_by;
+        let has_group_by = !group_by_tags.is_empty();
 
-        if all_points.is_empty() {
-            return Ok((
+        if has_group_by {
+            // GROUP BY execution path
+            // 1. Fetch tags for all series
+            let series_tags = db
+                .index()
+                .get_series_tags_batch(&series_ids)
+                .await
+                .map_err(|e| format!("Failed to fetch series tags: {}", e))?;
+
+            // 2. Group series by tag values
+            let mut groups: HashMap<Vec<(String, String)>, Vec<SeriesId>> = HashMap::new();
+
+            for series_id in &series_ids {
+                let tags = series_tags.get(series_id).cloned().unwrap_or_default();
+
+                // Build group key from requested tags
+                let mut group_key: Vec<(String, String)> = group_by_tags
+                    .iter()
+                    .map(|tag_key| {
+                        let value = tags.get(tag_key).cloned().unwrap_or_default();
+                        (tag_key.clone(), value)
+                    })
+                    .collect();
+
+                // Sort for consistent grouping
+                group_key.sort();
+
+                groups.entry(group_key).or_default().push(*series_id);
+            }
+
+            // 3. Compute aggregation for each group
+            let mut grouped_results: Vec<GroupedAggregationResult> = Vec::new();
+
+            for (group_key, group_series_ids) in groups {
+                // Query data for all series in this group
+                let mut group_points: Vec<DataPoint> = Vec::new();
+                for series_id in &group_series_ids {
+                    match db.query(*series_id, q.time_range).await {
+                        Ok(points) => group_points.extend(points),
+                        Err(e) => {
+                            tracing::warn!("Error querying series {}: {}", series_id, e);
+                        }
+                    }
+                }
+
+                // Sort and compute aggregation
+                group_points.sort_by_key(|p| p.timestamp);
+                let (_, value) =
+                    compute_aggregation_from_ast(&q.aggregation.function, &group_points);
+
+                // Build tag_set and scope from group key
+                let mut tag_set: Vec<String> = group_key
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", k, v))
+                    .collect();
+                tag_set.sort();
+                let scope = tag_set.join(",");
+
+                grouped_results.push(GroupedAggregationResult {
+                    scope,
+                    tag_set,
+                    value,
+                    point_count: group_points.len(),
+                });
+            }
+
+            // Sort groups by scope for consistent output
+            grouped_results.sort_by(|a, b| a.scope.cmp(&b.scope));
+
+            // Compute total aggregation across all groups
+            let total_value = if grouped_results.is_empty() {
+                f64::NAN
+            } else {
+                // For sum/count, sum the group values; for avg/min/max, recompute
+                match q.aggregation.function {
+                    QueryAggFunction::Sum | QueryAggFunction::Count => {
+                        grouped_results.iter().map(|g| g.value).sum()
+                    }
+                    _ => {
+                        // For other functions, recompute from all points
+                        let mut all_points: Vec<DataPoint> = Vec::new();
+                        for series_id in &series_ids {
+                            if let Ok(points) = db.query(*series_id, q.time_range).await {
+                                all_points.extend(points);
+                            }
+                        }
+                        all_points.sort_by_key(|p| p.timestamp);
+                        let (_, val) =
+                            compute_aggregation_from_ast(&q.aggregation.function, &all_points);
+                        val
+                    }
+                }
+            };
+
+            Ok((
                 lang,
                 "aggregate".to_string(),
                 vec![],
-                Some((
-                    format!("{:?}", q.aggregation.function).to_lowercase(),
-                    f64::NAN,
-                )),
-            ));
+                Some((func_name, total_value)),
+                Some(grouped_results),
+            ))
+        } else {
+            // Simple aggregation (no GROUP BY)
+            let mut all_points: Vec<DataPoint> = Vec::new();
+            for series_id in &series_ids {
+                match db.query(*series_id, q.time_range).await {
+                    Ok(points) => all_points.extend(points),
+                    Err(e) => {
+                        tracing::warn!("Error querying series {}: {}", series_id, e);
+                    }
+                }
+            }
+
+            if all_points.is_empty() {
+                return Ok((
+                    lang,
+                    "aggregate".to_string(),
+                    vec![],
+                    Some((func_name, f64::NAN)),
+                    None,
+                ));
+            }
+
+            // Sort for consistent aggregation order
+            all_points.sort_by_key(|p| p.timestamp);
+
+            // Apply aggregation function across ALL series data
+            let (_, value) = compute_aggregation_from_ast(&q.aggregation.function, &all_points);
+
+            Ok((
+                lang,
+                "aggregate".to_string(),
+                vec![],
+                Some((func_name, value)),
+                None,
+            ))
         }
-
-        // Sort for consistent aggregation order
-        all_points.sort_by_key(|p| p.timestamp);
-
-        // Apply aggregation function across ALL series data
-        let (func_name, value) = compute_aggregation_from_ast(&q.aggregation.function, &all_points);
-
-        Ok((
-            lang,
-            "aggregate".to_string(),
-            vec![],
-            Some((func_name, value)),
-        ))
     }
 
     /// Execute a DOWNSAMPLE query
@@ -672,11 +950,14 @@ mod query_router {
         lang: QueryLanguage,
     ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
         // Get series IDs
+        // **FIX**: Use selector's tag filter instead of TagFilter::All
+        // This enables tag-based filtering for downsampled queries
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -721,11 +1002,14 @@ mod query_router {
         lang: QueryLanguage,
     ) -> Result<(QueryLanguage, String, Vec<DataPoint>, Option<(String, f64)>), String> {
         // Get series IDs
+        // **FIX**: Use selector's tag filter instead of TagFilter::All
+        // This enables tag-based filtering for latest value queries
         let series_ids: Vec<SeriesId> = match q.selector.series_id {
             Some(id) => vec![id],
             None => {
                 if let Some(ref measurement) = q.selector.measurement {
-                    db.find_series(measurement, &TagFilter::All)
+                    let tag_filter = q.selector.to_tag_filter();
+                    db.find_series(measurement, &tag_filter)
                         .await
                         .map_err(|e| format!("Series lookup error: {}", e))?
                 } else {
@@ -1259,6 +1543,7 @@ async fn query_points(
                                 function: agg_func.to_lowercase(),
                                 value,
                                 point_count: points.len(),
+                                groups: None, // No GROUP BY for single series query
                             }),
                             error: None,
                         }),
@@ -1276,12 +1561,15 @@ async fn query_points(
                 }
             } else {
                 // Return raw points (with limit)
+                // Include series_id for consistency with SQL/PromQL endpoint
                 let response_points: Vec<QueryPoint> = points
                     .into_iter()
                     .take(params.limit)
                     .map(|p| QueryPoint {
                         timestamp: p.timestamp,
                         value: p.value,
+                        series_id: Some(p.series_id),
+                        tags: None, // Tags not yet fetched for basic query endpoint
                     })
                     .collect();
 
@@ -1633,49 +1921,52 @@ async fn execute_sql_promql_query(
 
     // Execute query using the query router
     match query_router::execute_query(&state.db, &req.query, &req.language).await {
-        Ok((language, query_type, points, aggregation)) => {
-            // Format results based on requested format
-            let (data, csv_output) = match req.format.to_lowercase().as_str() {
-                "csv" => {
-                    // Generate CSV output
-                    let mut csv = String::from("timestamp,value\n");
-                    for p in &points {
-                        csv.push_str(&format!("{},{}\n", p.timestamp, p.value));
+        Ok((language, query_type, _points, aggregation, grouped_results, series_data)) => {
+            // Calculate time range from series data
+            let (from_date, to_date) = series_data
+                .as_ref()
+                .map(|series| {
+                    let mut min_ts = i64::MAX;
+                    let mut max_ts = i64::MIN;
+                    for s in series {
+                        for p in &s.pointlist {
+                            let ts = p[0] as i64;
+                            min_ts = min_ts.min(ts);
+                            max_ts = max_ts.max(ts);
+                        }
                     }
-                    (None, Some(csv))
-                }
-                _ => {
-                    // JSON output (default)
-                    let json_points: Vec<serde_json::Value> = points
-                        .iter()
-                        .map(|p| {
-                            serde_json::json!({
-                                "timestamp": p.timestamp,
-                                "value": p.value
-                            })
-                        })
-                        .collect();
-                    (Some(serde_json::json!(json_points)), None)
-                }
-            };
+                    if min_ts == i64::MAX {
+                        (None, None)
+                    } else {
+                        (Some(min_ts), Some(max_ts))
+                    }
+                })
+                .unwrap_or((None, None));
 
-            let agg_result = aggregation.map(|(func, value)| SqlAggregationResult {
-                function: func,
-                value,
-                point_count: points.len(),
+            // Build aggregation result, including grouped results if present
+            let agg_result = aggregation.map(|(func, value)| {
+                let total_points = series_data
+                    .as_ref()
+                    .map(|s| s.iter().map(|sd| sd.length).sum())
+                    .unwrap_or(0);
+                SqlAggregationResult {
+                    function: func,
+                    value,
+                    point_count: total_points,
+                    groups: grouped_results,
+                }
             });
 
             (
                 StatusCode::OK,
                 Json(SqlPromqlResponse {
-                    success: true,
-                    language: Some(language.to_string()),
+                    status: "ok".to_string(),
+                    series: series_data,
+                    from_date,
+                    to_date,
                     query_type: Some(query_type),
-                    row_count: Some(points.len()),
-                    data,
-                    csv: csv_output,
+                    language: Some(language.to_string()),
                     aggregation: agg_result,
-                    warnings: vec![],
                     error: None,
                 }),
             )
@@ -1685,14 +1976,13 @@ async fn execute_sql_promql_query(
             (
                 StatusCode::BAD_REQUEST,
                 Json(SqlPromqlResponse {
-                    success: false,
-                    language: None,
+                    status: "error".to_string(),
+                    series: None,
+                    from_date: None,
+                    to_date: None,
                     query_type: None,
-                    row_count: None,
-                    data: None,
-                    csv: None,
+                    language: None,
                     aggregation: None,
-                    warnings: vec![],
                     error: Some(e),
                 }),
             )

@@ -40,7 +40,7 @@ use nom::{
 use crate::query::ast::{
     AggregateQuery, Aggregation, AggregationFunction, DownsampleMethod, DownsampleQuery,
     FillStrategy, LatestQuery, OrderBy, OrderDirection, OrderField, Predicate, PredicateOp,
-    PredicateValue, Query, SelectQuery, SeriesSelector, WindowSpec, WindowType,
+    PredicateValue, Query, SelectQuery, SeriesSelector, TagMatcher, WindowSpec, WindowType,
 };
 use crate::query::error::{QueryError, QueryResult};
 use crate::types::TimeRange;
@@ -150,12 +150,17 @@ fn parse_select_query(input: &str) -> IResult<&str, Query> {
     .parse(input)?;
 
     // Build selector
-    let selector = SeriesSelector::by_measurement(measurement).map_err(|_| {
+    let mut selector = SeriesSelector::by_measurement(measurement).map_err(|_| {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
     })?;
 
-    // Extract time range and predicates
-    let (time_range, predicates) = if let Some((tr, preds)) = where_clause {
+    // Extract time range, tag matchers, and value predicates
+    // **FIX**: Tag matchers are now added to the selector for proper index lookup
+    let (time_range, predicates) = if let Some((tr, tag_matchers, preds)) = where_clause {
+        // Add tag matchers to selector for index-based filtering
+        for matcher in tag_matchers {
+            selector.tag_filters.push(matcher);
+        }
         (tr, preds)
     } else {
         (default_time_range(), vec![])
@@ -319,8 +324,15 @@ fn extract_aggregations(
 // WHERE Clause Parsing
 // ============================================================================
 
+/// Result from parsing WHERE clause
+/// Contains time range, tag matchers, and value predicates
+type WhereClauseResult = (TimeRange, Vec<TagMatcher>, Vec<Predicate>);
+
 /// Parse WHERE clause
-fn parse_where_clause(input: &str) -> IResult<&str, (TimeRange, Vec<Predicate>)> {
+///
+/// **FIX**: Now returns tag matchers separately from value predicates
+/// so they can be added to the selector for proper index lookup.
+fn parse_where_clause(input: &str) -> IResult<&str, WhereClauseResult> {
     let (input, conditions) = separated_list0(
         (multispace1, tag_no_case("AND"), multispace1),
         parse_condition,
@@ -329,6 +341,7 @@ fn parse_where_clause(input: &str) -> IResult<&str, (TimeRange, Vec<Predicate>)>
 
     let mut start_time: Option<i64> = None;
     let mut end_time: Option<i64> = None;
+    let mut tag_matchers = Vec::new();
     let mut predicates = Vec::new();
 
     for cond in conditions {
@@ -337,6 +350,8 @@ fn parse_where_clause(input: &str) -> IResult<&str, (TimeRange, Vec<Predicate>)>
             Condition::TimeGt(t) => start_time = Some(t + 1),
             Condition::TimeLe(t) => end_time = Some(t),
             Condition::TimeLt(t) => end_time = Some(t - 1),
+            // **FIX**: Collect tag matchers separately
+            Condition::Tag(matcher) => tag_matchers.push(matcher),
             Condition::Predicate(p) => predicates.push(p),
         }
     }
@@ -347,16 +362,24 @@ fn parse_where_clause(input: &str) -> IResult<&str, (TimeRange, Vec<Predicate>)>
         end: end_time.unwrap_or(now),
     };
 
-    Ok((input, (time_range, predicates)))
+    Ok((input, (time_range, tag_matchers, predicates)))
 }
 
 /// Condition from WHERE clause
+///
+/// Distinguishes between:
+/// - Time conditions (for time range filtering)
+/// - Tag conditions (for tag-based series filtering via selector)
+/// - Value predicates (for post-filtering on data values)
 #[derive(Debug)]
 enum Condition {
     TimeGe(i64),
     TimeGt(i64),
     TimeLe(i64),
     TimeLt(i64),
+    /// Tag condition: becomes TagMatcher in selector.tag_filters
+    Tag(TagMatcher),
+    /// Value predicate: stored in query.predicates for post-filtering
     Predicate(Predicate),
 }
 
@@ -485,21 +508,37 @@ fn parse_predicate_op(input: &str) -> IResult<&str, PredicateOp> {
 }
 
 /// Parse tag condition
+///
+/// Tag conditions have string values (quoted) and are used for series filtering.
+/// **FIX**: Now returns Condition::Tag with TagMatcher for proper index lookup
+/// instead of putting it in predicates where it would be ignored.
+///
+/// Supports:
+/// - `host = 'server01'`  -> TagMatcher::Equals
+/// - `host != 'server01'` -> TagMatcher::NotEquals
 fn parse_tag_condition(input: &str) -> IResult<&str, Condition> {
     let (input, tag_name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("=").parse(input)?;
+
+    // Parse operator (= or !=)
+    let (input, op) = alt((tag("!="), tag("<>"), tag("="))).parse(input)?;
+
     let (input, _) = multispace0(input)?;
     let (input, tag_value) = parse_string_literal(input)?;
 
-    Ok((
-        input,
-        Condition::Predicate(Predicate {
-            field: tag_name.to_string(),
-            op: PredicateOp::Eq,
-            value: PredicateValue::String(tag_value.to_string()),
-        }),
-    ))
+    // **FIX**: Create TagMatcher instead of Predicate
+    let matcher = match op {
+        "!=" | "<>" => TagMatcher::NotEquals {
+            key: tag_name.to_string(),
+            value: tag_value.to_string(),
+        },
+        _ => TagMatcher::Equals {
+            key: tag_name.to_string(),
+            value: tag_value.to_string(),
+        },
+    };
+
+    Ok((input, Condition::Tag(matcher)))
 }
 
 // ============================================================================
@@ -660,6 +699,78 @@ mod tests {
                 assert!(q.selector.measurement.as_ref().unwrap() == "cpu");
             }
             _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_with_tag_filter() {
+        // **NEW TEST**: Verify tag conditions are added to selector
+        let result = parse_sql("SELECT * FROM cpu WHERE host = 'server01'");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Select(q) => {
+                // Tag should be in selector.tag_filters, not in predicates
+                assert_eq!(q.selector.tag_filters.len(), 1);
+                match &q.selector.tag_filters[0] {
+                    TagMatcher::Equals { key, value } => {
+                        assert_eq!(key, "host");
+                        assert_eq!(value, "server01");
+                    }
+                    _ => panic!("Expected Equals matcher"),
+                }
+                // Value predicates should be empty (no value > X conditions)
+                assert!(q.predicates.is_empty());
+            }
+            _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_with_multiple_tags() {
+        let result = parse_sql("SELECT * FROM cpu WHERE host = 'server01' AND region = 'us-east'");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Select(q) => {
+                assert_eq!(q.selector.tag_filters.len(), 2);
+            }
+            _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_with_tag_and_value_predicate() {
+        // Both tag filter and value predicate
+        let result = parse_sql("SELECT * FROM cpu WHERE host = 'server01' AND value > 100");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Select(q) => {
+                // Tag filter in selector
+                assert_eq!(q.selector.tag_filters.len(), 1);
+                // Value predicate in predicates
+                assert_eq!(q.predicates.len(), 1);
+                assert!(matches!(q.predicates[0].op, PredicateOp::Gt));
+            }
+            _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_parse_aggregation_with_tag_filter() {
+        // Verify tag filters work in aggregate queries
+        let result = parse_sql("SELECT avg(value) FROM cpu WHERE host = 'server01'");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Query::Aggregate(q) => {
+                assert_eq!(q.selector.tag_filters.len(), 1);
+                match &q.selector.tag_filters[0] {
+                    TagMatcher::Equals { key, value } => {
+                        assert_eq!(key, "host");
+                        assert_eq!(value, "server01");
+                    }
+                    _ => panic!("Expected Equals matcher"),
+                }
+            }
+            _ => panic!("Expected Aggregate query"),
         }
     }
 

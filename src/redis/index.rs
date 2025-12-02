@@ -335,6 +335,107 @@ impl RedisTimeIndex {
             .collect()
     }
 
+    /// Get tags for multiple series in a single batch operation
+    ///
+    /// This is the core function for GROUP BY support. It efficiently fetches
+    /// tag metadata for multiple series using Redis pipelines, enabling
+    /// grouping of aggregation results by tag values.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_ids` - List of series IDs to fetch tags for
+    ///
+    /// # Returns
+    ///
+    /// HashMap mapping series_id -> tags (HashMap<String, String>)
+    ///
+    /// # Performance
+    ///
+    /// Uses Redis pipelines with batching (100 per batch) to minimize
+    /// round trips while avoiding overwhelming Redis with large requests.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let tags = index.get_series_tags_batch(&[1, 2, 3]).await?;
+    /// // tags = {1: {host: "h1", region: "us"}, 2: {host: "h2", region: "eu"}, ...}
+    /// ```
+    pub async fn get_series_tags_batch(
+        &self,
+        series_ids: &[SeriesId],
+    ) -> Result<HashMap<SeriesId, HashMap<String, String>>, IndexError> {
+        if series_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut result: HashMap<SeriesId, HashMap<String, String>> = HashMap::new();
+        let mut cache_misses: Vec<SeriesId> = Vec::new();
+
+        // First pass: check local cache
+        {
+            let cache = self.local_cache.read().await;
+            for &series_id in series_ids {
+                if let Some(meta) = cache.get_series_meta(series_id) {
+                    self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    result.insert(series_id, meta.tags.clone());
+                } else {
+                    cache_misses.push(series_id);
+                }
+            }
+        }
+
+        // If all cache hits, return early
+        if cache_misses.is_empty() {
+            return Ok(result);
+        }
+
+        self.cache_misses
+            .fetch_add(cache_misses.len() as u64, Ordering::Relaxed);
+
+        // Batch fetch from Redis using pipelines
+        const BATCH_SIZE: usize = 100;
+
+        for batch in cache_misses.chunks(BATCH_SIZE) {
+            let batch_ids: Vec<SeriesId> = batch.to_vec();
+
+            let tags_results: Vec<Option<String>> = self
+                .pool
+                .execute(|mut conn| {
+                    let batch = batch_ids.clone();
+                    async move {
+                        let mut pipe = redis::pipe();
+                        for series_id in &batch {
+                            let meta_key = Self::series_meta_key(*series_id);
+                            pipe.hget(&meta_key, "tags");
+                        }
+                        pipe.query_async(&mut conn).await
+                    }
+                })
+                .await
+                .map_err(|e| {
+                    IndexError::ConnectionError(format!("Pipeline fetch failed: {}", e))
+                })?;
+
+            // Process results
+            for (series_id, tags_opt) in batch_ids.iter().zip(tags_results) {
+                let tags: HashMap<String, String> = tags_opt
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default();
+
+                result.insert(*series_id, tags);
+            }
+        }
+
+        debug!(
+            "Fetched tags for {} series ({} cache hits, {} cache misses)",
+            series_ids.len(),
+            series_ids.len() - cache_misses.len(),
+            cache_misses.len()
+        );
+
+        Ok(result)
+    }
+
     /// Filter series by tag pattern (requires client-side lookup)
     ///
     /// Pattern matching cannot use set intersection, so we fetch metadata
@@ -740,6 +841,18 @@ impl TimeIndex for RedisTimeIndex {
                 self.filter_by_pattern(&series_ids, pattern).await
             }
         }
+    }
+
+    /// Get tags for multiple series in a batch operation (GROUP BY support)
+    ///
+    /// Overrides the default trait implementation with an efficient
+    /// Redis pipeline-based batch fetch.
+    async fn get_series_tags_batch(
+        &self,
+        series_ids: &[SeriesId],
+    ) -> Result<HashMap<SeriesId, HashMap<String, String>>, IndexError> {
+        // Delegate to the inherent implementation
+        RedisTimeIndex::get_series_tags_batch(self, series_ids).await
     }
 
     /// Update chunk status
