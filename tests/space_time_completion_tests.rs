@@ -12,7 +12,11 @@ use gorilla_tsdb::types::{DataPoint, SeriesId};
 // ============================================================================
 
 /// Test data generator for downsampling tests
-fn generate_sine_wave_data(series_id: SeriesId, num_points: usize, amplitude: f64) -> Vec<DataPoint> {
+fn generate_sine_wave_data(
+    series_id: SeriesId,
+    num_points: usize,
+    amplitude: f64,
+) -> Vec<DataPoint> {
     let base_ts = 1000i64;
     (0..num_points)
         .map(|i| {
@@ -27,8 +31,8 @@ fn generate_sine_wave_data(series_id: SeriesId, num_points: usize, amplitude: f6
 fn generate_peak_valley_data(series_id: SeriesId) -> Vec<DataPoint> {
     vec![
         DataPoint::new(series_id, 1000, 10.0),
-        DataPoint::new(series_id, 2000, 50.0),  // Peak
-        DataPoint::new(series_id, 3000, 5.0),   // Valley
+        DataPoint::new(series_id, 2000, 50.0), // Peak
+        DataPoint::new(series_id, 3000, 5.0),  // Valley
         DataPoint::new(series_id, 4000, 30.0),
         DataPoint::new(series_id, 5000, 100.0), // Max peak
         DataPoint::new(series_id, 6000, 1.0),   // Min valley
@@ -61,9 +65,12 @@ fn test_m4_preserves_extremes() {
 
     // Find the actual min and max
     let min_val = points.iter().map(|p| p.value).fold(f64::INFINITY, f64::min);
-    let max_val = points.iter().map(|p| p.value).fold(f64::NEG_INFINITY, f64::max);
+    let max_val = points
+        .iter()
+        .map(|p| p.value)
+        .fold(f64::NEG_INFINITY, f64::max);
 
-    assert_eq!(min_val, 1.0);   // Min valley at ts=6000
+    assert_eq!(min_val, 1.0); // Min valley at ts=6000
     assert_eq!(max_val, 100.0); // Max peak at ts=5000
 }
 
@@ -103,12 +110,12 @@ fn test_downsampling_handles_empty_input() {
 /// Simulate counter data with a reset mid-way
 fn generate_counter_with_reset(series_id: SeriesId) -> Vec<DataPoint> {
     vec![
-        DataPoint::new(series_id, 1000, 100.0),  // Counter starts at 100
-        DataPoint::new(series_id, 2000, 150.0),  // +50
-        DataPoint::new(series_id, 3000, 200.0),  // +50
-        DataPoint::new(series_id, 4000, 10.0),   // RESET! Counter restarted
-        DataPoint::new(series_id, 5000, 60.0),   // +50 since reset
-        DataPoint::new(series_id, 6000, 110.0),  // +50
+        DataPoint::new(series_id, 1000, 100.0), // Counter starts at 100
+        DataPoint::new(series_id, 2000, 150.0), // +50
+        DataPoint::new(series_id, 3000, 200.0), // +50
+        DataPoint::new(series_id, 4000, 10.0),  // RESET! Counter restarted
+        DataPoint::new(series_id, 5000, 60.0),  // +50 since reset
+        DataPoint::new(series_id, 6000, 110.0), // +50
     ]
 }
 
@@ -116,11 +123,11 @@ fn generate_counter_with_reset(series_id: SeriesId) -> Vec<DataPoint> {
 fn generate_counter_with_multiple_resets(series_id: SeriesId) -> Vec<DataPoint> {
     vec![
         DataPoint::new(series_id, 1000, 50.0),
-        DataPoint::new(series_id, 2000, 100.0),  // +50
-        DataPoint::new(series_id, 3000, 5.0),    // RESET 1
-        DataPoint::new(series_id, 4000, 25.0),   // +20
-        DataPoint::new(series_id, 5000, 3.0),    // RESET 2
-        DataPoint::new(series_id, 6000, 33.0),   // +30
+        DataPoint::new(series_id, 2000, 100.0), // +50
+        DataPoint::new(series_id, 3000, 5.0),   // RESET 1
+        DataPoint::new(series_id, 4000, 25.0),  // +20
+        DataPoint::new(series_id, 5000, 3.0),   // RESET 2
+        DataPoint::new(series_id, 6000, 33.0),  // +30
     ]
 }
 
@@ -160,8 +167,11 @@ fn test_counter_reset_detection_single() {
         prev = point.value;
     }
 
-    assert!((total_increase - 210.0).abs() < 0.01,
-            "Expected 210.0, got {}", total_increase);
+    assert!(
+        (total_increase - 210.0).abs() < 0.01,
+        "Expected 210.0, got {}",
+        total_increase
+    );
 }
 
 #[test]
@@ -188,8 +198,11 @@ fn test_counter_reset_detection_multiple() {
         prev = point.value;
     }
 
-    assert!((total_increase - 108.0).abs() < 0.01,
-            "Expected 108.0, got {}", total_increase);
+    assert!(
+        (total_increase - 108.0).abs() < 0.01,
+        "Expected 108.0, got {}",
+        total_increase
+    );
 }
 
 #[test]
@@ -223,12 +236,15 @@ fn test_rate_calculation_with_reset() {
         prev = point.value;
     }
 
-    let time_delta_secs = (points.last().unwrap().timestamp -
-                          points.first().unwrap().timestamp) as f64 / 1000.0;
+    let time_delta_secs =
+        (points.last().unwrap().timestamp - points.first().unwrap().timestamp) as f64 / 1000.0;
     let rate = total_increase / time_delta_secs;
 
-    assert!((rate - 42.0).abs() < 0.01,
-            "Expected rate 42.0, got {}", rate);
+    assert!(
+        (rate - 42.0).abs() < 0.01,
+        "Expected rate 42.0, got {}",
+        rate
+    );
 }
 
 #[test]
@@ -240,12 +256,15 @@ fn test_rate_without_reset() {
     // Rate: 100 per second
 
     let increase = points.last().unwrap().value - points.first().unwrap().value;
-    let time_delta_secs = (points.last().unwrap().timestamp -
-                          points.first().unwrap().timestamp) as f64 / 1000.0;
+    let time_delta_secs =
+        (points.last().unwrap().timestamp - points.first().unwrap().timestamp) as f64 / 1000.0;
     let rate = increase / time_delta_secs;
 
-    assert!((rate - 100.0).abs() < 0.01,
-            "Expected rate 100.0, got {}", rate);
+    assert!(
+        (rate - 100.0).abs() < 0.01,
+        "Expected rate 100.0, got {}",
+        rate
+    );
 }
 
 #[test]
@@ -258,8 +277,11 @@ fn test_delta_ignores_resets() {
     let delta = last - first;
 
     // Delta: 110 - 100 = 10 (NOT 210)
-    assert!((delta - 10.0).abs() < 0.01,
-            "Expected delta 10.0, got {}", delta);
+    assert!(
+        (delta - 10.0).abs() < 0.01,
+        "Expected delta 10.0, got {}",
+        delta
+    );
 }
 
 // ============================================================================
@@ -273,9 +295,10 @@ fn test_explain_result_fields() {
     // This is a compile-time check via the struct definition
 
     // Simulate what an EXPLAIN result would contain
-    let explain_description = "SELECT query that retrieves raw data points";
-    let explain_query_type = "select";
-    let explain_logical_plan = "Sort(timestamp ASC)\n  Scan(selector=cpu, time_range=0..1000)";
+    let explain_description = String::from("SELECT query that retrieves raw data points");
+    let explain_query_type = String::from("select");
+    let explain_logical_plan =
+        String::from("Sort(timestamp ASC)\n  Scan(selector=cpu, time_range=0..1000)");
 
     assert!(!explain_description.is_empty());
     assert!(!explain_query_type.is_empty());
@@ -286,10 +309,10 @@ fn test_explain_result_fields() {
 #[test]
 fn test_execution_step_fields() {
     // Verify execution steps have correct structure
-    let step_operation = "SeriesLookup";
-    let step_description = "Find series IDs matching metric";
-    let step_input = "Tag filters";
-    let step_output = "Vec<SeriesId>";
+    let step_operation = String::from("SeriesLookup");
+    let step_description = String::from("Find series IDs matching metric");
+    let step_input = String::from("Tag filters");
+    let step_output = String::from("Vec<SeriesId>");
 
     assert!(!step_operation.is_empty());
     assert!(!step_description.is_empty());
@@ -324,7 +347,7 @@ fn test_cost_estimate_categories() {
 #[test]
 fn test_optimization_info() {
     // Verify standard optimizations are documented
-    let optimizations = vec![
+    let optimizations = [
         "predicate_pushdown",
         "projection_pushdown",
         "time_range_pruning",
@@ -345,11 +368,7 @@ fn test_explain_select_query() {
     // 3. Sort (optional Filter if predicates)
     // 4. Limit (if specified)
 
-    let expected_steps = vec![
-        "SeriesLookup",
-        "ChunkScan",
-        "Sort",
-    ];
+    let expected_steps = ["SeriesLookup", "ChunkScan", "Sort"];
 
     assert!(expected_steps.len() >= 3);
     assert_eq!(expected_steps[0], "SeriesLookup");
@@ -366,13 +385,9 @@ fn test_explain_aggregate_query() {
     // 5. TimeBucket (if window)
     // 6. Aggregate
 
-    let expected_steps_no_group = vec![
-        "SeriesLookup",
-        "ChunkScan",
-        "Aggregate",
-    ];
+    let expected_steps_no_group = ["SeriesLookup", "ChunkScan", "Aggregate"];
 
-    let expected_steps_with_group = vec![
+    let expected_steps_with_group = [
         "SeriesLookup",
         "TagFetch",
         "GroupSeries",
@@ -393,12 +408,7 @@ fn test_explain_downsample_query() {
     // 3. Sort
     // 4. Downsample::<Method>
 
-    let expected_steps = vec![
-        "SeriesLookup",
-        "ChunkScan",
-        "Sort",
-        "Downsample::Lttb",
-    ];
+    let expected_steps = ["SeriesLookup", "ChunkScan", "Sort", "Downsample::Lttb"];
 
     assert_eq!(expected_steps.len(), 4);
     assert!(expected_steps[3].starts_with("Downsample::"));
@@ -411,10 +421,7 @@ fn test_explain_latest_query() {
     // 1. SeriesLookup
     // 2. ReverseChunkScan
 
-    let expected_steps = vec![
-        "SeriesLookup",
-        "ReverseChunkScan",
-    ];
+    let expected_steps = ["SeriesLookup", "ReverseChunkScan"];
 
     assert_eq!(expected_steps.len(), 2);
     assert_eq!(expected_steps[1], "ReverseChunkScan");
@@ -431,8 +438,10 @@ fn test_downsampled_data_ordering() {
 
     // Verify input is sorted
     for i in 1..points.len() {
-        assert!(points[i].timestamp >= points[i-1].timestamp,
-                "Input should be sorted by timestamp");
+        assert!(
+            points[i].timestamp >= points[i - 1].timestamp,
+            "Input should be sorted by timestamp"
+        );
     }
 }
 
@@ -443,8 +452,10 @@ fn test_counter_data_ordering() {
 
     // Verify timestamps are increasing
     for i in 1..points.len() {
-        assert!(points[i].timestamp > points[i-1].timestamp,
-                "Counter data should have increasing timestamps");
+        assert!(
+            points[i].timestamp > points[i - 1].timestamp,
+            "Counter data should have increasing timestamps"
+        );
     }
 }
 
@@ -491,8 +502,8 @@ fn test_multi_series_rate_calculation() {
             prev = point.value;
         }
 
-        let time_delta = (points.last().unwrap().timestamp -
-                         points.first().unwrap().timestamp) as f64 / 1000.0;
+        let time_delta =
+            (points.last().unwrap().timestamp - points.first().unwrap().timestamp) as f64 / 1000.0;
         total_increase / time_delta
     }
 
@@ -521,14 +532,14 @@ fn test_explain_completeness() {
     // 5. query_type - one of: select, aggregate, downsample, latest
     // 6. optimizations - list of applied optimizations
 
-    let valid_query_types = vec!["select", "aggregate", "downsample", "latest", "stream"];
+    let valid_query_types = ["select", "aggregate", "downsample", "latest", "stream"];
 
     for qt in &valid_query_types {
         assert!(!qt.is_empty());
     }
 
     // Verify we have the expected optimization types
-    let optimization_names = vec![
+    let optimization_names = [
         "predicate_pushdown",
         "projection_pushdown",
         "time_range_pruning",
@@ -544,7 +555,7 @@ fn test_explain_completeness() {
 /// Test single point handling
 #[test]
 fn test_single_point_rate() {
-    let points = vec![DataPoint::new(1, 1000, 100.0)];
+    let points = [DataPoint::new(1, 1000, 100.0)];
 
     // Rate with single point should be 0
     if points.len() < 2 {
@@ -556,13 +567,13 @@ fn test_single_point_rate() {
 /// Test identical timestamps
 #[test]
 fn test_identical_timestamps_rate() {
-    let points = vec![
+    let points = [
         DataPoint::new(1, 1000, 100.0),
         DataPoint::new(1, 1000, 200.0), // Same timestamp
     ];
 
-    let time_delta = (points.last().unwrap().timestamp -
-                     points.first().unwrap().timestamp) as f64 / 1000.0;
+    let time_delta =
+        (points.last().unwrap().timestamp - points.first().unwrap().timestamp) as f64 / 1000.0;
 
     // Time delta is 0, rate calculation should handle this
     assert_eq!(time_delta, 0.0);
@@ -571,7 +582,7 @@ fn test_identical_timestamps_rate() {
 /// Test very large counter values
 #[test]
 fn test_large_counter_values() {
-    let points = vec![
+    let points = [
         DataPoint::new(1, 1000, 1e15),
         DataPoint::new(1, 2000, 1e15 + 1000.0),
         DataPoint::new(1, 3000, 500.0), // Reset to small value
@@ -592,14 +603,17 @@ fn test_large_counter_values() {
     }
 
     // Expected: 1000 + 500 + 1000 = 2500
-    assert!((total_increase - 2500.0).abs() < 1.0,
-            "Expected ~2500, got {}", total_increase);
+    assert!(
+        (total_increase - 2500.0).abs() < 1.0,
+        "Expected ~2500, got {}",
+        total_increase
+    );
 }
 
 /// Test negative values (gauges, not counters)
 #[test]
 fn test_negative_values_delta() {
-    let points = vec![
+    let points = [
         DataPoint::new(1, 1000, 10.0),
         DataPoint::new(1, 2000, -5.0),
         DataPoint::new(1, 3000, -20.0),

@@ -800,9 +800,12 @@ fn lttb_downsample(points: &[DataPoint], target: usize) -> Vec<DataPoint> {
         let mut max_area = -1.0f64;
         let mut max_idx = bucket_start;
 
-        for j in bucket_start..bucket_end {
-            let curr = &points[j];
-
+        for (j, curr) in points
+            .iter()
+            .enumerate()
+            .take(bucket_end)
+            .skip(bucket_start)
+        {
             // Triangle area using cross product formula:
             // Area = 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
             let area = ((prev.timestamp as f64 - avg_ts) * (curr.value - prev.value)
