@@ -1,6 +1,13 @@
 //! HTTP Handlers for the Gorilla TSDB Server
 //!
 //! This module contains all HTTP endpoint handlers for the REST API.
+//!
+//! # Query Caching
+//!
+//! The server integrates a query result cache that:
+//! - Caches query results with LRU eviction and TTL expiration
+//! - Automatically invalidates cache entries when series data is written
+//! - Tracks cache statistics (hits, misses, hit ratio)
 
 use super::aggregation::compute_aggregation;
 use super::config::ServerConfig;
@@ -12,11 +19,16 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use gorilla_tsdb::engine::{DatabaseStats, TimeSeriesDB};
+use gorilla_tsdb::engine::TimeSeriesDB;
+use gorilla_tsdb::query::ast::{Query as AstQuery, SelectQuery, SeriesSelector};
+use gorilla_tsdb::query::result::QueryResult;
 use gorilla_tsdb::query::subscription::SubscriptionManager;
+use gorilla_tsdb::query::SharedQueryCache;
+use gorilla_tsdb::redis::InvalidationPublisher;
 use gorilla_tsdb::storage::LocalDiskEngine;
 use gorilla_tsdb::types::{DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -28,10 +40,19 @@ use tracing::{error, info, warn};
 /// The subscriptions field is reserved for future real-time subscription features.
 #[allow(dead_code)]
 pub struct AppState {
+    /// The time-series database instance
     pub db: TimeSeriesDB,
+    /// Local disk storage engine
     pub storage: Arc<LocalDiskEngine>,
+    /// Server configuration
     pub config: ServerConfig,
+    /// Subscription manager for real-time updates
     pub subscriptions: Arc<SubscriptionManager>,
+    /// Query result cache for reducing query latency
+    pub query_cache: SharedQueryCache,
+    /// Optional Pub/Sub publisher for cross-node cache invalidation
+    /// Present when Redis is enabled and Pub/Sub setup succeeds
+    pub invalidation_publisher: Option<InvalidationPublisher>,
 }
 
 // =============================================================================
@@ -67,15 +88,62 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
-/// Get database statistics
+/// Get database statistics including query cache metrics
 pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
-    let stats = state.db.stats();
-    Json(stats.into())
+    let db_stats = state.db.stats();
+    let cache_stats = state.query_cache.stats();
+
+    // Calculate hit rates
+    let total_index_ops = db_stats.index_cache_hits + db_stats.index_cache_misses;
+    let index_hit_rate = if total_index_ops > 0 {
+        (db_stats.index_cache_hits as f64 / total_index_ops as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let query_cache_hits = cache_stats.hits.load(Ordering::Relaxed);
+    let query_cache_misses = cache_stats.misses.load(Ordering::Relaxed);
+    let total_query_ops = query_cache_hits + query_cache_misses;
+    let query_hit_rate = if total_query_ops > 0 {
+        (query_cache_hits as f64 / total_query_ops as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    Json(StatsResponse {
+        // Storage statistics
+        total_chunks: db_stats.total_chunks,
+        total_bytes: db_stats.total_bytes,
+        total_series: db_stats.total_series,
+        write_ops: db_stats.write_ops,
+        read_ops: db_stats.read_ops,
+        compression_ratio: db_stats.compression_ratio,
+
+        // Index cache statistics
+        index_cache_hits: db_stats.index_cache_hits,
+        index_cache_misses: db_stats.index_cache_misses,
+        index_queries_served: db_stats.index_queries_served,
+        index_cache_hit_rate: index_hit_rate,
+
+        // Query result cache statistics
+        query_cache_hits,
+        query_cache_misses,
+        query_cache_entries: state.query_cache.entry_count() as u64,
+        query_cache_size_bytes: state.query_cache.size_bytes(),
+        query_cache_hit_rate: query_hit_rate,
+        query_cache_evictions: cache_stats.evictions.load(Ordering::Relaxed),
+        query_cache_invalidations: cache_stats.invalidations.load(Ordering::Relaxed),
+    })
 }
 
-/// Prometheus metrics endpoint
+/// Prometheus metrics endpoint with database and query cache statistics
 pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let stats = state.db.stats();
+    let db_stats = state.db.stats();
+    let cache_stats = state.query_cache.stats();
+
+    let query_cache_hits = cache_stats.hits.load(Ordering::Relaxed);
+    let query_cache_misses = cache_stats.misses.load(Ordering::Relaxed);
+
     let metrics = format!(
         "# HELP tsdb_total_chunks Total number of chunks\n\
          # TYPE tsdb_total_chunks gauge\n\
@@ -103,42 +171,42 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
          tsdb_index_cache_misses {}\n\
          # HELP tsdb_index_queries_served Total index queries served\n\
          # TYPE tsdb_index_queries_served counter\n\
-         tsdb_index_queries_served {}\n",
-        stats.total_chunks,
-        stats.total_bytes,
-        stats.total_series,
-        stats.write_ops,
-        stats.read_ops,
-        stats.compression_ratio,
-        stats.index_cache_hits,
-        stats.index_cache_misses,
-        stats.index_queries_served,
+         tsdb_index_queries_served {}\n\
+         # HELP tsdb_query_cache_hits Query cache hits\n\
+         # TYPE tsdb_query_cache_hits counter\n\
+         tsdb_query_cache_hits {}\n\
+         # HELP tsdb_query_cache_misses Query cache misses\n\
+         # TYPE tsdb_query_cache_misses counter\n\
+         tsdb_query_cache_misses {}\n\
+         # HELP tsdb_query_cache_entries Current number of cached queries\n\
+         # TYPE tsdb_query_cache_entries gauge\n\
+         tsdb_query_cache_entries {}\n\
+         # HELP tsdb_query_cache_size_bytes Current query cache size in bytes\n\
+         # TYPE tsdb_query_cache_size_bytes gauge\n\
+         tsdb_query_cache_size_bytes {}\n\
+         # HELP tsdb_query_cache_evictions Total query cache evictions\n\
+         # TYPE tsdb_query_cache_evictions counter\n\
+         tsdb_query_cache_evictions {}\n\
+         # HELP tsdb_query_cache_invalidations Total query cache invalidations\n\
+         # TYPE tsdb_query_cache_invalidations counter\n\
+         tsdb_query_cache_invalidations {}\n",
+        db_stats.total_chunks,
+        db_stats.total_bytes,
+        db_stats.total_series,
+        db_stats.write_ops,
+        db_stats.read_ops,
+        db_stats.compression_ratio,
+        db_stats.index_cache_hits,
+        db_stats.index_cache_misses,
+        db_stats.index_queries_served,
+        query_cache_hits,
+        query_cache_misses,
+        state.query_cache.entry_count(),
+        state.query_cache.size_bytes(),
+        cache_stats.evictions.load(Ordering::Relaxed),
+        cache_stats.invalidations.load(Ordering::Relaxed),
     );
     (StatusCode::OK, [("content-type", "text/plain")], metrics)
-}
-
-impl From<DatabaseStats> for StatsResponse {
-    fn from(stats: DatabaseStats) -> Self {
-        let total_cache_ops = stats.index_cache_hits + stats.index_cache_misses;
-        let cache_hit_rate = if total_cache_ops > 0 {
-            (stats.index_cache_hits as f64 / total_cache_ops as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        Self {
-            total_chunks: stats.total_chunks,
-            total_bytes: stats.total_bytes,
-            total_series: stats.total_series,
-            write_ops: stats.write_ops,
-            read_ops: stats.read_ops,
-            compression_ratio: stats.compression_ratio,
-            index_cache_hits: stats.index_cache_hits,
-            index_cache_misses: stats.index_cache_misses,
-            index_queries_served: stats.index_queries_served,
-            index_cache_hit_rate: cache_hit_rate,
-        }
-    }
 }
 
 // =============================================================================
@@ -233,16 +301,43 @@ pub async fn write_points(
         .collect();
 
     match state.db.write(series_id, points.clone()).await {
-        Ok(chunk_id) => (
-            StatusCode::OK,
-            Json(WriteResponse {
-                success: true,
-                series_id: Some(series_id),
-                points_written: points.len(),
-                chunk_id: Some(chunk_id.to_string()),
-                error: None,
-            }),
-        ),
+        Ok(chunk_id) => {
+            // Invalidate any cached queries for this series to ensure freshness
+            state.query_cache.invalidate_series(series_id);
+
+            // Publish invalidation event to Redis for cross-node cache coherence
+            if let Some(ref publisher) = state.invalidation_publisher {
+                let metric = req.metric.as_deref().unwrap_or("unknown");
+                let tags: Vec<String> = req
+                    .tags
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", k, v))
+                    .collect();
+
+                // Fire-and-forget: don't block the write response on Pub/Sub
+                let publisher = publisher.clone();
+                let metric = metric.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = publisher
+                        .publish_series_write(series_id, &metric, &tags)
+                        .await
+                    {
+                        warn!(error = %e, series_id = series_id, "Failed to publish cache invalidation");
+                    }
+                });
+            }
+
+            (
+                StatusCode::OK,
+                Json(WriteResponse {
+                    success: true,
+                    series_id: Some(series_id),
+                    points_written: points.len(),
+                    chunk_id: Some(chunk_id.to_string()),
+                    error: None,
+                }),
+            )
+        }
         Err(e) => {
             error!(error = %e, series_id = series_id, "Write failed");
             (
@@ -263,7 +358,10 @@ pub async fn write_points(
 // Query Handlers
 // =============================================================================
 
-/// Query data points (REST API)
+/// Query data points (REST API) with result caching
+///
+/// Results are cached based on (series_id, time_range, limit) for 60 seconds.
+/// Cache is automatically invalidated when data is written to the series.
 pub async fn query_points(
     State(state): State<Arc<AppState>>,
     Query(params): Query<QueryParams>,
@@ -344,11 +442,77 @@ pub async fn query_points(
         },
     };
 
+    // Build a Query AST for cache key generation
+    let select_query =
+        SelectQuery::new(SeriesSelector::by_id(series_id), time_range).with_limit(params.limit);
+    let cache_query = AstQuery::Select(select_query);
+
+    // Check cache first
+    if let Some(cached_result) = state.query_cache.get(&cache_query) {
+        tracing::debug!(series_id = series_id, "REST API query cache hit");
+
+        // Convert cached result back to response
+        let points: Vec<QueryPoint> = match cached_result.data {
+            gorilla_tsdb::query::result::ResultData::Rows(rows) => rows
+                .iter()
+                .map(|r| QueryPoint {
+                    timestamp: r.timestamp,
+                    value: r.value,
+                    series_id: None,
+                    tags: None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+
+        // Apply aggregation if requested (on cached data)
+        if let Some(ref agg_func) = params.aggregation {
+            let data_points: Vec<DataPoint> = points
+                .iter()
+                .map(|p| DataPoint::new(series_id, p.timestamp, p.value))
+                .collect();
+            if let Some(agg_value) = compute_aggregation(agg_func, &data_points) {
+                return (
+                    StatusCode::OK,
+                    Json(QueryResponse {
+                        success: true,
+                        series_id: Some(series_id),
+                        points: vec![],
+                        aggregation: Some(AggregationResult {
+                            function: agg_func.clone(),
+                            value: agg_value,
+                            point_count: points.len(),
+                            groups: None,
+                        }),
+                        error: None,
+                    }),
+                );
+            }
+        }
+
+        return (
+            StatusCode::OK,
+            Json(QueryResponse {
+                success: true,
+                series_id: Some(series_id),
+                points,
+                aggregation: None,
+                error: None,
+            }),
+        );
+    }
+
+    // Cache miss - execute query
     match state.db.query(series_id, time_range).await {
         Ok(mut points) => {
             points.sort_by_key(|p| p.timestamp);
             let total_points = points.len();
             points.truncate(params.limit);
+
+            // Cache the result
+            let cache_result = QueryResult::from_points(points.clone());
+            state.query_cache.put(&cache_query, cache_result);
+            tracing::debug!(series_id = series_id, "REST API query cached");
 
             // Apply aggregation if requested
             if let Some(ref agg_func) = params.aggregation {
@@ -412,14 +576,25 @@ pub async fn query_points(
 // SQL/PromQL Query Handler
 // =============================================================================
 
-/// Execute SQL or PromQL query
+/// Execute SQL or PromQL query with result caching
+///
+/// SELECT queries are cached based on their AST hash. Cache hits
+/// return immediately without database access.
 pub async fn execute_sql_promql_query(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SqlPromqlRequest>,
 ) -> impl IntoResponse {
     info!(query = %req.query, language = %req.language, "Executing SQL/PromQL query");
 
-    match query_router::execute_query(&state.db, &req.query, &req.language).await {
+    // Execute with caching enabled
+    match query_router::execute_query_with_cache(
+        &state.db,
+        &req.query,
+        &req.language,
+        Some(&state.query_cache),
+    )
+    .await
+    {
         Ok((language, query_type, _points, agg_execution_result, series_data)) => {
             let (from_date, to_date) = series_data
                 .as_ref()

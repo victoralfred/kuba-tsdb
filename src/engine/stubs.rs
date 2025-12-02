@@ -63,7 +63,7 @@ use crate::types::{ChunkId, DataPoint, SeriesId, TagFilter, TimeRange};
 use async_trait::async_trait;
 use futures::Stream;
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -768,6 +768,16 @@ impl Compressor for ParquetCompressor {
 ///
 /// This provides a lightweight alternative to Redis for single-node deployments
 /// or testing scenarios.
+///
+/// # Indexing Strategy
+///
+/// The index maintains three lookup structures for efficient queries:
+/// - `metric_index`: Maps metric name -> series IDs (for metric-only queries)
+/// - `tag_index`: Maps "key=value" -> series IDs (for tag filtering)
+/// - `series`: Full metadata for each series
+///
+/// Tag queries use set intersection on the tag_index for O(min(n,m)) lookups
+/// instead of O(n) full scans.
 pub struct InMemoryTimeIndex {
     /// Series registry: series_id -> metadata
     series: RwLock<HashMap<SeriesId, SeriesMetadata>>,
@@ -775,6 +785,8 @@ pub struct InMemoryTimeIndex {
     chunks: RwLock<HashMap<SeriesId, Vec<ChunkReference>>>,
     /// Metric index: metric_name -> series_ids
     metric_index: RwLock<HashMap<String, Vec<SeriesId>>>,
+    /// Tag index: "key=value" -> series_ids (for efficient tag-based lookups)
+    tag_index: RwLock<HashMap<String, HashSet<SeriesId>>>,
     /// Statistics
     stats: IndexStatsAtomic,
 }
@@ -792,6 +804,7 @@ impl InMemoryTimeIndex {
             series: RwLock::new(HashMap::new()),
             chunks: RwLock::new(HashMap::new()),
             metric_index: RwLock::new(HashMap::new()),
+            tag_index: RwLock::new(HashMap::new()),
             stats: IndexStatsAtomic {
                 total_series: AtomicU64::new(0),
                 total_chunks: AtomicU64::new(0),
@@ -822,16 +835,26 @@ impl TimeIndex for InMemoryTimeIndex {
         series_id: SeriesId,
         metadata: SeriesMetadata,
     ) -> Result<(), IndexError> {
-        // Fix RACE-001: Acquire both locks together to prevent race conditions
-        // between series registration and metric index update
+        // Fix RACE-001: Acquire all locks together to prevent race conditions
+        // between series registration, metric index, and tag index updates
         let metric_name = metadata.metric_name.clone();
+        let tags = metadata.tags.clone();
         let mut series = self.series.write();
         let mut metric_idx = self.metric_index.write();
+        let mut tag_idx = self.tag_index.write();
 
         let is_new = series.insert(series_id, metadata).is_none();
         if is_new {
             self.stats.total_series.fetch_add(1, Ordering::Relaxed);
+
+            // Index by metric name
             metric_idx.entry(metric_name).or_default().push(series_id);
+
+            // Index by each tag (key=value format for efficient lookups)
+            for (key, value) in tags {
+                let tag_key = format!("{}={}", key, value);
+                tag_idx.entry(tag_key).or_default().insert(series_id);
+            }
         }
 
         Ok(())
@@ -890,22 +913,65 @@ impl TimeIndex for InMemoryTimeIndex {
         self.stats.queries_served.fetch_add(1, Ordering::Relaxed);
 
         let metric_idx = self.metric_index.read();
-        let series_ids = metric_idx.get(metric_name).cloned().unwrap_or_default();
+        let metric_series: HashSet<SeriesId> = metric_idx
+            .get(metric_name)
+            .map(|v| v.iter().copied().collect())
+            .unwrap_or_default();
 
-        // Filter by tags
-        let series = self.series.read();
-        let filtered: Vec<SeriesId> = series_ids
-            .into_iter()
-            .filter(|id| {
-                if let Some(meta) = series.get(id) {
-                    tag_filter.matches(&meta.tags)
-                } else {
-                    false
+        if metric_series.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Use tag_index for efficient filtering when TagFilter::Exact is used
+        match tag_filter {
+            TagFilter::All => {
+                // No tag filtering - return all series for metric
+                Ok(metric_series.into_iter().collect())
+            }
+            TagFilter::Exact(tags) if !tags.is_empty() => {
+                // Use tag_index for set intersection (efficient O(min(n,m)) lookup)
+                let tag_idx = self.tag_index.read();
+                let mut result = metric_series;
+
+                for (key, value) in tags {
+                    let tag_key = format!("{}={}", key, value);
+                    if let Some(tag_series) = tag_idx.get(&tag_key) {
+                        // Intersect with current result set
+                        result = result.intersection(tag_series).copied().collect();
+                        if result.is_empty() {
+                            return Ok(vec![]);
+                        }
+                    } else {
+                        // Tag doesn't exist - no matches
+                        return Ok(vec![]);
+                    }
                 }
-            })
-            .collect();
 
-        Ok(filtered)
+                Ok(result.into_iter().collect())
+            }
+            TagFilter::Exact(_) => {
+                // Empty exact filter - same as All
+                Ok(metric_series.into_iter().collect())
+            }
+            TagFilter::Pattern(pattern) => {
+                // Pattern matching scans series metadata for matching tag values
+                // Format: "key=pattern*" or just "pattern" to match any value
+                let series = self.series.read();
+                let filtered: Vec<SeriesId> = metric_series
+                    .into_iter()
+                    .filter(|id| {
+                        if let Some(meta) = series.get(id) {
+                            // Check if any tag value contains the pattern
+                            meta.tags.values().any(|v| v.contains(pattern))
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+
+                Ok(filtered)
+            }
+        }
     }
 
     async fn update_chunk_status(
@@ -1103,5 +1169,161 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.total_series, 1);
         assert_eq!(stats.total_chunks, 1);
+    }
+
+    #[tokio::test]
+    async fn test_tag_index_exact_match() {
+        let index = InMemoryTimeIndex::new();
+
+        // Register multiple series with different tags
+        let series_data = vec![
+            (
+                1,
+                "cpu.usage",
+                vec![("host", "server1"), ("region", "us-east")],
+            ),
+            (
+                2,
+                "cpu.usage",
+                vec![("host", "server2"), ("region", "us-east")],
+            ),
+            (
+                3,
+                "cpu.usage",
+                vec![("host", "server1"), ("region", "us-west")],
+            ),
+            (
+                4,
+                "memory.usage",
+                vec![("host", "server1"), ("region", "us-east")],
+            ),
+        ];
+
+        for (id, metric, tags) in series_data {
+            let metadata = SeriesMetadata {
+                metric_name: metric.to_string(),
+                tags: tags
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                created_at: 1000,
+                retention_days: None,
+            };
+            index.register_series(id, metadata).await.unwrap();
+        }
+
+        // Test: Find all cpu.usage series
+        let result = index
+            .find_series("cpu.usage", &TagFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+
+        // Test: Find cpu.usage with host=server1
+        let result = index
+            .find_series(
+                "cpu.usage",
+                &TagFilter::Exact(HashMap::from([("host".to_string(), "server1".to_string())])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2); // series 1 and 3
+
+        // Test: Find cpu.usage with host=server1 AND region=us-east
+        let result = index
+            .find_series(
+                "cpu.usage",
+                &TagFilter::Exact(HashMap::from([
+                    ("host".to_string(), "server1".to_string()),
+                    ("region".to_string(), "us-east".to_string()),
+                ])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 1);
+
+        // Test: Find with non-existent tag
+        let result = index
+            .find_series(
+                "cpu.usage",
+                &TagFilter::Exact(HashMap::from([("env".to_string(), "prod".to_string())])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
+
+        // Test: Find with non-existent metric
+        let result = index
+            .find_series("disk.usage", &TagFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_tag_index_pattern_match() {
+        let index = InMemoryTimeIndex::new();
+
+        // Register series with varied tag values
+        let series_data = vec![
+            (1, "http.requests", vec![("host", "web-server-01")]),
+            (2, "http.requests", vec![("host", "web-server-02")]),
+            (3, "http.requests", vec![("host", "api-server-01")]),
+        ];
+
+        for (id, metric, tags) in series_data {
+            let metadata = SeriesMetadata {
+                metric_name: metric.to_string(),
+                tags: tags
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                created_at: 1000,
+                retention_days: None,
+            };
+            index.register_series(id, metadata).await.unwrap();
+        }
+
+        // Test: Pattern match for "web" in any tag value
+        let result = index
+            .find_series("http.requests", &TagFilter::Pattern("web".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2); // series 1 and 2
+
+        // Test: Pattern match for "server" in any tag value
+        let result = index
+            .find_series("http.requests", &TagFilter::Pattern("server".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3); // all series have "server" in host
+
+        // Test: Pattern match with no matches
+        let result = index
+            .find_series("http.requests", &TagFilter::Pattern("database".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_tag_index_empty_exact_filter() {
+        let index = InMemoryTimeIndex::new();
+
+        let metadata = SeriesMetadata {
+            metric_name: "test.metric".to_string(),
+            tags: HashMap::from([("key".to_string(), "value".to_string())]),
+            created_at: 1000,
+            retention_days: None,
+        };
+        index.register_series(1, metadata).await.unwrap();
+
+        // Empty exact filter should behave like All
+        let result = index
+            .find_series("test.metric", &TagFilter::Exact(HashMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
     }
 }

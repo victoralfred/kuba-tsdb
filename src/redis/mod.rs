@@ -53,6 +53,7 @@ pub mod query;
 
 // High availability modules
 pub mod failover;
+pub mod pubsub;
 
 // Monitoring modules
 pub mod metrics;
@@ -66,6 +67,10 @@ pub use connection::{RedisConfig, RedisPool, RetryPolicy};
 pub use failover::{FailoverConfig, FailoverManager};
 pub use index::RedisTimeIndex;
 pub use metrics::{MetricsConfig, RedisMetrics};
+pub use pubsub::{
+    setup_cache_invalidation, InvalidationEvent, InvalidationPublisher, InvalidationSubscriber,
+    SubscriberConfig,
+};
 pub use query::{QueryConfig, QueryPlanner};
 pub use scripts::LuaScripts;
 pub use series::SeriesManager;

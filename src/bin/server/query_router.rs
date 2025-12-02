@@ -3,6 +3,13 @@
 //! This module bridges the gap between the HTTP API and the query engine.
 //! It parses SQL/PromQL queries, extracts parameters, and uses TimeSeriesDB
 //! methods to retrieve and aggregate data.
+//!
+//! # Query Result Caching
+//!
+//! The router integrates with `QueryCache` to cache parsed query results:
+//! - SELECT and AGGREGATE queries are cached based on AST hash
+//! - Cache hits return results immediately without database access
+//! - Cache misses execute the query and populate the cache
 
 use super::aggregation::{
     aggregate_into_buckets, calculate_auto_interval, compute_aggregation_from_ast,
@@ -11,6 +18,8 @@ use super::aggregation::{
 use super::types::{AggregateExecutionResult, GroupedAggregationResult, SeriesData};
 use gorilla_tsdb::engine::TimeSeriesDB;
 use gorilla_tsdb::query::ast::{AggregateQuery, DownsampleQuery, LatestQuery, SelectQuery};
+use gorilla_tsdb::query::result::{QueryResult, ResultData, ResultRow, SeriesResult};
+use gorilla_tsdb::query::SharedQueryCache;
 use gorilla_tsdb::query::{
     parse_promql, parse_sql, AggregationFunction as QueryAggFunction, Query as ParsedQuery,
 };
@@ -33,9 +42,17 @@ impl std::fmt::Display for QueryLanguage {
     }
 }
 
-/// Execute a query string against the database
+/// Execute a query string against the database with optional caching
 ///
 /// Auto-detects the query language and routes to appropriate parser.
+/// When a cache is provided, SELECT queries will check the cache first
+/// and populate it on cache misses.
+///
+/// # Arguments
+/// * `db` - The TimeSeriesDB instance
+/// * `query_str` - The SQL or PromQL query string
+/// * `language` - Query language hint ("sql", "promql", or "auto")
+/// * `cache` - Optional query cache for result caching
 ///
 /// # Returns
 /// A tuple containing:
@@ -44,10 +61,33 @@ impl std::fmt::Display for QueryLanguage {
 /// - `Vec<DataPoint>`: Raw data points (for backward compatibility)
 /// - `Option<AggregateExecutionResult>`: Full aggregation result with time windowing
 /// - `Option<Vec<SeriesData>>`: Series-grouped data for SELECT queries
+#[allow(dead_code)] // Kept for backward compatibility / non-caching use cases
 pub async fn execute_query(
     db: &TimeSeriesDB,
     query_str: &str,
     language: &str,
+) -> Result<
+    (
+        QueryLanguage,
+        String,
+        Vec<DataPoint>,
+        Option<AggregateExecutionResult>,
+        Option<Vec<SeriesData>>,
+    ),
+    String,
+> {
+    execute_query_with_cache(db, query_str, language, None).await
+}
+
+/// Execute a query with optional result caching
+///
+/// This is the core execution function that supports caching.
+/// SELECT queries are cached based on their AST hash.
+pub async fn execute_query_with_cache(
+    db: &TimeSeriesDB,
+    query_str: &str,
+    language: &str,
+    cache: Option<&SharedQueryCache>,
 ) -> Result<
     (
         QueryLanguage,
@@ -82,28 +122,183 @@ pub async fn execute_query(
         }
     };
 
+    // Check cache for SELECT queries
+    if let Some(query_cache) = cache {
+        if let Some(cached_result) = query_cache.get(&parsed) {
+            tracing::debug!("Query cache hit for {:?}", query_str);
+            return convert_cached_result(cached_result, lang);
+        }
+    }
+
     // Execute based on query type
-    match parsed {
+    let result = match &parsed {
         ParsedQuery::Select(q) => {
-            let (lang, qtype, points, series_data) = execute_select(db, q, lang).await?;
+            let (lang, qtype, points, series_data) = execute_select(db, q.clone(), lang).await?;
+
+            // Cache the result for SELECT queries
+            if let (Some(query_cache), Some(ref sd)) = (cache, &series_data) {
+                let query_result = convert_to_query_result(sd);
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached SELECT query result");
+            }
+
             Ok((lang, qtype, points, None, series_data))
         }
         ParsedQuery::Aggregate(q) => {
-            let (lang, qtype, points, agg_result) = execute_aggregate(db, q, lang).await?;
+            let (lang, qtype, points, agg_result) = execute_aggregate(db, q.clone(), lang).await?;
+
+            // Cache aggregate results (they're expensive to compute)
+            if let Some(query_cache) = cache {
+                let query_result =
+                    QueryResult::from_rows(points.iter().map(|p| ResultRow::from(*p)).collect());
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached AGGREGATE query result");
+            }
+
             Ok((lang, qtype, points, Some(agg_result), None))
         }
         ParsedQuery::Downsample(q) => {
-            let (lang, qtype, points) = execute_downsample(db, q, lang).await?;
+            let (lang, qtype, points) = execute_downsample(db, q.clone(), lang).await?;
+
+            // Cache downsample results
+            if let Some(query_cache) = cache {
+                let query_result = QueryResult::from_points(points.clone());
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached DOWNSAMPLE query result");
+            }
+
             Ok((lang, qtype, points, None, None))
         }
         ParsedQuery::Latest(q) => {
-            let (lang, qtype, points) = execute_latest(db, q, lang).await?;
+            let (lang, qtype, points) = execute_latest(db, q.clone(), lang).await?;
+
+            // Cache latest results (short TTL would be ideal, but using default)
+            if let Some(query_cache) = cache {
+                let query_result = QueryResult::from_points(points.clone());
+                query_cache.put(&parsed, query_result);
+                tracing::debug!("Cached LATEST query result");
+            }
+
             Ok((lang, qtype, points, None, None))
         }
         ParsedQuery::Explain(_inner) => Ok((lang, "explain".to_string(), vec![], None, None)),
         ParsedQuery::Stream(_) => Err(
             "Stream queries are not supported via HTTP. Use WebSocket for streaming.".to_string(),
         ),
+    };
+
+    result
+}
+
+/// Convert SeriesData to QueryResult for caching
+fn convert_to_query_result(series_data: &[SeriesData]) -> QueryResult {
+    let series: Vec<SeriesResult> = series_data
+        .iter()
+        .enumerate()
+        .map(|(idx, sd)| {
+            let values: Vec<(i64, f64)> =
+                sd.pointlist.iter().map(|p| (p[0] as i64, p[1])).collect();
+
+            // Parse tags from tag_set (format: "key:value")
+            let tags: HashMap<String, String> = sd
+                .tag_set
+                .iter()
+                .filter_map(|t| {
+                    let parts: Vec<&str> = t.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Store metric name in tags for reconstruction
+            let mut tags_with_metric = tags;
+            tags_with_metric.insert("__metric__".to_string(), sd.metric.clone());
+
+            SeriesResult::new(idx as u128)
+                .with_tags(tags_with_metric)
+                .with_values(values)
+        })
+        .collect();
+
+    QueryResult::from_series(series)
+}
+
+/// Convert cached QueryResult back to the execute_query return format
+#[allow(clippy::type_complexity)]
+fn convert_cached_result(
+    result: QueryResult,
+    lang: QueryLanguage,
+) -> Result<
+    (
+        QueryLanguage,
+        String,
+        Vec<DataPoint>,
+        Option<AggregateExecutionResult>,
+        Option<Vec<SeriesData>>,
+    ),
+    String,
+> {
+    match result.data {
+        ResultData::Series(series) => {
+            let series_data: Vec<SeriesData> = series
+                .into_iter()
+                .map(|s| {
+                    let pointlist: Vec<[f64; 2]> = s
+                        .values
+                        .iter()
+                        .map(|(ts, val)| [*ts as f64, *val])
+                        .collect();
+                    let length = pointlist.len();
+
+                    // Extract metric name from special tag
+                    let metric = s
+                        .tags
+                        .get("__metric__")
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    // Build tag_set excluding internal __metric__ tag
+                    let tag_set: Vec<String> = s
+                        .tags
+                        .iter()
+                        .filter(|(k, _)| *k != "__metric__")
+                        .map(|(k, v)| format!("{}:{}", k, v))
+                        .collect();
+                    let scope = tag_set.join(",");
+
+                    SeriesData {
+                        metric,
+                        scope,
+                        tag_set,
+                        pointlist,
+                        length,
+                    }
+                })
+                .collect();
+
+            // Reconstruct DataPoints for backward compatibility
+            let points: Vec<DataPoint> = series_data
+                .iter()
+                .flat_map(|sd| {
+                    sd.pointlist
+                        .iter()
+                        .map(|p| DataPoint::new(0, p[0] as i64, p[1]))
+                })
+                .collect();
+
+            Ok((lang, "select".to_string(), points, None, Some(series_data)))
+        }
+        ResultData::Scalar(val) => Ok((
+            lang,
+            "scalar".to_string(),
+            vec![DataPoint::new(0, 0, val)],
+            None,
+            None,
+        )),
+        _ => Ok((lang, "unknown".to_string(), vec![], None, None)),
     }
 }
 

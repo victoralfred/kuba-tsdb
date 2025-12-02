@@ -416,11 +416,21 @@ impl RedisTimeIndex {
                     IndexError::ConnectionError(format!("Pipeline fetch failed: {}", e))
                 })?;
 
-            // Process results
+            // Process results and populate local cache
+            let mut cache = self.local_cache.write().await;
             for (series_id, tags_opt) in batch_ids.iter().zip(tags_results) {
                 let tags: HashMap<String, String> = tags_opt
                     .and_then(|json| serde_json::from_str(&json).ok())
                     .unwrap_or_default();
+
+                // Cache the metadata for future lookups (60 second TTL)
+                let metadata = SeriesMetadata {
+                    metric_name: String::new(), // Not available from this query
+                    tags: tags.clone(),
+                    created_at: 0, // Not available from this query
+                    retention_days: None,
+                };
+                cache.set_series_meta(*series_id, metadata, 60_000);
 
                 result.insert(*series_id, tags);
             }

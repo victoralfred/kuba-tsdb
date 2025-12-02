@@ -1,53 +1,70 @@
 # Multi-stage build for Gorilla TSDB
 # Optimized for production deployment with minimal image size
+# Runtime: Debian 13 (Trixie) Slim
 
 # ============================================================
 # Stage 1: BUILDER
 # ============================================================
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 # Define app name for clarity and re-use
-ENV APP_NAME=tsdb-server
-ENV CARGO_HOME=/usr/local/cargo
+ARG APP_NAME=tsdb-server
+ENV CARGO_HOME=/usr/local/cargo \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# Install build dependencies with no-install-recommends for smaller layer
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# 2. Setup Workdir and Copy Manifests
+# Setup Workdir and Copy Manifests
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 
-# 3. Dependency Caching Layer
+# Dependency Caching Layer
 # Create dummy files to force cargo to only compile dependencies
 # Also create placeholder bench files referenced in Cargo.toml
-RUN mkdir -p src benches src/bin && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > src/bin/server.rs && \
-    echo "pub fn dummy() {}" > src/lib.rs && \
-    echo "fn main() {}" > benches/compression.rs && \
-    echo "fn main() {}" > benches/ingestion.rs && \
-    echo "fn main() {}" > benches/mmap_performance.rs
+RUN mkdir -p src benches src/bin/server \
+    && echo "fn main() {}" > src/bin/server/main.rs \
+    && echo "pub fn dummy() {}" > src/lib.rs \
+    && echo "fn main() {}" > benches/compression.rs \
+    && echo "fn main() {}" > benches/ingestion.rs \
+    && echo "fn main() {}" > benches/mmap_performance.rs
 
-# Build dependencies (This fills the target/release folder with cached dependency artifacts)
+# Build dependencies (fills target/release with cached dependency artifacts)
 RUN cargo build --release --lib
 
-# Clean up temporary build artifacts (this must be a separate layer or the shell fails silently)
+# Clean up temporary build artifacts
 RUN rm -f target/release/${APP_NAME} || true \
-    && rm -rf src target/release/.fingerprint target/release/deps/*.d
+    && rm -rf src benches target/release/.fingerprint/gorilla* target/release/deps/gorilla*
 
-# 4. Final Build Layer
-# Copy actual source code, overwriting dummy files
-COPY . .
+# Final Build Layer - Copy actual source code
+COPY src/ src/
+COPY benches/ benches/
 
 # Final release build of the application executable
-RUN cargo build --release --bin ${APP_NAME}
+RUN cargo build --release --bin ${APP_NAME} \
+    && strip --strip-all target/release/${APP_NAME}
 
 # ============================================================
 # Stage 2: RUNTIME
+# Base: Debian 13 (Trixie) Slim for latest security patches
 # ============================================================
 FROM debian:13.2-slim
 # Define app name for clarity and re-use
 ENV APP_NAME=tsdb-server
+# Define app name for clarity and re-use
+ARG APP_NAME=tsdb-server
+ARG APP_USER=tsdb
+ARG APP_UID=1000
+
+# OCI image labels
+LABEL org.opencontainers.image.title="Gorilla TSDB" \
+      org.opencontainers.image.description="High-performance time-series database with Gorilla compression" \
+      org.opencontainers.image.licenses="MIT"
 # 1. Install Runtime Dependencies
 RUN apt update && apt install -y \
     ca-certificates \
@@ -62,29 +79,37 @@ RUN apt update && apt install -y \
 RUN useradd -m -u 1000 -s /bin/bash tsdb
 
 # Create data directory and set ownership
-RUN mkdir -p /data/gorilla-tsdb && \
-    chown -R tsdb:tsdb /data
+RUN mkdir -p /data/gorilla-tsdb \
+    && chown -R ${APP_USER}:${APP_USER} /data \
+    && chmod 750 /data/gorilla-tsdb
 
-# 3. Copy Final Binary
-# Copy only the compiled, stripped binary from the builder stage
-COPY --from=builder /app/target/release/${APP_NAME} /usr/local/bin/
+# Copy Final Binary from builder stage
+COPY --from=builder --chown=${APP_USER}:${APP_USER} \
+    /app/target/release/${APP_NAME} /usr/local/bin/
 
-# 4. Configure Runtime Environment
-WORKDIR /home/tsdb
-USER tsdb
+# Configure Runtime Environment
+WORKDIR /home/${APP_USER}
+USER ${APP_USER}
 
 # Environment variables
-ENV RUST_LOG=info
-ENV TSDB_DATA_DIR=/data/gorilla-tsdb
-ENV TSDB_PORT=8080
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=0 \
+    TSDB_DATA_DIR=/data/gorilla-tsdb \
+    TSDB_HOST=0.0.0.0 \
+    TSDB_PORT=8080
 
-# Metadata
+# Document exposed port
 EXPOSE 8080
 
-# Robust Health Check
-# Uses 'sh -c' instead of bash and curl/wget is avoided for minimal image size
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD timeout 2s sh -c '</dev/tcp/localhost/8080' || exit 1
+# Define volume for persistent data
+VOLUME ["/data/gorilla-tsdb"]
+
+# Health Check - TCP connection test without external tools
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD timeout 3 sh -c '</dev/tcp/localhost/8080' || exit 1
+
+# Use tini as init for proper signal handling and zombie reaping
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Run the server
 CMD ["tsdb-server"]

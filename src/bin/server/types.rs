@@ -331,16 +331,28 @@ pub struct FindSeriesResponse {
 /// Stats response
 #[derive(Debug, Serialize)]
 pub struct StatsResponse {
+    // Storage statistics
     pub total_chunks: u64,
     pub total_bytes: u64,
     pub total_series: u64,
     pub write_ops: u64,
     pub read_ops: u64,
     pub compression_ratio: f64,
+
+    // Index cache statistics
     pub index_cache_hits: u64,
     pub index_cache_misses: u64,
     pub index_queries_served: u64,
     pub index_cache_hit_rate: f64,
+
+    // Query result cache statistics
+    pub query_cache_hits: u64,
+    pub query_cache_misses: u64,
+    pub query_cache_entries: u64,
+    pub query_cache_size_bytes: u64,
+    pub query_cache_hit_rate: f64,
+    pub query_cache_evictions: u64,
+    pub query_cache_invalidations: u64,
 }
 
 /// Health response
