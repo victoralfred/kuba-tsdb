@@ -119,8 +119,8 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
     ))
     .parse(input)?;
 
-    // Parse optional offset
-    let (input, _offset) = opt(preceded(
+    // Parse optional offset - shifts the time range backward
+    let (input, offset) = opt(preceded(
         (multispace1, tag_no_case("offset"), multispace1),
         parse_duration,
     ))
@@ -128,23 +128,31 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
 
     // Build time range (using milliseconds to match database timestamp format)
     let now = current_time_millis();
+
+    // Apply offset if present - shifts entire time window backward
+    let adjusted_now = if let Some(off) = offset {
+        now - (off.as_millis() as i64)
+    } else {
+        now
+    };
+
     let time_range = if let Some(duration) = range {
         TimeRange {
-            start: now - (duration.as_millis() as i64),
-            end: now,
+            start: adjusted_now - (duration.as_millis() as i64),
+            end: adjusted_now,
         }
     } else {
         // Default: 1 hour lookback in milliseconds
         TimeRange {
-            start: now - 3_600_000,
-            end: now,
+            start: adjusted_now - 3_600_000,
+            end: adjusted_now,
         }
     };
 
     let window = range.map(|d| WindowSpec {
         duration: d,
         window_type: WindowType::Tumbling,
-        offset: None,
+        offset,
     });
 
     Ok((
@@ -196,6 +204,7 @@ fn parse_agg_function(input: &str) -> IResult<&str, AggregationFunction> {
 // ============================================================================
 
 /// Parse rate expression like: `rate(http_requests_total[5m])`
+/// Also supports offset: `rate(http_requests_total[5m]) offset 1h`
 fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
     let (input, func) = parse_rate_function(input)?;
     let (input, _) = multispace0(input)?;
@@ -208,6 +217,13 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
 
+    // Parse optional offset - shifts the time range backward
+    let (input, offset) = opt(preceded(
+        (multispace1, tag_no_case("offset"), multispace1),
+        parse_duration,
+    ))
+    .parse(input)?;
+
     // Range is required for rate functions
     let range = range.ok_or_else(|| {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Fail))
@@ -215,15 +231,23 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
 
     // Build time range (using milliseconds to match database timestamp format)
     let now = current_time_millis();
+
+    // Apply offset if present - shifts entire time window backward
+    let adjusted_now = if let Some(off) = offset {
+        now - (off.as_millis() as i64)
+    } else {
+        now
+    };
+
     let time_range = TimeRange {
-        start: now - (range.as_millis() as i64),
-        end: now,
+        start: adjusted_now - (range.as_millis() as i64),
+        end: adjusted_now,
     };
 
     let window = WindowSpec {
         duration: range,
         window_type: WindowType::Tumbling,
-        offset: None,
+        offset,
     };
 
     Ok((
@@ -700,8 +724,82 @@ mod tests {
 
     #[test]
     fn test_parse_with_offset() {
+        // Test vector selector with offset
         let result = parse_promql("cpu_usage offset 5m");
         assert!(result.is_ok());
+
+        // Verify offset shifts the time range backward
+        // Without offset: end ~= now, with 5m offset: end ~= now - 5min
+        match result.unwrap() {
+            Query::Select(q) => {
+                let now = current_time_millis();
+                // End should be approximately now - 5min (300,000ms), with some tolerance
+                let offset_ms = 5 * 60 * 1000; // 5 minutes in ms
+                let expected_end = now - offset_ms;
+                // Allow 1 second tolerance for test execution time
+                assert!(
+                    (q.time_range.end - expected_end).abs() < 1000,
+                    "Time range end should be shifted by offset"
+                );
+            }
+            _ => panic!("Expected Select query"),
+        }
+    }
+
+    #[test]
+    fn test_aggregation_with_offset() {
+        // Test aggregation function with offset: avg(cpu[1h]) offset 1d
+        let result = parse_promql("avg(cpu_usage[1h]) offset 1d");
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Query::Aggregate(q) => {
+                let now = current_time_millis();
+                // End should be approximately now - 1day (86,400,000ms)
+                let offset_ms = 24 * 60 * 60 * 1000; // 1 day in ms
+                let expected_end = now - offset_ms;
+                // Allow 1 second tolerance for test execution time
+                assert!(
+                    (q.time_range.end - expected_end).abs() < 1000,
+                    "Aggregation time range end should be shifted by offset"
+                );
+                // Duration should be 1 hour
+                let duration_ms = q.time_range.end - q.time_range.start;
+                assert!(
+                    (duration_ms - 3_600_000).abs() < 1000,
+                    "Duration should be 1 hour"
+                );
+            }
+            _ => panic!("Expected Aggregate query"),
+        }
+    }
+
+    #[test]
+    fn test_rate_with_offset() {
+        // Test rate function with offset: rate(requests[5m]) offset 1h
+        let result = parse_promql("rate(http_requests_total[5m]) offset 1h");
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            Query::Aggregate(q) => {
+                let now = current_time_millis();
+                // End should be approximately now - 1hour (3,600,000ms)
+                let offset_ms = 60 * 60 * 1000; // 1 hour in ms
+                let expected_end = now - offset_ms;
+                // Allow 1 second tolerance for test execution time
+                assert!(
+                    (q.time_range.end - expected_end).abs() < 1000,
+                    "Rate time range end should be shifted by offset"
+                );
+                // Duration should be 5 minutes
+                let duration_ms = q.time_range.end - q.time_range.start;
+                assert!(
+                    (duration_ms - 300_000).abs() < 1000,
+                    "Duration should be 5 minutes"
+                );
+            }
+            _ => panic!("Expected Aggregate query"),
+        }
     }
 
     #[test]

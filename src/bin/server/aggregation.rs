@@ -6,6 +6,7 @@
 use super::types::{TimeAggregationInfo, TimeBucket};
 use gorilla_tsdb::query::AggregationFunction as QueryAggFunction;
 use gorilla_tsdb::types::{DataPoint, TimeRange};
+use tdigest::TDigest;
 
 // =============================================================================
 // Constants
@@ -296,7 +297,17 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
                 }
             }
         }
-        _ => f64::NAN, // Unsupported in bucket context
+        QueryAggFunction::Percentile(p) => {
+            // Use t-digest for streaming percentile estimation
+            let digest = TDigest::new_with_size(100);
+            let digest = digest.merge_unsorted(values.to_vec());
+            digest.estimate_quantile(*p as f64 / 100.0)
+        }
+        QueryAggFunction::CountDistinct => {
+            use std::collections::HashSet;
+            let distinct: HashSet<u64> = values.iter().map(|v| v.to_bits()).collect();
+            distinct.len() as f64
+        }
     }
 }
 
@@ -384,6 +395,47 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
                 m2 += delta * delta2;
             }
             Some(m2 / (count - 1) as f64)
+        }
+        "median" | "p50" => {
+            let mut values: Vec<f64> = points.iter().map(|p| p.value).collect();
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mid = values.len() / 2;
+            if values.len() % 2 == 0 {
+                Some((values[mid - 1] + values[mid]) / 2.0)
+            } else {
+                Some(values[mid])
+            }
+        }
+        s if s.starts_with("p") || s.starts_with("percentile") => {
+            // Parse percentile value: p95, p99, percentile95, percentile(95), etc.
+            let num_str = s
+                .trim_start_matches("percentile")
+                .trim_start_matches('p')
+                .trim_start_matches('(')
+                .trim_end_matches(')');
+            if let Ok(pct) = num_str.parse::<f64>() {
+                let values: Vec<f64> = points.iter().map(|p| p.value).collect();
+                let digest = TDigest::new_with_size(100);
+                let digest = digest.merge_unsorted(values);
+                Some(digest.estimate_quantile(pct / 100.0))
+            } else {
+                None
+            }
+        }
+        s if s.starts_with("quantile") => {
+            // Parse quantile value: quantile(0.95), quantile0.95
+            let num_str = s
+                .trim_start_matches("quantile")
+                .trim_start_matches('(')
+                .trim_end_matches(')');
+            if let Ok(q) = num_str.parse::<f64>() {
+                let values: Vec<f64> = points.iter().map(|p| p.value).collect();
+                let digest = TDigest::new_with_size(100);
+                let digest = digest.merge_unsorted(values);
+                Some(digest.estimate_quantile(q))
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -512,7 +564,19 @@ pub fn compute_aggregation_from_ast(
             let last = points.last().unwrap();
             last.value - first.value
         }
-        _ => f64::NAN,
+        QueryAggFunction::Percentile(p) => {
+            // Use t-digest for efficient streaming percentile estimation
+            let values: Vec<f64> = points.iter().map(|p| p.value).collect();
+            let digest = TDigest::new_with_size(100);
+            let digest = digest.merge_unsorted(values);
+            digest.estimate_quantile(*p as f64 / 100.0)
+        }
+        QueryAggFunction::CountDistinct => {
+            // Approximate distinct count using a simple hash set
+            use std::collections::HashSet;
+            let distinct: HashSet<u64> = points.iter().map(|p| p.value.to_bits()).collect();
+            distinct.len() as f64
+        }
     };
 
     (func_name, value)
@@ -538,6 +602,18 @@ pub fn create_time_aggregation_info(
 mod tests {
     use super::*;
 
+    // Helper to create test data points
+    fn make_points(values: &[(i64, f64)]) -> Vec<DataPoint> {
+        values
+            .iter()
+            .map(|(ts, val)| DataPoint {
+                series_id: 1, // Test series ID
+                timestamp: *ts,
+                value: *val,
+            })
+            .collect()
+    }
+
     #[test]
     fn test_calculate_auto_interval() {
         // 1 hour range should give ~1m buckets for 200 points
@@ -548,6 +624,17 @@ mod tests {
         // 1 day range should give larger buckets
         let (interval_ms, _) = calculate_auto_interval(86_400_000, 200);
         assert!(interval_ms >= 300_000); // At least 5 minutes
+
+        // Edge case: zero/negative time range
+        let (interval_ms, _) = calculate_auto_interval(0, 200);
+        assert_eq!(interval_ms, 60_000); // Default 1m
+
+        let (interval_ms, _) = calculate_auto_interval(-100, 200);
+        assert_eq!(interval_ms, 60_000); // Default 1m
+
+        // Edge case: zero target points
+        let (interval_ms, _) = calculate_auto_interval(3_600_000, 0);
+        assert_eq!(interval_ms, 60_000); // Default 1m
     }
 
     #[test]
@@ -566,6 +653,11 @@ mod tests {
         // Good range - 1m interval for 200 mins = 200 points
         let warning = validate_interval(60_000, 12_000_000);
         assert!(warning.is_none(), "Expected no warning for 200 points");
+
+        // Edge cases: zero or negative
+        assert!(validate_interval(0, 100).is_none());
+        assert!(validate_interval(100, 0).is_none());
+        assert!(validate_interval(-100, 100).is_none());
     }
 
     #[test]
@@ -574,5 +666,300 @@ mod tests {
         assert_eq!(format_interval_ms(60_000), "1m");
         assert_eq!(format_interval_ms(3_600_000), "1h");
         assert_eq!(format_interval_ms(86_400_000), "1d");
+
+        // Non-aligned values fall back to seconds
+        assert_eq!(format_interval_ms(90_000), "90s"); // 1.5 minutes
+    }
+
+    #[test]
+    fn test_parse_interval_to_ms() {
+        assert_eq!(parse_interval_to_ms("5s"), Some(5_000));
+        assert_eq!(parse_interval_to_ms("5m"), Some(300_000));
+        assert_eq!(parse_interval_to_ms("2h"), Some(7_200_000));
+        assert_eq!(parse_interval_to_ms("1d"), Some(86_400_000));
+
+        // "auto" returns None (signal for auto-calculation)
+        assert_eq!(parse_interval_to_ms("auto"), None);
+
+        // Invalid inputs
+        assert_eq!(parse_interval_to_ms("5"), None); // No unit
+        assert_eq!(parse_interval_to_ms("m"), None); // No number
+        assert_eq!(parse_interval_to_ms(""), None);
+        assert_eq!(parse_interval_to_ms("5x"), None); // Invalid unit
+    }
+
+    #[test]
+    fn test_aggregate_into_buckets_empty() {
+        let points: Vec<DataPoint> = vec![];
+        let time_range = TimeRange {
+            start: 0,
+            end: 100_000,
+        };
+        let buckets = aggregate_into_buckets(&points, 10_000, time_range, &QueryAggFunction::Avg);
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn test_aggregate_into_buckets_basic() {
+        let points = make_points(&[(0, 10.0), (5_000, 20.0), (10_000, 30.0), (15_000, 40.0)]);
+        let time_range = TimeRange {
+            start: 0,
+            end: 20_000,
+        };
+
+        // 10-second buckets
+        let buckets = aggregate_into_buckets(&points, 10_000, time_range, &QueryAggFunction::Avg);
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].timestamp, 0);
+        assert!((buckets[0].value - 15.0).abs() < 0.001); // avg(10, 20) = 15
+        assert_eq!(buckets[1].timestamp, 10_000);
+        assert!((buckets[1].value - 35.0).abs() < 0.001); // avg(30, 40) = 35
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_count() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::Count);
+        assert_eq!(result, 5.0);
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_sum() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::Sum);
+        assert!((result - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_min_max() {
+        let values = vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
+        assert_eq!(
+            aggregate_bucket_values(&values, &QueryAggFunction::Min),
+            1.0
+        );
+        assert_eq!(
+            aggregate_bucket_values(&values, &QueryAggFunction::Max),
+            9.0
+        );
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_avg() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::Avg);
+        assert!((result - 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_first_last() {
+        let values = vec![10.0, 20.0, 30.0];
+        assert_eq!(
+            aggregate_bucket_values(&values, &QueryAggFunction::First),
+            10.0
+        );
+        assert_eq!(
+            aggregate_bucket_values(&values, &QueryAggFunction::Last),
+            30.0
+        );
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_stddev() {
+        let values = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::StdDev);
+        // Standard deviation should be approximately 2.138
+        assert!((result - 2.138).abs() < 0.01);
+
+        // Single value should return 0
+        let single = vec![5.0];
+        assert_eq!(
+            aggregate_bucket_values(&single, &QueryAggFunction::StdDev),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_variance() {
+        let values = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::Variance);
+        // Variance should be approximately 4.571
+        assert!((result - 4.571).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_median() {
+        // Odd number of elements
+        let odd = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+        assert_eq!(
+            aggregate_bucket_values(&odd, &QueryAggFunction::Median),
+            5.0
+        );
+
+        // Even number of elements
+        let even = vec![1.0, 3.0, 5.0, 7.0];
+        assert_eq!(
+            aggregate_bucket_values(&even, &QueryAggFunction::Median),
+            4.0
+        );
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_percentile() {
+        let values: Vec<f64> = (1..=100).map(|x| x as f64).collect();
+
+        // p50 should be around 50
+        let p50 = aggregate_bucket_values(&values, &QueryAggFunction::Percentile(50));
+        assert!((p50 - 50.0).abs() < 2.0);
+
+        // p95 should be around 95
+        let p95 = aggregate_bucket_values(&values, &QueryAggFunction::Percentile(95));
+        assert!((p95 - 95.0).abs() < 2.0);
+
+        // p99 should be around 99
+        let p99 = aggregate_bucket_values(&values, &QueryAggFunction::Percentile(99));
+        assert!((p99 - 99.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_count_distinct() {
+        let values = vec![1.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0];
+        let result = aggregate_bucket_values(&values, &QueryAggFunction::CountDistinct);
+        assert_eq!(result, 4.0); // 4 distinct values
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_rate_functions() {
+        let values = vec![100.0, 150.0, 200.0];
+
+        // Increase: last - first (positive only)
+        let increase = aggregate_bucket_values(&values, &QueryAggFunction::Increase);
+        assert_eq!(increase, 100.0);
+
+        // Delta: last - first
+        let delta = aggregate_bucket_values(&values, &QueryAggFunction::Delta);
+        assert_eq!(delta, 100.0);
+
+        // Rate: also last - first
+        let rate = aggregate_bucket_values(&values, &QueryAggFunction::Rate);
+        assert_eq!(rate, 100.0);
+
+        // With only one value, rate functions return 0
+        let single = vec![100.0];
+        assert_eq!(
+            aggregate_bucket_values(&single, &QueryAggFunction::Rate),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_aggregate_bucket_values_empty() {
+        let empty: Vec<f64> = vec![];
+        assert!(aggregate_bucket_values(&empty, &QueryAggFunction::Avg).is_nan());
+    }
+
+    #[test]
+    fn test_compute_aggregation_string_api() {
+        let points = make_points(&[(0, 1.0), (1000, 2.0), (2000, 3.0), (3000, 4.0), (4000, 5.0)]);
+
+        assert_eq!(compute_aggregation("count", &points), Some(5.0));
+        assert_eq!(compute_aggregation("sum", &points), Some(15.0));
+        assert_eq!(compute_aggregation("min", &points), Some(1.0));
+        assert_eq!(compute_aggregation("max", &points), Some(5.0));
+        assert_eq!(compute_aggregation("avg", &points), Some(3.0));
+        assert_eq!(compute_aggregation("mean", &points), Some(3.0)); // alias
+        assert_eq!(compute_aggregation("first", &points), Some(1.0));
+        assert_eq!(compute_aggregation("last", &points), Some(5.0));
+
+        // Unknown function returns None
+        assert_eq!(compute_aggregation("unknown", &points), None);
+
+        // Empty points returns None
+        let empty: Vec<DataPoint> = vec![];
+        assert_eq!(compute_aggregation("count", &empty), None);
+    }
+
+    #[test]
+    fn test_compute_aggregation_percentile_string() {
+        let points = make_points(&(1..=100).map(|x| (x * 1000, x as f64)).collect::<Vec<_>>());
+
+        // p50
+        let p50 = compute_aggregation("p50", &points).unwrap();
+        assert!((p50 - 50.0).abs() < 2.0);
+
+        // p95
+        let p95 = compute_aggregation("p95", &points).unwrap();
+        assert!((p95 - 95.0).abs() < 2.0);
+
+        // percentile(99)
+        let p99 = compute_aggregation("percentile(99)", &points).unwrap();
+        assert!((p99 - 99.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn test_compute_aggregation_quantile_string() {
+        let points = make_points(&(1..=100).map(|x| (x * 1000, x as f64)).collect::<Vec<_>>());
+
+        // quantile(0.5)
+        let q50 = compute_aggregation("quantile(0.5)", &points).unwrap();
+        assert!((q50 - 50.0).abs() < 2.0);
+
+        // quantile(0.95)
+        let q95 = compute_aggregation("quantile(0.95)", &points).unwrap();
+        assert!((q95 - 95.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn test_compute_aggregation_stddev_variance() {
+        let points = make_points(&[
+            (0, 2.0),
+            (1, 4.0),
+            (2, 4.0),
+            (3, 4.0),
+            (4, 5.0),
+            (5, 5.0),
+            (6, 7.0),
+            (7, 9.0),
+        ]);
+
+        let stddev = compute_aggregation("stddev", &points).unwrap();
+        assert!((stddev - 2.138).abs() < 0.01);
+
+        let var = compute_aggregation("variance", &points).unwrap();
+        assert!((var - 4.571).abs() < 0.01);
+
+        // Single point
+        let single = make_points(&[(0, 5.0)]);
+        assert_eq!(compute_aggregation("stddev", &single), Some(0.0));
+    }
+
+    #[test]
+    fn test_compute_aggregation_from_ast() {
+        let points = make_points(&[(0, 10.0), (1000, 20.0), (2000, 30.0)]);
+
+        let (name, value) = compute_aggregation_from_ast(&QueryAggFunction::Sum, &points);
+        assert!(name.contains("sum"));
+        assert!((value - 60.0).abs() < 0.001);
+
+        let (_, value) = compute_aggregation_from_ast(&QueryAggFunction::Avg, &points);
+        assert!((value - 20.0).abs() < 0.001);
+
+        // Percentile from AST
+        let (_, value) = compute_aggregation_from_ast(&QueryAggFunction::Percentile(50), &points);
+        assert!((value - 20.0).abs() < 5.0);
+
+        // Empty points
+        let empty: Vec<DataPoint> = vec![];
+        let (_, value) = compute_aggregation_from_ast(&QueryAggFunction::Avg, &empty);
+        assert!(value.is_nan());
+    }
+
+    #[test]
+    fn test_create_time_aggregation_info() {
+        let info = create_time_aggregation_info("auto".to_string(), "5m".to_string(), 300_000, 24);
+        assert_eq!(info.mode, "auto");
+        assert_eq!(info.interval, "5m");
+        assert_eq!(info.interval_ms, 300_000);
+        assert_eq!(info.bucket_count, 24);
+        assert_eq!(info.target_points, Some(DEFAULT_TARGET_POINTS));
     }
 }

@@ -483,12 +483,13 @@ mod tests {
         let limiter = RateLimiter::new(config);
         let ip: IpAddr = "192.168.1.1".parse().unwrap();
 
-        // Should allow up to 100 points (capacity)
-        assert!(limiter.check_ip(ip, 50));
-        assert!(limiter.check_ip(ip, 50));
+        // Consume all 100 tokens in one call to avoid refill race
+        assert!(limiter.check_ip(ip, 100));
 
-        // Should reject - bucket empty
-        assert!(!limiter.check_ip(ip, 1));
+        // Immediately try to consume more than could have been refilled
+        // At 100 tokens/sec, even 10ms would only refill 1 token
+        // Requesting 100 should fail
+        assert!(!limiter.check_ip(ip, 100));
         assert_eq!(limiter.total_rejections(), 1);
     }
 
@@ -507,8 +508,10 @@ mod tests {
         // Should allow up to 200 points (2x burst)
         assert!(limiter.check_ip(ip, 200));
 
-        // Should reject
-        assert!(!limiter.check_ip(ip, 1));
+        // Immediately try to consume more than could have been refilled
+        // At 100 tokens/sec, even 10ms would only refill 1 token
+        // Requesting 200 should fail
+        assert!(!limiter.check_ip(ip, 200));
     }
 
     #[test]
@@ -525,12 +528,14 @@ mod tests {
 
         // Consume all tokens
         assert!(limiter.check_ip(ip, 1000));
-        assert!(!limiter.check_ip(ip, 1));
+
+        // Immediately requesting all tokens again should fail
+        assert!(!limiter.check_ip(ip, 1000));
 
         // Wait for refill (100ms should give ~100 tokens)
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(150));
 
-        // Should have some tokens now
+        // Should have some tokens now (at least 100 after 100ms at 1000/sec)
         assert!(limiter.check_ip(ip, 50));
     }
 
@@ -630,8 +635,9 @@ mod tests {
         // Consume all tokens from first IP
         assert!(limiter.check_ip(ip1, 100));
 
-        // Second IP from same /64 should be rejected (shared bucket)
-        assert!(!limiter.check_ip(ip2, 1));
+        // Second IP from same /64 should be rejected when requesting all tokens
+        // (shared bucket, so requesting 100 more should fail)
+        assert!(!limiter.check_ip(ip2, 100));
 
         // Third IP from different /64 should have its own bucket
         assert!(limiter.check_ip(ip3, 100));

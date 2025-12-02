@@ -648,6 +648,14 @@ impl CacheConfig {
         self
     }
 
+    /// Set the background eviction interval in seconds
+    ///
+    /// Default is 5 seconds. Use smaller values for testing.
+    pub fn with_eviction_interval(mut self, interval_secs: u64) -> Self {
+        self.eviction_interval_secs = interval_secs;
+        self
+    }
+
     /// Get the low watermark threshold in bytes
     pub fn low_watermark_bytes(&self) -> usize {
         (self.max_size_bytes as f64 * self.low_watermark) as usize
@@ -1671,28 +1679,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_manager_background_eviction() {
+        // Use 1-second eviction interval for faster test
         let config = CacheConfig::new(200)
             .with_shards(2)
-            .with_watermarks(0.5, 0.8, 0.95);
+            .with_watermarks(0.5, 0.8, 0.95)
+            .with_eviction_interval(1);
 
         let cache: CacheManager<Vec<u8>> = CacheManager::new(config);
 
         // Start background eviction
         cache.start_background_eviction().await.unwrap();
 
-        // Fill cache past high watermark
+        // Fill cache past high watermark (400 bytes into 200 byte cache)
         for i in 0..20 {
             let key = CacheKey::new(1, i);
             cache.insert(key, vec![0u8; 20], 20, 0);
         }
 
-        // Wait for background eviction to run
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait for background eviction to run (interval is 1 second, so wait 1.5s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // Stop background eviction
         cache.stop_background_eviction().await;
 
-        // Memory usage should be controlled
+        // Memory usage should be controlled below capacity
         assert!(cache.memory_usage_ratio() < 1.0);
     }
 }
