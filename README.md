@@ -96,77 +96,128 @@ curl "http://localhost:8090/api/v1/query?metric=cpu.usage&start=1733100000000&en
 
 ## Query API
 
-### REST API Query
+### REST API Query (`GET /api/v1/query`)
 
 ```bash
-# Query with aggregation
-curl "http://localhost:8090/api/v1/query?\
-metric=cpu.usage&\
-start=1733100000000&\
-end=1733103600000&\
-aggregation=avg"
+# Basic query by metric name
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&limit=10"
+
+# Query with tag filter
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&tags=%7B%22host%22%3A%22server1%22%7D&start=1733100000000&end=1733200000000"
+
+# Query with AVG aggregation
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&aggregation=avg"
+# Response: {"success":true,"series_id":123,"points":[],"aggregation":{"function":"avg","value":45.5,"point_count":100}}
+
+# Query with MIN aggregation
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&aggregation=min"
+
+# Query with MAX aggregation
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&aggregation=max"
+
+# Query with SUM aggregation
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&aggregation=sum"
+
+# Query with COUNT aggregation
+curl "http://localhost:8090/api/v1/query?metric=cpu_usage&start=1733100000000&end=1733200000000&aggregation=count"
 ```
 
-### SQL Queries
+### SQL Queries (`POST /api/v1/query/sql`)
 
 Execute SQL queries via the `/api/v1/query/sql` endpoint:
 
 ```bash
-# Basic SELECT
+# Basic SELECT with time range
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM cpu.usage WHERE time > now() - 1h"}'
+  -d '{"query": "SELECT * FROM cpu_usage WHERE time > now() - 2h LIMIT 10", "language": "sql"}'
 
-# Aggregation with time bucketing
+# SELECT with tag filter
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT avg(value) FROM cpu.usage WHERE time > now() - 1h GROUP BY time(5m)"}'
+  -d '{"query": "SELECT * FROM cpu_usage WHERE host = '\''server1'\'' LIMIT 10", "language": "sql"}'
 
-# Filter by tags
+# AVG aggregation
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM cpu.usage WHERE host = '\''server1'\'' AND time > now() - 1h"}'
+  -d '{"query": "SELECT avg(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
 
-# Multiple aggregations
+# MIN/MAX aggregation
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT min(value), max(value), avg(value) FROM cpu.usage WHERE time > now() - 24h"}'
+  -d '{"query": "SELECT min(value), max(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
 
-# Percentiles
+# SUM aggregation
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT percentile(value, 95) FROM response_time WHERE time > now() - 1h"}'
+  -d '{"query": "SELECT sum(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
+
+# COUNT aggregation
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT count(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
+
+# STDDEV aggregation
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT stddev(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
+
+# PERCENTILE aggregation (95th percentile)
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT percentile(value, 95) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
+
+# MEDIAN aggregation
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT median(value) FROM cpu_usage WHERE time > now() - 1h", "language": "sql"}'
+
+# Time-bucketed aggregation (5 minute buckets)
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT avg(value) FROM cpu_usage WHERE time > now() - 1h GROUP BY time(5m)", "language": "sql"}'
+# Response includes time_aggregation with bucket details
 ```
 
-### PromQL Queries
+### PromQL Queries (`POST /api/v1/query/sql` with `language: "promql"`)
 
 Use Prometheus-compatible query syntax:
 
 ```bash
-# Instant vector
+# Instant vector selector
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "cpu.usage{host=\"server1\"}", "language": "promql"}'
+  -d '{"query": "cpu_usage{host=\"server1\"}", "language": "promql"}'
 
-# Range vector with aggregation
+# Range vector (last 5 minutes)
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "avg(cpu.usage{region=\"us-east\"}[5m])", "language": "promql"}'
+  -d '{"query": "cpu_usage[5m]", "language": "promql"}'
 
-# Rate calculation
+# AVG aggregation over range
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "rate(http_requests_total[5m])", "language": "promql"}'
+  -d '{"query": "avg(cpu_usage[1h])", "language": "promql"}'
 
-# Group by labels
+# SUM aggregation over range
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "sum(cpu.usage) by (host)", "language": "promql"}'
+  -d '{"query": "sum(cpu_usage[1h])", "language": "promql"}'
 
-# With offset (query historical data)
+# MIN aggregation
 curl -X POST http://localhost:8090/api/v1/query/sql \
   -H "Content-Type: application/json" \
-  -d '{"query": "avg(cpu.usage[1h]) offset 1d", "language": "promql"}'
+  -d '{"query": "min(cpu_usage[1h])", "language": "promql"}'
+
+# MAX aggregation
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "max(cpu_usage[1h])", "language": "promql"}'
+
+# COUNT aggregation
+curl -X POST http://localhost:8090/api/v1/query/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "count(cpu_usage[1h])", "language": "promql"}'
 ```
 
 ### Supported Aggregation Functions

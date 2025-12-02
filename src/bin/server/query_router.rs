@@ -149,9 +149,8 @@ pub async fn execute_query_with_cache(
 
             // Cache aggregate results (they're expensive to compute)
             if let Some(query_cache) = cache {
-                let query_result = QueryResult::from_rows(
-                    points.iter().map(|p| ResultRow::from(*p)).collect(),
-                );
+                let query_result =
+                    QueryResult::from_rows(points.iter().map(|p| ResultRow::from(*p)).collect());
                 query_cache.put(&parsed, query_result);
                 tracing::debug!("Cached AGGREGATE query result");
             }
