@@ -298,7 +298,8 @@ impl WriteRequest {
     pub fn encode_to_vec(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         // Encoding to Vec can only fail on OOM, which panics anyway in Rust
-        self.encode(&mut buf).expect("encoding to Vec failed (OOM?)");
+        self.encode(&mut buf)
+            .expect("encoding to Vec failed (OOM?)");
         buf
     }
 }
