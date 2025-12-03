@@ -345,8 +345,23 @@ impl NetworkListener {
             debug!("UDP listener started on {}", addr);
         }
 
-        // HTTP listener would be started here
-        // (TODO: implement HTTP listener in separate task)
+        // Start HTTP listener if configured
+        if let Some(addr) = self.config.http_addr {
+            let http_listener = HttpListener::new(addr, self.config.tls.as_ref(), HttpConfig::default())
+                .await?;
+
+            let http_listener = http_listener
+                .with_rate_limiter(Arc::clone(&self.rate_limiter))
+                .with_shutdown(self.shutdown_tx.subscribe());
+
+            tokio::spawn(async move {
+                if let Err(e) = http_listener.run().await {
+                    warn!("HTTP listener error: {}", e);
+                }
+            });
+
+            debug!("HTTP listener started on {}", addr);
+        }
 
         debug!("Network listeners started");
         Ok(())

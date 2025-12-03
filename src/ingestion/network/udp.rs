@@ -30,6 +30,7 @@ use tracing::{debug, error, trace, warn};
 
 use super::error::NetworkError;
 use super::rate_limit::RateLimiter;
+use crate::ingestion::protocol::{LineProtocolParser, ProtocolParser};
 
 /// UDP listener for receiving datagrams
 ///
@@ -339,31 +340,46 @@ impl UdpListener {
             return;
         }
 
-        // Process the datagram
-        // TODO: Send to protocol parser pipeline
-        // For now, just trace
+        // Process the datagram through protocol parser
         trace!(
             src = %src_addr,
             bytes = len,
             "Received UDP datagram"
         );
 
-        // Parse data as UTF-8 for line protocol
-        // In production, this would go to the protocol parser
-        match std::str::from_utf8(data) {
-            Ok(text) => {
-                // Each line in the datagram is a separate data point
-                for line in text.lines() {
-                    if !line.is_empty() {
-                        trace!(src = %src_addr, line = %line, "UDP line received");
-                        // TODO: Forward to protocol parser
-                    }
+        // Parse data using line protocol parser
+        let parser = LineProtocolParser::new();
+
+        match parser.parse(data) {
+            Ok(points) => {
+                let point_count = points.len();
+                trace!(
+                    src = %src_addr,
+                    bytes = len,
+                    points = point_count,
+                    "Parsed {} data points from UDP",
+                    point_count
+                );
+
+                // Log the parsed points (in production, these would be sent to ingestion pipeline)
+                for point in &points {
+                    trace!(
+                        src = %src_addr,
+                        measurement = %point.measurement,
+                        tags = ?point.tags.len(),
+                        fields = ?point.fields.len(),
+                        timestamp = ?point.timestamp,
+                        "UDP parsed point"
+                    );
                 }
             }
-            Err(_) => {
-                // Invalid UTF-8 - might be binary protocol
+            Err(e) => {
                 self.stats.parse_errors.fetch_add(1, Ordering::Relaxed);
-                debug!(src = %src_addr, "Invalid UTF-8 in UDP datagram");
+                debug!(
+                    src = %src_addr,
+                    error = %e,
+                    "Failed to parse UDP datagram"
+                );
             }
         }
     }

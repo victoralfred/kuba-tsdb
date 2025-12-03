@@ -23,6 +23,7 @@ use super::connection::{ConnectionConfig, ConnectionManager};
 use super::error::NetworkError;
 use super::rate_limit::RateLimiter;
 use super::tls::TlsConfig;
+use crate::ingestion::protocol::{LineProtocolParser, ProtocolParser};
 
 /// TCP listener with optional TLS support
 ///
@@ -396,17 +397,51 @@ impl TcpListener {
                         });
                     }
 
-                    // Process the line
-                    // TODO: Send to protocol parser pipeline
-                    // For now, just acknowledge receipt
-                    trace!(
-                        peer = %peer_addr,
-                        bytes = bytes_read,
-                        "Received data"
-                    );
+                    // Process the line through protocol parser
+                    let parser = LineProtocolParser::new();
+                    let line_bytes = line.trim_end().as_bytes();
 
-                    // Send acknowledgment (will be replaced with actual processing)
-                    let _ = writer.write_all(b"OK\n").await;
+                    if line_bytes.is_empty() {
+                        line.clear();
+                        continue;
+                    }
+
+                    match parser.parse(line_bytes) {
+                        Ok(points) => {
+                            let point_count = points.len();
+                            trace!(
+                                peer = %peer_addr,
+                                bytes = bytes_read,
+                                points = point_count,
+                                "Parsed {} data points",
+                                point_count
+                            );
+
+                            // Log the parsed points (in production, these would be sent to ingestion pipeline)
+                            for point in &points {
+                                trace!(
+                                    measurement = %point.measurement,
+                                    tags = ?point.tags.len(),
+                                    fields = ?point.fields.len(),
+                                    timestamp = ?point.timestamp,
+                                    "Parsed point"
+                                );
+                            }
+
+                            // Send success acknowledgment with point count
+                            let response = format!("OK {} points\n", point_count);
+                            let _ = writer.write_all(response.as_bytes()).await;
+                        }
+                        Err(e) => {
+                            warn!(
+                                peer = %peer_addr,
+                                error = %e,
+                                "Failed to parse line protocol"
+                            );
+                            let response = format!("ERR parse error: {}\n", e);
+                            let _ = writer.write_all(response.as_bytes()).await;
+                        }
+                    }
                 }
                 Ok(Err(e)) => {
                     // Read error
