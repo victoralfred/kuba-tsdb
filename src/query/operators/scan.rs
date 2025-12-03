@@ -6,12 +6,22 @@
 //! - Decompression (Gorilla encoding)
 //! - Batch formation with configurable size
 //! - Zone map filtering for chunk pruning
+//!
+//! # Storage Modes
+//!
+//! The scan operator can work in two modes:
+//! - **Mock mode**: Uses pre-loaded test data (for testing)
+//! - **Storage mode**: Reads from actual `TimeSeriesDB` storage (for production)
+//!
+//! To enable storage mode, use `ScanOperator::with_storage()`.
 
+use crate::engine::TimeSeriesDB;
 use crate::query::ast::{Predicate, SeriesSelector};
 use crate::query::error::QueryError;
 use crate::query::executor::ExecutionContext;
 use crate::query::operators::{DataBatch, Operator};
-use crate::types::{SeriesId, TimeRange};
+use crate::types::{DataPoint, SeriesId, TimeRange};
+use std::sync::Arc;
 
 /// Scan operator that reads from storage
 pub struct ScanOperator {
@@ -36,6 +46,14 @@ pub struct ScanOperator {
     /// Mock data for testing (will be replaced with actual storage access)
     /// Uses SeriesId (u128) for consistency with types module (TYPE-001)
     mock_data: Option<Vec<(i64, f64, SeriesId)>>,
+
+    /// Optional storage reference for actual database access
+    /// When set, bypasses mock_data and reads from real storage
+    storage: Option<Arc<TimeSeriesDB>>,
+
+    /// Cached data points from storage query (loaded on first next_batch call)
+    /// This avoids re-querying storage on each batch request
+    cached_points: Option<Vec<DataPoint>>,
 }
 
 impl ScanOperator {
@@ -49,7 +67,22 @@ impl ScanOperator {
             position: 0,
             exhausted: false,
             mock_data: None,
+            storage: None,
+            cached_points: None,
         }
+    }
+
+    /// Attach storage backend for actual database access
+    ///
+    /// When storage is attached, the operator reads data from the
+    /// real database instead of using mock data.
+    ///
+    /// # Arguments
+    ///
+    /// * `db` - Arc reference to TimeSeriesDB
+    pub fn with_storage(mut self, db: Arc<TimeSeriesDB>) -> Self {
+        self.storage = Some(db);
+        self
     }
 
     /// Add predicate filter (for pushed-down predicates)
@@ -95,6 +128,68 @@ impl ScanOperator {
             None => true,                // No specific series ID filter, match all
         }
     }
+
+    /// Load data from storage into cache
+    ///
+    /// Uses tokio runtime to bridge sync/async boundary.
+    fn load_from_storage(&mut self) -> Result<(), QueryError> {
+        let db = self.storage.as_ref().unwrap();
+
+        // Get series IDs to query
+        let series_ids: Vec<SeriesId> = match self.selector.series_id {
+            Some(id) => vec![id],
+            None => {
+                // If no specific series ID, use measurement-based lookup
+                // This requires async call to find_series
+                if let Some(ref measurement) = self.selector.measurement {
+                    let tag_filter = self.selector.to_tag_filter();
+                    let handle = tokio::runtime::Handle::try_current()
+                        .map_err(|_| QueryError::execution("No tokio runtime available"))?;
+
+                    handle
+                        .block_on(db.find_series(measurement, &tag_filter))
+                        .map_err(|e| {
+                            QueryError::execution(format!("Series lookup failed: {}", e))
+                        })?
+                } else {
+                    // No selector criteria - cannot scan all series
+                    return Ok(());
+                }
+            }
+        };
+
+        if series_ids.is_empty() {
+            self.cached_points = Some(Vec::new());
+            return Ok(());
+        }
+
+        // Get time range for query
+        let time_range = self.time_range.unwrap_or_else(|| {
+            // Default to all time if no range specified
+            TimeRange::new_unchecked(0, i64::MAX)
+        });
+
+        // Query all series and collect points
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| QueryError::execution("No tokio runtime available"))?;
+
+        let mut all_points: Vec<DataPoint> = Vec::new();
+
+        for series_id in series_ids {
+            match handle.block_on(db.query(series_id, time_range)) {
+                Ok(points) => all_points.extend(points),
+                Err(e) => {
+                    tracing::warn!(series_id = series_id, error = %e, "Error querying series");
+                }
+            }
+        }
+
+        // Sort by timestamp
+        all_points.sort_by_key(|p| p.timestamp);
+
+        self.cached_points = Some(all_points);
+        Ok(())
+    }
 }
 
 impl Operator for ScanOperator {
@@ -111,10 +206,63 @@ impl Operator for ScanOperator {
             return Ok(None);
         }
 
-        // Use mock data if available (for testing)
-        if let Some(ref data) = self.mock_data {
+        // Check if we need to load data from storage (first call with storage attached)
+        if self.storage.is_some() && self.cached_points.is_none() {
+            self.load_from_storage()?;
+        }
+
+        // Determine data source and process
+        let has_cached = self.cached_points.is_some();
+        let has_mock = self.mock_data.is_some();
+
+        if has_cached {
+            // Process cached points from storage
             let mut batch = DataBatch::with_capacity(self.batch_size);
             let mut count = 0;
+
+            // Safe to unwrap since we checked is_some above
+            let points = self.cached_points.as_ref().unwrap();
+
+            while self.position < points.len() && count < self.batch_size {
+                let point = &points[self.position];
+                self.position += 1;
+
+                // Apply value predicate filter
+                if !self.passes_predicate(point.value) {
+                    continue;
+                }
+
+                batch.push_with_series(point.timestamp, point.value, point.series_id);
+                count += 1;
+            }
+
+            if self.position >= points.len() {
+                self.exhausted = true;
+            }
+
+            if batch.is_empty() && self.exhausted {
+                return Ok(None);
+            }
+
+            // Track memory usage
+            let mem_size = batch.memory_size();
+            if !ctx.allocate_memory(mem_size) {
+                return Err(QueryError::resource_limit(
+                    "Memory limit exceeded during scan",
+                ));
+            }
+
+            ctx.record_rows(batch.len());
+            return Ok(Some(batch));
+        }
+
+        if has_mock {
+            // Process mock data
+            let mut batch = DataBatch::with_capacity(self.batch_size);
+            let mut count = 0;
+
+            // Safe to unwrap since we checked is_some above
+            let data = self.mock_data.as_ref().unwrap();
 
             while self.position < data.len() && count < self.batch_size {
                 let (ts, val, sid) = data[self.position];
@@ -155,13 +303,9 @@ impl Operator for ScanOperator {
             return Ok(Some(batch));
         }
 
-        // TODO: Implement actual storage access
-        // This would:
-        // 1. Query chunk metadata from index (Redis)
-        // 2. Apply zone map filtering to skip irrelevant chunks
-        // 3. Read and decompress chunks
-        // 4. Form batches from decompressed data
-
+        // No data source configured - scan is empty
+        // NOTE: For production use with chunk-level storage access, use
+        // StorageScanOperator which integrates with LocalDiskEngine.
         self.exhausted = true;
         Ok(None)
     }
@@ -169,6 +313,8 @@ impl Operator for ScanOperator {
     fn reset(&mut self) {
         self.position = 0;
         self.exhausted = false;
+        // Clear cached points so they're reloaded on next scan
+        self.cached_points = None;
     }
 
     fn name(&self) -> &'static str {

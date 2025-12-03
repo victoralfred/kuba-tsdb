@@ -23,7 +23,9 @@ use super::connection::{ConnectionConfig, ConnectionManager};
 use super::error::NetworkError;
 use super::rate_limit::RateLimiter;
 use super::tls::TlsConfig;
-use crate::ingestion::protocol::{parsed_points_to_data_points, LineProtocolParser, ProtocolParser};
+use crate::ingestion::protocol::{
+    parsed_points_to_data_points, LineProtocolParser, ProtocolParser,
+};
 use crate::ingestion::IngestionPipeline;
 
 /// TCP listener with optional TLS support

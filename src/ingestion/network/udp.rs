@@ -30,7 +30,9 @@ use tracing::{debug, error, trace, warn};
 
 use super::error::NetworkError;
 use super::rate_limit::RateLimiter;
-use crate::ingestion::protocol::{parsed_points_to_data_points, LineProtocolParser, ProtocolParser};
+use crate::ingestion::protocol::{
+    parsed_points_to_data_points, LineProtocolParser, ProtocolParser,
+};
 use crate::ingestion::IngestionPipeline;
 
 /// UDP listener for receiving datagrams
