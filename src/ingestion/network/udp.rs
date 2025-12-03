@@ -361,7 +361,8 @@ impl UdpListener {
                     point_count
                 );
 
-                // Log the parsed points (in production, these would be sent to ingestion pipeline)
+                // TODO: Send parsed points to ingestion pipeline (WAL -> Storage)
+                // Currently just logging for verification
                 for point in &points {
                     trace!(
                         src = %src_addr,
