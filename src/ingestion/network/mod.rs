@@ -347,8 +347,8 @@ impl NetworkListener {
 
         // Start HTTP listener if configured
         if let Some(addr) = self.config.http_addr {
-            let http_listener = HttpListener::new(addr, self.config.tls.as_ref(), HttpConfig::default())
-                .await?;
+            let http_listener =
+                HttpListener::new(addr, self.config.tls.as_ref(), HttpConfig::default()).await?;
 
             let http_listener = http_listener
                 .with_rate_limiter(Arc::clone(&self.rate_limiter))
