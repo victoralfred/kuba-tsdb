@@ -25,7 +25,7 @@
 
 use crate::engine::traits::{SeriesMetadata, TimeIndex};
 use crate::error::IndexError;
-use crate::types::{SeriesId, TagFilter};
+use crate::types::{generate_series_id, SeriesId, TagFilter};
 
 use super::index::RedisTimeIndex;
 
@@ -327,35 +327,6 @@ impl SeriesManager {
         Ok(false)
     }
 
-    /// Generate a new unique series ID from metric name and tags
-    ///
-    /// Uses a hash of the metric name and sorted tags to generate
-    /// a deterministic series ID.
-    pub fn generate_series_id(metric_name: &str, tags: &HashMap<String, String>) -> SeriesId {
-        use std::collections::BTreeMap;
-        use std::hash::{Hash, Hasher};
-
-        // Sort tags for deterministic hashing
-        let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        metric_name.hash(&mut hasher);
-
-        for (key, value) in sorted_tags {
-            key.hash(&mut hasher);
-            value.hash(&mut hasher);
-        }
-
-        // Use the hash as the lower 64 bits of the series ID
-        let hash = hasher.finish();
-
-        // Create a 128-bit ID with some structure
-        // Upper 64 bits: timestamp-based component for rough ordering
-        // Lower 64 bits: hash of metric name and tags
-        let timestamp_component = (Utc::now().timestamp_millis() as u128) << 64;
-        timestamp_component | (hash as u128)
-    }
-
     /// Get or create a series ID for the given metric and tags
     ///
     /// If a series with the same metric name and tags exists, returns its ID.
@@ -365,8 +336,8 @@ impl SeriesManager {
         metric_name: &str,
         tags: HashMap<String, String>,
     ) -> Result<SeriesId, IndexError> {
-        // Generate deterministic ID
-        let series_id = Self::generate_series_id(metric_name, &tags);
+        // Generate deterministic ID using canonical function
+        let series_id = generate_series_id(metric_name, &tags);
 
         // Try to create (will be no-op if exists)
         self.create_series(series_id, metric_name, tags).await?;
@@ -607,6 +578,7 @@ mod tests {
     }
 
     // ===== generate_series_id tests =====
+    // Note: Tests use the canonical generate_series_id from crate::types
 
     #[test]
     fn test_generate_series_id() {
@@ -618,33 +590,31 @@ mod tests {
         tags2.insert("dc".to_string(), "us-east".to_string());
         tags2.insert("host".to_string(), "server1".to_string());
 
-        // Same tags in different order should produce same lower 64 bits
-        let id1 = SeriesManager::generate_series_id("cpu.usage", &tags1);
-        let id2 = SeriesManager::generate_series_id("cpu.usage", &tags2);
-
-        // Lower 64 bits should be the same (hash of metric + tags)
-        assert_eq!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+        // Same tags in different order should produce same ID (deterministic)
+        let id1 = generate_series_id("cpu.usage", &tags1);
+        let id2 = generate_series_id("cpu.usage", &tags2);
+        assert_eq!(id1, id2);
 
         // Different metric name should produce different ID
-        let id3 = SeriesManager::generate_series_id("mem.usage", &tags1);
-        assert_ne!(id1 & 0xFFFFFFFFFFFFFFFF, id3 & 0xFFFFFFFFFFFFFFFF);
+        let id3 = generate_series_id("mem.usage", &tags1);
+        assert_ne!(id1, id3);
     }
 
     #[test]
     fn test_generate_series_id_empty_metric() {
         let tags = HashMap::new();
-        let id = SeriesManager::generate_series_id("", &tags);
+        let id = generate_series_id("", &tags);
         assert_ne!(id, 0); // Should still produce a valid ID
     }
 
     #[test]
     fn test_generate_series_id_empty_tags() {
         let tags = HashMap::new();
-        let id1 = SeriesManager::generate_series_id("metric", &tags);
-        let id2 = SeriesManager::generate_series_id("metric", &tags);
+        let id1 = generate_series_id("metric", &tags);
+        let id2 = generate_series_id("metric", &tags);
 
-        // Same metric without tags should produce same lower bits
-        assert_eq!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+        // Same metric without tags should produce identical IDs
+        assert_eq!(id1, id2);
     }
 
     #[test]
@@ -655,11 +625,11 @@ mod tests {
         let mut tags2 = HashMap::new();
         tags2.insert("host".to_string(), "b".to_string());
 
-        let id1 = SeriesManager::generate_series_id("metric", &tags1);
-        let id2 = SeriesManager::generate_series_id("metric", &tags2);
+        let id1 = generate_series_id("metric", &tags1);
+        let id2 = generate_series_id("metric", &tags2);
 
-        // Different tag values should produce different lower bits
-        assert_ne!(id1 & 0xFFFFFFFFFFFFFFFF, id2 & 0xFFFFFFFFFFFFFFFF);
+        // Different tag values should produce different IDs
+        assert_ne!(id1, id2);
     }
 
     #[test]
@@ -668,7 +638,7 @@ mod tests {
         tags.insert("path".to_string(), "/var/log/test.log".to_string());
         tags.insert("query".to_string(), "SELECT * FROM users;".to_string());
 
-        let id = SeriesManager::generate_series_id("http.requests", &tags);
+        let id = generate_series_id("http.requests", &tags);
         assert_ne!(id, 0);
     }
 
@@ -678,37 +648,25 @@ mod tests {
         tags.insert("city".to_string(), "東京".to_string());
         tags.insert("country".to_string(), "日本".to_string());
 
-        let id = SeriesManager::generate_series_id("weather.温度", &tags);
+        let id = generate_series_id("weather.温度", &tags);
         assert_ne!(id, 0);
     }
 
     #[test]
-    fn test_generate_series_id_upper_bits_change() {
-        // Upper bits should contain timestamp, so IDs generated at different times
-        // may differ in upper bits. At minimum, verify the ID is non-zero.
-        let tags = HashMap::new();
-        let id = SeriesManager::generate_series_id("test", &tags);
-
-        // Upper 64 bits should contain timestamp information
-        let upper_bits = id >> 64;
-        assert!(upper_bits > 0); // Should have some timestamp component
-    }
-
-    #[test]
-    fn test_generate_series_id_deterministic_hash() {
+    fn test_generate_series_id_deterministic() {
         let mut tags = HashMap::new();
         tags.insert("a".to_string(), "1".to_string());
         tags.insert("b".to_string(), "2".to_string());
 
-        // Call multiple times - lower bits should be consistent
-        let mut lower_bits_set = std::collections::HashSet::new();
+        // Call multiple times - all should produce identical IDs
+        let mut ids = std::collections::HashSet::new();
         for _ in 0..10 {
-            let id = SeriesManager::generate_series_id("metric", &tags);
-            lower_bits_set.insert(id & 0xFFFFFFFFFFFFFFFF);
+            let id = generate_series_id("metric", &tags);
+            ids.insert(id);
         }
 
-        // All calls should produce the same lower 64 bits
-        assert_eq!(lower_bits_set.len(), 1);
+        // All calls should produce the exact same ID
+        assert_eq!(ids.len(), 1);
     }
 
     // ===== Key prefix tests =====

@@ -47,6 +47,124 @@ use std::fmt;
 /// ```
 pub type SeriesId = u128;
 
+/// Generate a deterministic series ID from metric name and tags
+///
+/// This is the canonical function for generating series IDs. Uses a hash of
+/// the metric name and sorted tags to generate a consistent series ID.
+/// The same metric + tags combination will always produce the same ID,
+/// regardless of tag insertion order.
+///
+/// # Arguments
+///
+/// * `metric_name` - The measurement/metric name
+/// * `tags` - Tag key-value pairs
+///
+/// # Returns
+///
+/// A deterministic 128-bit series ID
+///
+/// # Example
+///
+/// ```rust
+/// use gorilla_tsdb::types::generate_series_id;
+/// use std::collections::HashMap;
+///
+/// let mut tags = HashMap::new();
+/// tags.insert("host".to_string(), "server1".to_string());
+/// tags.insert("region".to_string(), "us-east".to_string());
+///
+/// let id = generate_series_id("cpu.usage", &tags);
+/// ```
+pub fn generate_series_id(metric_name: &str, tags: &HashMap<String, String>) -> SeriesId {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+
+    // Sort tags for deterministic hashing
+    let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metric_name.hash(&mut hasher);
+
+    for (key, value) in sorted_tags {
+        key.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+
+    // Use the full 64-bit hash as the series ID
+    // Cast to u128 for SeriesId type compatibility
+    hasher.finish() as SeriesId
+}
+
+/// Generate series ID from Cow strings (for ParsedPoint compatibility)
+///
+/// Same as `generate_series_id` but accepts `Cow<str>` references for
+/// zero-copy parsing scenarios.
+pub fn generate_series_id_cow<'a>(
+    metric_name: &str,
+    tags: &HashMap<std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>>,
+) -> SeriesId {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+
+    let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metric_name.hash(&mut hasher);
+
+    for (key, value) in sorted_tags {
+        key.as_ref().hash(&mut hasher);
+        value.as_ref().hash(&mut hasher);
+    }
+
+    hasher.finish() as SeriesId
+}
+
+// =============================================================================
+// Timestamp Utilities
+// =============================================================================
+
+/// Get current time as milliseconds since Unix epoch
+///
+/// This is the canonical function for getting current time in milliseconds.
+/// Use this for timestamp comparisons and time-based calculations.
+///
+/// # Example
+///
+/// ```rust
+/// use gorilla_tsdb::types::current_time_ms;
+///
+/// let now = current_time_ms();
+/// assert!(now > 0);
+/// ```
+#[inline]
+pub fn current_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Get current time as nanoseconds since Unix epoch
+///
+/// This is the canonical function for getting current time in nanoseconds.
+/// Use this for high-precision timestamps (e.g., ingestion timestamps).
+///
+/// # Example
+///
+/// ```rust
+/// use gorilla_tsdb::types::current_time_ns;
+///
+/// let now = current_time_ns();
+/// assert!(now > 0);
+/// ```
+#[inline]
+pub fn current_time_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i64
+}
+
 /// Unique identifier for a compressed chunk
 ///
 /// Each compressed data block is assigned a unique UUID-based identifier. This allows
@@ -555,8 +673,19 @@ pub enum TagFilter {
     /// (can have additional tags not in the filter)
     Exact(HashMap<String, String>),
 
-    /// Pattern matching (not yet implemented)
-    /// Future: Support wildcards like "host=web-*" or regex patterns
+    /// Pattern matching for tag values
+    ///
+    /// Supports two pattern formats:
+    /// - Glob patterns: `key=value*` (wildcards with `*`)
+    /// - Regex patterns: `key=regex:^value[0-9]+$`
+    ///
+    /// Multiple patterns can be separated by `,` (all must match)
+    ///
+    /// # Examples
+    ///
+    /// - `"host=web-*"` - Match hosts starting with "web-"
+    /// - `"host=regex:^web-[0-9]+$"` - Match hosts like web-1, web-2
+    /// - `"host=web-*,dc=us-*"` - Match both conditions
     Pattern(String),
 }
 
@@ -586,11 +715,64 @@ impl TagFilter {
                 filter_tags.iter().all(|(k, v)| tags.get(k) == Some(v))
             }
 
-            // Pattern matching not implemented yet
-            TagFilter::Pattern(_) => {
-                // TODO: Implement pattern matching (wildcards, regex)
-                false
+            // Pattern matching with glob wildcards or regex
+            TagFilter::Pattern(pattern) => {
+                // Parse pattern: "key=value_pattern,key2=value_pattern2"
+                for condition in pattern.split(',') {
+                    let condition = condition.trim();
+                    if condition.is_empty() {
+                        continue;
+                    }
+
+                    // Split into key=pattern
+                    let parts: Vec<&str> = condition.splitn(2, '=').collect();
+                    if parts.len() != 2 {
+                        return false; // Invalid pattern format
+                    }
+
+                    let key = parts[0].trim();
+                    let value_pattern = parts[1].trim();
+
+                    // Get the actual tag value
+                    let actual_value = match tags.get(key) {
+                        Some(v) => v,
+                        None => return false, // Tag doesn't exist
+                    };
+
+                    // Check if pattern matches
+                    if !Self::pattern_matches(value_pattern, actual_value) {
+                        return false;
+                    }
+                }
+                true
             }
+        }
+    }
+
+    /// Check if a pattern matches a value
+    ///
+    /// Supports:
+    /// - Glob patterns with `*` wildcard
+    /// - Regex patterns prefixed with `regex:`
+    fn pattern_matches(pattern: &str, value: &str) -> bool {
+        // Check for regex prefix
+        if let Some(regex_pattern) = pattern.strip_prefix("regex:") {
+            match regex::Regex::new(regex_pattern) {
+                Ok(re) => re.is_match(value),
+                Err(_) => false, // Invalid regex
+            }
+        } else if pattern.contains('*') {
+            // Glob pattern: convert * to regex .*
+            let escaped = regex::escape(pattern);
+            let regex_pattern = escaped.replace(r"\*", ".*");
+            let anchored = format!("^{}$", regex_pattern);
+            match regex::Regex::new(&anchored) {
+                Ok(re) => re.is_match(value),
+                Err(_) => false,
+            }
+        } else {
+            // Exact match (no wildcards)
+            pattern == value
         }
     }
 }
@@ -642,6 +824,79 @@ mod tests {
         let mut filter_tags = HashMap::new();
         filter_tags.insert("host".to_string(), "server2".to_string());
         let filter = TagFilter::Exact(filter_tags);
+        assert!(!filter.matches(&tags));
+    }
+
+    #[test]
+    fn test_tag_filter_pattern_glob() {
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "web-server-01".to_string());
+        tags.insert("dc".to_string(), "us-east-1".to_string());
+
+        // Glob pattern with prefix wildcard
+        let filter = TagFilter::Pattern("host=web-*".to_string());
+        assert!(filter.matches(&tags));
+
+        // Glob pattern with suffix wildcard
+        let filter = TagFilter::Pattern("host=*-01".to_string());
+        assert!(filter.matches(&tags));
+
+        // Glob pattern with both wildcards
+        let filter = TagFilter::Pattern("host=*server*".to_string());
+        assert!(filter.matches(&tags));
+
+        // Non-matching glob pattern
+        let filter = TagFilter::Pattern("host=db-*".to_string());
+        assert!(!filter.matches(&tags));
+
+        // Multiple conditions (all must match)
+        let filter = TagFilter::Pattern("host=web-*,dc=us-*".to_string());
+        assert!(filter.matches(&tags));
+
+        // Multiple conditions with one failing
+        let filter = TagFilter::Pattern("host=web-*,dc=eu-*".to_string());
+        assert!(!filter.matches(&tags));
+    }
+
+    #[test]
+    fn test_tag_filter_pattern_regex() {
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "web-42".to_string());
+        tags.insert("dc".to_string(), "us-east-1".to_string());
+
+        // Regex pattern
+        let filter = TagFilter::Pattern("host=regex:^web-[0-9]+$".to_string());
+        assert!(filter.matches(&tags));
+
+        // Regex with alternation
+        let filter = TagFilter::Pattern("dc=regex:^(us|eu)-.*$".to_string());
+        assert!(filter.matches(&tags));
+
+        // Non-matching regex
+        let filter = TagFilter::Pattern("host=regex:^db-[0-9]+$".to_string());
+        assert!(!filter.matches(&tags));
+    }
+
+    #[test]
+    fn test_tag_filter_pattern_exact() {
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "server1".to_string());
+
+        // Pattern without wildcards is exact match
+        let filter = TagFilter::Pattern("host=server1".to_string());
+        assert!(filter.matches(&tags));
+
+        let filter = TagFilter::Pattern("host=server2".to_string());
+        assert!(!filter.matches(&tags));
+    }
+
+    #[test]
+    fn test_tag_filter_pattern_missing_tag() {
+        let mut tags = HashMap::new();
+        tags.insert("host".to_string(), "server1".to_string());
+
+        // Pattern for non-existent tag
+        let filter = TagFilter::Pattern("dc=us-*".to_string());
         assert!(!filter.matches(&tags));
     }
 

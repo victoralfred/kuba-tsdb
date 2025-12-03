@@ -35,6 +35,8 @@ use crate::engine::traits::Compressor;
 use crate::storage::chunk::Chunk;
 use crate::storage::mmap::MmapChunk;
 use crate::types::DataPoint;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -191,25 +193,90 @@ impl ChunkReader {
             join_set.spawn(async move { reader_clone.read_chunk(path, options_clone).await });
         }
 
-        // Collect results
-        let mut all_points = Vec::new();
+        // Collect results - each chunk's points are already sorted by timestamp
+        let mut chunk_results: Vec<Vec<DataPoint>> = Vec::new();
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(points)) => all_points.extend(points),
+                Ok(Ok(points)) => {
+                    if !points.is_empty() {
+                        chunk_results.push(points);
+                    }
+                }
                 Ok(Err(e)) => return Err(format!("Chunk read failed: {}", e)),
                 Err(e) => return Err(format!("Task join failed: {}", e)),
             }
         }
 
-        // Sort by timestamp
-        all_points.sort_by_key(|p| p.timestamp);
+        // K-way merge: O(n log k) where k = number of chunks
+        // Much better than full sort O(n log n) for large n
+        let merged = Self::k_way_merge(chunk_results, options.limit);
 
-        // Apply global limit if specified
-        if let Some(limit) = options.limit {
-            all_points.truncate(limit);
+        Ok(merged)
+    }
+
+    /// Merge k sorted arrays using a min-heap
+    ///
+    /// This is more efficient than concatenating and sorting when each input
+    /// array is already sorted. Complexity: O(n log k) where k = number of arrays.
+    ///
+    /// # Arguments
+    /// * `sorted_chunks` - Vector of sorted DataPoint vectors
+    /// * `limit` - Optional limit on output size
+    ///
+    /// # Returns
+    /// Merged and sorted vector of DataPoints
+    fn k_way_merge(sorted_chunks: Vec<Vec<DataPoint>>, limit: Option<usize>) -> Vec<DataPoint> {
+        if sorted_chunks.is_empty() {
+            return Vec::new();
         }
 
-        Ok(all_points)
+        // Single chunk: no merge needed
+        if sorted_chunks.len() == 1 {
+            let mut result = sorted_chunks.into_iter().next().unwrap();
+            if let Some(limit) = limit {
+                result.truncate(limit);
+            }
+            return result;
+        }
+
+        // Estimate total size for pre-allocation
+        let total_size: usize = sorted_chunks.iter().map(|c| c.len()).sum();
+        let capacity = limit.map(|l| l.min(total_size)).unwrap_or(total_size);
+        let mut result = Vec::with_capacity(capacity);
+
+        // Min-heap: (timestamp, chunk_index, point_index)
+        // Using Reverse for min-heap behavior (BinaryHeap is max-heap by default)
+        let mut heap: BinaryHeap<Reverse<(i64, usize, usize)>> = BinaryHeap::new();
+
+        // Initialize heap with first element from each chunk
+        for (chunk_idx, chunk) in sorted_chunks.iter().enumerate() {
+            if !chunk.is_empty() {
+                heap.push(Reverse((chunk[0].timestamp, chunk_idx, 0)));
+            }
+        }
+
+        // Extract minimum and add next element from same chunk
+        while let Some(Reverse((_, chunk_idx, point_idx))) = heap.pop() {
+            // Add point to result
+            // DataPoint is Copy, no need for clone
+            result.push(sorted_chunks[chunk_idx][point_idx]);
+
+            // Check limit
+            if let Some(limit) = limit {
+                if result.len() >= limit {
+                    break;
+                }
+            }
+
+            // Add next point from same chunk if available
+            let next_idx = point_idx + 1;
+            if next_idx < sorted_chunks[chunk_idx].len() {
+                let next_ts = sorted_chunks[chunk_idx][next_idx].timestamp;
+                heap.push(Reverse((next_ts, chunk_idx, next_idx)));
+            }
+        }
+
+        result
     }
 
     /// Read chunk using memory-mapped I/O

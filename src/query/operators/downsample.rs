@@ -429,7 +429,7 @@ mod tests {
     fn test_lttb_downsample() {
         let data = create_test_data(1000);
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let mut downsample = DownsampleOperator::new(Box::new(scan), DownsampleMethod::Lttb, 100);
@@ -449,7 +449,7 @@ mod tests {
     fn test_m4_downsample() {
         let data = create_test_data(1000);
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let mut downsample = DownsampleOperator::new(Box::new(scan), DownsampleMethod::M4, 100);
@@ -466,7 +466,7 @@ mod tests {
     fn test_average_downsample() {
         let data = create_test_data(1000);
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let mut downsample =
@@ -484,7 +484,7 @@ mod tests {
         // Data smaller than target - should pass through unchanged
         let data = create_test_data(50);
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let mut downsample = DownsampleOperator::new(Box::new(scan), DownsampleMethod::Lttb, 100);
@@ -510,7 +510,7 @@ mod tests {
         }
 
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let mut downsample = DownsampleOperator::new(Box::new(scan), DownsampleMethod::Lttb, 20);
@@ -540,7 +540,7 @@ mod tests {
         }
 
         let scan = ScanOperator::new(all_series(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let mut downsample = DownsampleOperator::new(Box::new(scan), DownsampleMethod::M4, 20);

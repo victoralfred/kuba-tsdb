@@ -47,12 +47,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod detect;
 pub mod error;
 pub mod json;
 pub mod line;
 pub mod protobuf;
-// pub mod detect;    // TODO: Implement protocol detection
 
+pub use detect::{detect_protocol, detect_protocol_with_hint};
 pub use error::{ParseError, ParseErrorKind};
 pub use json::JsonParser;
 pub use line::{LineProtocolParser, ParsedLine};
@@ -63,6 +64,8 @@ pub use protobuf::{Label, ProtobufParser, Sample, TimeSeries, WriteRequest};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+
+use crate::types::{current_time_ns, generate_series_id, DataPoint};
 
 /// Owned version of ParsedPoint (for when data needs to outlive input buffer)
 #[derive(Debug, Clone, PartialEq)]
@@ -387,6 +390,110 @@ impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
+}
+
+// =============================================================================
+// Point Conversion Utilities
+// =============================================================================
+
+/// Convert a ParsedPoint to DataPoints
+///
+/// A single ParsedPoint may produce multiple DataPoints if it has
+/// multiple numeric fields. Each field becomes a separate time series.
+///
+/// # Arguments
+///
+/// * `point` - The parsed point from protocol parsing
+/// * `default_timestamp` - Timestamp to use if point has no timestamp (epoch ms)
+///
+/// # Returns
+///
+/// Vector of DataPoints, one per numeric field in the parsed point.
+/// Non-numeric fields (strings, booleans) are skipped.
+pub fn parsed_point_to_data_points(
+    point: &ParsedPoint<'_>,
+    default_timestamp: i64,
+) -> Vec<DataPoint> {
+    let timestamp = point.timestamp.unwrap_or(default_timestamp);
+    let mut data_points = Vec::with_capacity(point.fields.len());
+
+    for (field_name, field_value) in &point.fields {
+        // Only convert numeric fields to DataPoints
+        let value = match field_value {
+            FieldValue::Float(v) => *v,
+            FieldValue::Integer(v) => *v as f64,
+            FieldValue::UInteger(v) => *v as f64,
+            // Skip non-numeric fields
+            FieldValue::String(_) | FieldValue::Boolean(_) => continue,
+        };
+
+        // Generate series ID including field name for multi-field measurements
+        // Format: metric_name + tags + field_name
+        let mut tags_with_field: HashMap<String, String> = point
+            .tags
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        // Add field name as a pseudo-tag for series differentiation
+        // This ensures cpu,host=a usage_user and cpu,host=a usage_system are different series
+        tags_with_field.insert("__field__".to_string(), field_name.to_string());
+
+        let series_id = generate_series_id(&point.measurement, &tags_with_field);
+        data_points.push(DataPoint::new(series_id, timestamp, value));
+    }
+
+    data_points
+}
+
+/// Convert a batch of ParsedPoints to DataPoints
+///
+/// Convenience function that converts multiple ParsedPoints at once,
+/// using the current system time as the default timestamp for any
+/// points that don't have an explicit timestamp.
+///
+/// # Arguments
+///
+/// * `points` - Slice of ParsedPoints to convert
+///
+/// # Returns
+///
+/// Vector of DataPoints, with multiple DataPoints per ParsedPoint if
+/// the original point had multiple numeric fields.
+pub fn parsed_points_to_data_points(points: &[ParsedPoint<'_>]) -> Vec<DataPoint> {
+    let now_ns = current_time_ns();
+    points
+        .iter()
+        .flat_map(|p| parsed_point_to_data_points(p, now_ns))
+        .collect()
+}
+
+/// Convert an OwnedParsedPoint to DataPoints
+///
+/// Same as `parsed_point_to_data_points` but for owned points.
+pub fn owned_parsed_point_to_data_points(
+    point: &OwnedParsedPoint,
+    default_timestamp: i64,
+) -> Vec<DataPoint> {
+    let timestamp = point.timestamp.unwrap_or(default_timestamp);
+    let mut data_points = Vec::with_capacity(point.fields.len());
+
+    for (field_name, field_value) in &point.fields {
+        let value = match field_value {
+            FieldValue::Float(v) => *v,
+            FieldValue::Integer(v) => *v as f64,
+            FieldValue::UInteger(v) => *v as f64,
+            FieldValue::String(_) | FieldValue::Boolean(_) => continue,
+        };
+
+        let mut tags_with_field = point.tags.clone();
+        tags_with_field.insert("__field__".to_string(), field_name.clone());
+
+        let series_id = generate_series_id(&point.measurement, &tags_with_field);
+        data_points.push(DataPoint::new(series_id, timestamp, value));
+    }
+
+    data_points
 }
 
 #[cfg(test)]

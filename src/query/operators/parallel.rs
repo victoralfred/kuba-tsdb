@@ -944,7 +944,7 @@ mod tests {
         // Small dataset - should use sequential path
         let data = make_test_data(100);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(1000);
@@ -964,7 +964,7 @@ mod tests {
         // Large dataset - should use parallel path
         let data = make_test_data(20000);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(4096);
 
         let config = ParallelConfig::default().with_threshold(10000);
@@ -984,7 +984,7 @@ mod tests {
     fn test_parallel_aggregator_avg() {
         let data = make_test_data(1000);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(500);
@@ -1002,7 +1002,7 @@ mod tests {
     fn test_parallel_aggregator_min_max() {
         let data = make_test_data(5000);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data.clone())
+            .with_test_data(data.clone())
             .with_batch_size(500);
 
         let config = ParallelConfig::default().with_threshold(1000);
@@ -1019,7 +1019,7 @@ mod tests {
 
         // Test Max
         let scan2 = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(500);
 
         let mut max_agg =
@@ -1047,7 +1047,7 @@ mod tests {
         };
 
         let scan = ScanOperator::new(selector, None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(500);
@@ -1069,7 +1069,7 @@ mod tests {
     fn test_parallel_aggregator_count() {
         let data = make_test_data(500);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(100);
@@ -1089,7 +1089,7 @@ mod tests {
             (0..5).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
 
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(100);
@@ -1109,7 +1109,7 @@ mod tests {
             (0..5).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
 
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default().with_threshold(100);
@@ -1128,7 +1128,7 @@ mod tests {
     fn test_parallel_aggregator_empty_input() {
         let data: Vec<(i64, f64, SeriesId)> = vec![];
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default();
@@ -1146,7 +1146,7 @@ mod tests {
     fn test_parallel_aggregator_reset() {
         let data = make_test_data(100);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default();
@@ -1170,7 +1170,7 @@ mod tests {
     fn test_parallel_aggregator_name() {
         let data = make_test_data(10);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default();
@@ -1183,7 +1183,7 @@ mod tests {
     fn test_parallel_aggregator_second_call_returns_none() {
         let data = make_test_data(100);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let config = ParallelConfig::default();
@@ -1207,7 +1207,7 @@ mod tests {
     fn test_parallel_aggregator_small_morsel() {
         let data = make_test_data(15000);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let config = ParallelConfig::default()
@@ -1227,7 +1227,7 @@ mod tests {
     fn test_parallel_aggregator_large_morsel() {
         let data = make_test_data(15000);
         let scan = ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let config = ParallelConfig::default()
@@ -1261,7 +1261,7 @@ mod tests {
         };
 
         let scan = ScanOperator::new(selector, None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(1000);
 
         let config = ParallelConfig::default().with_threshold(5000);

@@ -675,7 +675,7 @@ mod tests {
             .collect();
 
         ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100)
     }
 
@@ -754,7 +754,7 @@ mod tests {
         ];
 
         let scan = ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let mut agg = AggregationOperator::new(Box::new(scan), AggregationFunction::Rate);
@@ -774,7 +774,7 @@ mod tests {
             vec![(0, 10.0, 1), (0, 20.0, 2), (1, 15.0, 1), (1, 25.0, 2)];
 
         let scan = ScanOperator::new(SeriesSelector::by_measurement("test").unwrap(), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100);
 
         let mut agg = AggregationOperator::new(Box::new(scan), AggregationFunction::Avg)

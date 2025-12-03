@@ -23,8 +23,8 @@ use crate::query::ast::{AggregationFunction, Query, SeriesSelector};
 use crate::query::error::QueryError;
 use crate::query::executor::{ExecutionContext, ExecutorConfig};
 use crate::query::operators::{
-    AggregationOperator, DownsampleOperator, FilterOperator, Operator, ScanOperator,
-    StorageScanOperator,
+    AggregationOperator, DownsampleOperator, FilterOperator, LimitOperator, Operator, ScanOperator,
+    SortOperator, StorageScanOperator,
 };
 use crate::query::planner::{LogicalPlan, QueryPlanner};
 use crate::query::result::{QueryResult, ResultRow};
@@ -283,20 +283,22 @@ impl QueryEngine {
                 )))
             }
 
-            // Sort - for now, data is already sorted by timestamp
-            LogicalPlan::Sort { input, order_by: _ } => {
-                // TODO: Implement proper sort operator
-                self.build_operator_tree(input).await
+            // Sort - wrap upstream operator with SortOperator
+            LogicalPlan::Sort { input, order_by } => {
+                let upstream = self.build_operator_tree(input).await?;
+                Ok(Box::new(SortOperator::new(upstream, order_by.clone())))
             }
 
-            // Limit - apply after collecting
+            // Limit - wrap upstream operator with LimitOperator
             LogicalPlan::Limit {
                 input,
-                limit: _,
-                offset: _,
+                limit,
+                offset,
             } => {
-                // TODO: Implement limit operator
-                self.build_operator_tree(input).await
+                let upstream = self.build_operator_tree(input).await?;
+                // Use usize::MAX if no limit specified (effectively unlimited)
+                let limit_val = limit.unwrap_or(usize::MAX);
+                Ok(Box::new(LimitOperator::new(upstream, limit_val, *offset)))
             }
 
             // Latest - special handling

@@ -263,10 +263,11 @@ impl StorageScanOperator {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .expect("Failed to create runtime for chunk read");
+                        .map_err(|e| format!("Failed to create runtime for chunk read: {}", e))?;
 
                     let reader = ChunkReader::new();
                     rt.block_on(reader.read_chunk(&path, options))
+                        .map_err(|e| format!("Chunk read failed: {}", e))
                 })
                 .await
                 .map_err(|e| QueryError::execution(format!("Task join error: {}", e)))?;

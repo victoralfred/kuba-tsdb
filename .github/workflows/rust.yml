@@ -5,7 +5,7 @@ name: Rust CI/CD
 
 on:
   push:
-    branches: ["main", "develop", "fet/**", "fix/**", "release/**"]
+    branches: ["main", "develop", "fet/**", "fix/**", "release/**", "hotfix/**"," **/**","*"]
     tags: ["v*.*.*"]
   pull_request:
     branches: ["main", "develop"]

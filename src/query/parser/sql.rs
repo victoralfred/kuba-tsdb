@@ -43,7 +43,7 @@ use crate::query::ast::{
     PredicateValue, Query, SelectQuery, SeriesSelector, TagMatcher, WindowSpec, WindowType,
 };
 use crate::query::error::{QueryError, QueryResult};
-use crate::types::TimeRange;
+use crate::types::{current_time_ms, TimeRange};
 use std::time::Duration;
 
 /// Parse a SQL-like query string into a Query AST
@@ -662,14 +662,6 @@ fn parse_string_literal(input: &str) -> IResult<&str, &str> {
         delimited(char('"'), take_while(|c| c != '"'), char('"')),
     ))
     .parse(input)
-}
-
-/// Get current time in milliseconds (matches database storage format)
-fn current_time_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 /// Get default time range (last hour) in milliseconds

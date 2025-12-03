@@ -28,7 +28,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -51,8 +51,10 @@ use super::error::NetworkError;
 use super::rate_limit::RateLimiter;
 use super::tls::TlsConfig;
 use crate::ingestion::protocol::{
-    JsonParser, LineProtocolParser, ProtobufParser, Protocol, ProtocolParser,
+    detect_protocol_with_hint, parsed_points_to_data_points, JsonParser, LineProtocolParser,
+    ProtobufParser, Protocol, ProtocolParser,
 };
+use crate::ingestion::IngestionPipeline;
 
 /// HTTP listener configuration
 #[derive(Debug, Clone)]
@@ -104,6 +106,12 @@ pub struct AppState {
     json_parser: JsonParser,
     /// Protobuf parser instance
     protobuf_parser: ProtobufParser,
+    /// Server start time for uptime tracking
+    start_time: Instant,
+    /// Ready flag - set to true once server initialization is complete
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Optional ingestion pipeline for data persistence
+    ingestion_pipeline: Option<Arc<IngestionPipeline>>,
 }
 
 /// HTTP listener for REST API ingestion
@@ -155,6 +163,9 @@ impl HttpListener {
             line_parser: LineProtocolParser::new(),
             json_parser: JsonParser::new(),
             protobuf_parser: ProtobufParser::new(),
+            start_time: Instant::now(),
+            ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ingestion_pipeline: None,
         };
 
         Ok(Self {
@@ -175,6 +186,33 @@ impl HttpListener {
     pub fn with_shutdown(mut self, shutdown_rx: broadcast::Receiver<()>) -> Self {
         self.shutdown_rx = Some(shutdown_rx);
         self
+    }
+
+    /// Attach an ingestion pipeline for data persistence
+    ///
+    /// When a pipeline is attached, parsed points are converted to DataPoints
+    /// and sent through the pipeline for storage. Without a pipeline,
+    /// points are only logged for debugging.
+    pub fn with_ingestion_pipeline(mut self, pipeline: Arc<IngestionPipeline>) -> Self {
+        self.state.ingestion_pipeline = Some(pipeline);
+        self
+    }
+
+    /// Get a handle to the ready flag
+    ///
+    /// This can be used by other subsystems to signal when they are ready.
+    /// The ready endpoint (`/ready`) will return 503 until this flag is set to true.
+    pub fn ready_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.state.ready)
+    }
+
+    /// Set the ready state
+    ///
+    /// When set to true, the `/ready` endpoint returns 200.
+    /// When set to false, it returns 503.
+    pub fn set_ready(&self, ready: bool) {
+        use std::sync::atomic::Ordering;
+        self.state.ready.store(ready, Ordering::Release);
     }
 
     /// Run the HTTP listener
@@ -392,13 +430,12 @@ async fn handle_write(
             .into_response();
     }
 
-    // Detect protocol from Content-Type header
+    // Detect protocol from Content-Type header with content-based fallback
     let content_type = headers
         .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("text/plain");
+        .and_then(|v| v.to_str().ok());
 
-    let protocol = detect_protocol(content_type);
+    let protocol = detect_protocol_with_hint(content_type, &body);
 
     // Parse the data
     let result = match protocol {
@@ -408,12 +445,41 @@ async fn handle_write(
     };
 
     match result {
-        Ok(points) => {
-            let count = points.len();
-            debug!(protocol = %protocol, points = count, "Parsed data points");
+        Ok(parsed_points) => {
+            let parsed_count = parsed_points.len();
+            debug!(protocol = %protocol, points = parsed_count, "Parsed data points");
 
-            // TODO: Send points to ingestion pipeline
-            // For now, just return success with count
+            // Convert ParsedPoints to DataPoints and send to pipeline
+            if let Some(ref pipeline) = state.ingestion_pipeline {
+                let data_points = parsed_points_to_data_points(&parsed_points);
+                let data_point_count = data_points.len();
+
+                if !data_points.is_empty() {
+                    match pipeline.ingest_batch(data_points).await {
+                        Ok(()) => {
+                            debug!(
+                                protocol = %protocol,
+                                parsed = parsed_count,
+                                data_points = data_point_count,
+                                "Ingested points to pipeline"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                protocol = %protocol,
+                                error = %e,
+                                "Failed to ingest points to pipeline"
+                            );
+                            // Return 500 on pipeline failure
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Ingestion failed: {}\n", e),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+            }
 
             (StatusCode::NO_CONTENT, "").into_response()
         }
@@ -421,22 +487,6 @@ async fn handle_write(
             warn!(protocol = %protocol, error = %e, "Parse error");
             (StatusCode::BAD_REQUEST, format!("Parse error: {}\n", e)).into_response()
         }
-    }
-}
-
-/// Detect protocol from Content-Type header
-fn detect_protocol(content_type: &str) -> Protocol {
-    let ct_lower = content_type.to_lowercase();
-
-    if ct_lower.contains("application/json") {
-        Protocol::Json
-    } else if ct_lower.contains("application/x-protobuf")
-        || ct_lower.contains("application/protobuf")
-    {
-        Protocol::Protobuf
-    } else {
-        // Default to line protocol for text/plain or unknown
-        Protocol::LineProtocol
     }
 }
 
@@ -449,12 +499,13 @@ async fn handle_ping() -> Response {
 
 /// Health endpoint handler
 ///
-/// Returns detailed health status in JSON format
-async fn handle_health() -> Response {
+/// Returns detailed health status in JSON format including uptime
+async fn handle_health(State(state): State<AppState>) -> Response {
+    let uptime_seconds = state.start_time.elapsed().as_secs();
     let health = serde_json::json!({
         "status": "healthy",
         "version": env!("CARGO_PKG_VERSION"),
-        "uptime_seconds": 0, // TODO: Track actual uptime
+        "uptime_seconds": uptime_seconds,
     });
 
     (StatusCode::OK, axum::Json(health)).into_response()
@@ -462,10 +513,16 @@ async fn handle_health() -> Response {
 
 /// Ready endpoint handler
 ///
-/// Returns 200 if the server is ready to accept traffic
-async fn handle_ready() -> Response {
-    // TODO: Check if all subsystems are ready
-    (StatusCode::OK, "ready\n").into_response()
+/// Returns 200 if the server is ready to accept traffic, 503 otherwise.
+/// The ready flag can be controlled via `AppState::ready` to signal
+/// when subsystems are initialized and ready to serve traffic.
+async fn handle_ready(State(state): State<AppState>) -> Response {
+    use std::sync::atomic::Ordering;
+    if state.ready.load(Ordering::Acquire) {
+        (StatusCode::OK, "ready\n").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n").into_response()
+    }
 }
 
 /// Metrics endpoint handler (placeholder)
@@ -621,90 +678,62 @@ mod tests {
     }
 
     // =========================================================================
-    // Protocol Detection Tests
+    // Protocol Detection Integration Tests
     // =========================================================================
+    // Note: Comprehensive detection tests are in ingestion::protocol::detect module.
+    // These tests verify integration with HTTP handler using detect_protocol_with_hint.
 
     #[test]
-    fn test_detect_protocol() {
-        assert_eq!(detect_protocol("text/plain"), Protocol::LineProtocol);
+    fn test_detect_protocol_with_content_type() {
+        // Line protocol data
+        let line_data = b"cpu,host=server01 value=42.0";
+
+        // Content-Type header takes precedence
         assert_eq!(
-            detect_protocol("text/plain; charset=utf-8"),
-            Protocol::LineProtocol
-        );
-        assert_eq!(detect_protocol("application/json"), Protocol::Json);
-        assert_eq!(
-            detect_protocol("application/json; charset=utf-8"),
+            detect_protocol_with_hint(Some("application/json"), line_data),
             Protocol::Json
         );
         assert_eq!(
-            detect_protocol("application/x-protobuf"),
+            detect_protocol_with_hint(Some("application/x-protobuf"), line_data),
             Protocol::Protobuf
         );
-        assert_eq!(detect_protocol("application/protobuf"), Protocol::Protobuf);
-        // Unknown defaults to line protocol
+
+        // text/plain falls back to content detection
         assert_eq!(
-            detect_protocol("application/octet-stream"),
+            detect_protocol_with_hint(Some("text/plain"), line_data),
             Protocol::LineProtocol
         );
+
+        // No Content-Type uses content detection
+        assert_eq!(
+            detect_protocol_with_hint(None, line_data),
+            Protocol::LineProtocol
+        );
+    }
+
+    #[test]
+    fn test_detect_protocol_json_content() {
+        let json_data = b"{\"measurement\": \"cpu\", \"value\": 42.0}";
+
+        // JSON detected from content when no explicit header
+        assert_eq!(detect_protocol_with_hint(None, json_data), Protocol::Json);
+
+        // JSON array
+        let json_array = b"[{\"measurement\": \"cpu\"}]";
+        assert_eq!(detect_protocol_with_hint(None, json_array), Protocol::Json);
     }
 
     #[test]
     fn test_detect_protocol_case_insensitive() {
-        assert_eq!(detect_protocol("APPLICATION/JSON"), Protocol::Json);
-        assert_eq!(detect_protocol("Application/Json"), Protocol::Json);
+        let data = b"cpu value=42.0";
         assert_eq!(
-            detect_protocol("APPLICATION/X-PROTOBUF"),
-            Protocol::Protobuf
-        );
-        assert_eq!(detect_protocol("TEXT/PLAIN"), Protocol::LineProtocol);
-    }
-
-    #[test]
-    fn test_detect_protocol_with_parameters() {
-        assert_eq!(
-            detect_protocol("application/json; charset=utf-8; boundary=something"),
+            detect_protocol_with_hint(Some("APPLICATION/JSON"), data),
             Protocol::Json
         );
         assert_eq!(
-            detect_protocol("application/x-protobuf; version=1"),
+            detect_protocol_with_hint(Some("Application/X-Protobuf"), data),
             Protocol::Protobuf
         );
-        assert_eq!(
-            detect_protocol("text/plain; format=fixed"),
-            Protocol::LineProtocol
-        );
-    }
-
-    #[test]
-    fn test_detect_protocol_empty_and_unknown() {
-        // Empty string defaults to line protocol
-        assert_eq!(detect_protocol(""), Protocol::LineProtocol);
-
-        // Unknown content types default to line protocol
-        assert_eq!(detect_protocol("video/mp4"), Protocol::LineProtocol);
-        assert_eq!(detect_protocol("image/png"), Protocol::LineProtocol);
-        assert_eq!(
-            detect_protocol("multipart/form-data"),
-            Protocol::LineProtocol
-        );
-    }
-
-    #[test]
-    fn test_detect_protocol_partial_matches() {
-        // Note: detect_protocol uses contains() so these will also match
-        // This documents the actual behavior (application/jsonl contains "application/json")
-        assert_eq!(detect_protocol("application/jsonl"), Protocol::Json);
-
-        // text/json doesn't contain "application/json" so it defaults to line protocol
-        assert_eq!(detect_protocol("text/json"), Protocol::LineProtocol);
-
-        // These should match
-        assert_eq!(detect_protocol("application/json"), Protocol::Json);
-        assert_eq!(
-            detect_protocol("application/x-protobuf"),
-            Protocol::Protobuf
-        );
-        assert_eq!(detect_protocol("application/protobuf"), Protocol::Protobuf);
     }
 
     // =========================================================================
@@ -812,6 +841,9 @@ mod tests {
             line_parser: LineProtocolParser::new(),
             json_parser: JsonParser::new(),
             protobuf_parser: ProtobufParser::new(),
+            start_time: Instant::now(),
+            ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ingestion_pipeline: None,
         };
 
         // AppState should be Clone

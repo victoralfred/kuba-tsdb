@@ -21,10 +21,9 @@ pub struct WalConfig {
     pub write_buffer_size: usize,
     /// Maximum number of segments to retain
     ///
-    /// **Note**: This field is currently validated but not enforced during cleanup.
-    /// Segment cleanup is currently based on checkpoint sequence numbers only.
-    /// This field is retained for future segment count-based retention support.
-    // TODO: Implement segment count-based retention in cleanup()
+    /// When the total segment count (sealed + active) exceeds this limit,
+    /// the oldest segments are removed during cleanup, even if they haven't
+    /// been fully checkpointed. This provides a hard cap on disk usage.
     pub max_segments: usize,
 }
 

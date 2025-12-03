@@ -131,9 +131,13 @@ impl QueryCache {
     /// * `max_entries` - Maximum number of entries to cache
     /// * `default_ttl_secs` - Default time-to-live for cache entries in seconds
     fn new(max_entries: usize, default_ttl_secs: u64) -> Self {
-        // NonZeroUsize ensures cache capacity is at least 1
-        let capacity =
-            NonZeroUsize::new(max_entries.max(1)).expect("Cache capacity must be non-zero");
+        // Use at least 1 entry for capacity, then convert to NonZeroUsize
+        // Safety: max(1) guarantees the value is >= 1, so unwrap_or is defensive only
+        let min_capacity = max_entries.max(1);
+        let capacity = NonZeroUsize::new(min_capacity).unwrap_or(
+            // This branch is unreachable since min_capacity >= 1, but provides a safe fallback
+            NonZeroUsize::MIN,
+        );
 
         Self {
             entries: LruCache::new(capacity),

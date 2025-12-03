@@ -289,9 +289,17 @@ impl WriteRequest {
     }
 
     /// Encode to protobuf bytes
+    ///
+    /// # Panics
+    ///
+    /// Panics only on out-of-memory conditions, which is consistent with
+    /// Rust's default OOM behavior. Encoding to a growable Vec cannot fail
+    /// for any other reason.
     pub fn encode_to_vec(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        self.encode(&mut buf).expect("encoding should not fail");
+        // Encoding to Vec can only fail on OOM, which panics anyway in Rust
+        self.encode(&mut buf)
+            .expect("encoding to Vec failed (OOM?)");
         buf
     }
 }

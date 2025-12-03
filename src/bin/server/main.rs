@@ -108,17 +108,23 @@ fn build_router(state: Arc<AppState>) -> Router {
 }
 
 /// Graceful shutdown signal handler
+///
+/// # Panics
+///
+/// Panics if signal handlers cannot be installed. This is intentional as
+/// the server cannot provide graceful shutdown without signal handling,
+/// and there's no reasonable recovery path if the OS rejects signal registration.
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
-            .expect("failed to install Ctrl+C handler");
+            .expect("Ctrl+C handler installation failed - OS rejected signal registration");
     };
 
     #[cfg(unix)]
     let terminate = async {
         signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
+            .expect("SIGTERM handler installation failed - OS rejected signal registration")
             .recv()
             .await;
     };

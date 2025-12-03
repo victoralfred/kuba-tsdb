@@ -12,16 +12,20 @@
 pub mod aggregation;
 pub mod downsample;
 pub mod filter;
+pub mod limit;
 pub mod parallel;
 pub mod scan;
+pub mod sort;
 pub mod storage_scan;
 
 // Re-export commonly used types
 pub use aggregation::{AggregationOperator, AggregationState};
 pub use downsample::DownsampleOperator;
 pub use filter::FilterOperator;
+pub use limit::LimitOperator;
 pub use parallel::{ParallelAggregator, ParallelConfig, ParallelScanner};
 pub use scan::ScanOperator;
+pub use sort::SortOperator;
 pub use storage_scan::{StorageQueryExt, StorageScanOperator};
 
 use crate::query::error::QueryError;
@@ -171,7 +175,10 @@ impl DataBatch {
                 timestamps: self.timestamps[start..end].to_vec(),
                 values: self.values[start..end].to_vec(),
                 series_ids: self.series_ids.as_ref().map(|s| s[start..end].to_vec()),
-                validity: None, // TODO: slice validity bitmap
+                validity: self
+                    .validity
+                    .as_ref()
+                    .map(|v| slice_validity_bitmap(v, start, end)),
             };
             morsels.push(morsel);
             start = end;
@@ -179,6 +186,50 @@ impl DataBatch {
 
         morsels
     }
+}
+
+/// Slice a validity bitmap for a given range of values
+///
+/// The validity bitmap uses 1 bit per value. This function extracts
+/// the bits corresponding to the range [start, end) and creates a new
+/// bitmap for the sliced morsel.
+///
+/// # Arguments
+///
+/// * `bitmap` - The source validity bitmap (1 bit per value)
+/// * `start` - Starting value index (inclusive)
+/// * `end` - Ending value index (exclusive)
+///
+/// # Returns
+///
+/// A new bitmap containing only the validity bits for the range
+pub fn slice_validity_bitmap(bitmap: &[u8], start: usize, end: usize) -> Vec<u8> {
+    let count = end - start;
+    if count == 0 {
+        return Vec::new();
+    }
+
+    // Calculate required bytes for the output bitmap
+    let output_bytes = count.div_ceil(8);
+    let mut result = vec![0u8; output_bytes];
+
+    // Copy bits from source to destination
+    for i in 0..count {
+        let src_idx = start + i;
+        let src_byte = src_idx / 8;
+        let src_bit = src_idx % 8;
+
+        // Check if source byte exists (handle partial final byte)
+        if src_byte < bitmap.len() {
+            let bit_value = (bitmap[src_byte] >> src_bit) & 1;
+
+            let dst_byte = i / 8;
+            let dst_bit = i % 8;
+            result[dst_byte] |= bit_value << dst_bit;
+        }
+    }
+
+    result
 }
 
 impl Default for DataBatch {
@@ -803,5 +854,68 @@ mod tests {
 
         // Kahan should have less error (in this case, Kahan should be exact)
         assert!(kahan_error <= naive_error);
+    }
+
+    #[test]
+    fn test_slice_validity_bitmap_basic() {
+        // Bitmap: 0b11110101 (bits 0,2,4,5,6,7 are valid)
+        let bitmap = vec![0b11110101u8];
+
+        // Slice bits 2..5 (should get bits at positions 2,3,4 -> 101 -> 0b101 = 5)
+        let sliced = slice_validity_bitmap(&bitmap, 2, 5);
+        assert_eq!(sliced.len(), 1);
+        assert_eq!(sliced[0], 0b101); // bits 0,2 set (originally 2,4)
+    }
+
+    #[test]
+    fn test_slice_validity_bitmap_across_bytes() {
+        // Two bytes: 0b11110000 0b00001111
+        let bitmap = vec![0b11110000u8, 0b00001111u8];
+
+        // Slice bits 4..12 (crosses byte boundary)
+        // Original: byte0 bits 4-7 = 1111, byte1 bits 0-3 = 1111
+        let sliced = slice_validity_bitmap(&bitmap, 4, 12);
+        assert_eq!(sliced.len(), 1);
+        assert_eq!(sliced[0], 0b11111111); // all 8 bits set
+    }
+
+    #[test]
+    fn test_slice_validity_bitmap_empty() {
+        let bitmap = vec![0b11111111u8];
+        let sliced = slice_validity_bitmap(&bitmap, 3, 3);
+        assert!(sliced.is_empty());
+    }
+
+    #[test]
+    fn test_data_batch_split_with_validity() {
+        // Create a batch with 10 values, alternating validity
+        let timestamps: Vec<i64> = (0..10).collect();
+        let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        // Validity: bits 0,2,4,6,8 are valid (0b01010101 0b01)
+        let validity = vec![0b01010101u8, 0b00000001u8];
+
+        let batch = DataBatch {
+            timestamps,
+            values,
+            series_ids: None,
+            validity: Some(validity),
+        };
+
+        let morsels = batch.split_into_morsels(4);
+        assert_eq!(morsels.len(), 3); // 4 + 4 + 2
+
+        // Each morsel should have its validity properly sliced
+        assert!(morsels[0].validity.is_some());
+        assert!(morsels[1].validity.is_some());
+        assert!(morsels[2].validity.is_some());
+
+        // First morsel (indices 0-3): bits 0,2 valid -> 0b0101
+        assert_eq!(morsels[0].validity.as_ref().unwrap()[0], 0b0101);
+
+        // Second morsel (indices 4-7): bits 4,6 valid -> 0b0101 (relative to morsel)
+        assert_eq!(morsels[1].validity.as_ref().unwrap()[0], 0b0101);
+
+        // Third morsel (indices 8-9): bit 8 valid -> 0b01 (relative to morsel)
+        assert_eq!(morsels[2].validity.as_ref().unwrap()[0], 0b01);
     }
 }

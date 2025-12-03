@@ -191,12 +191,14 @@ impl LuaScripts {
             local tags_json = ARGV[4]
             local retention_days = ARGV[5]
 
-            -- Check if series already exists
-            if redis.call('SISMEMBER', registry_key, series_id) == 1 then
-                return 0
-            end
+            -- Check if series already exists in registry
+            local is_new = redis.call('SISMEMBER', registry_key, series_id) == 0
 
-            -- Add to main registry
+            -- Always ensure secondary indexes are populated (idempotent)
+            -- This handles the case where Redis was restarted and indexes were lost
+            -- but the series metadata file on disk still has the series
+
+            -- Add to main registry (SADD is idempotent)
             redis.call('SADD', registry_key, series_id)
 
             -- Add to metric secondary index for efficient metric-based queries
@@ -209,18 +211,29 @@ impl LuaScripts {
                 redis.call('SADD', 'ts:tag:' .. key .. ':' .. value .. ':series', series_id)
             end
 
-            -- Set metadata
-            redis.call('HSET', series_meta_key,
-                'created_at', created_at,
-                'last_write', created_at,
-                'metric_name', metric_name,
-                'tags', tags_json,
-                'retention_days', retention_days,
-                'total_points', 0,
-                'total_chunks', 0
-            )
+            -- Set or update metadata
+            if is_new then
+                -- New series: set all fields
+                redis.call('HSET', series_meta_key,
+                    'created_at', created_at,
+                    'last_write', created_at,
+                    'metric_name', metric_name,
+                    'tags', tags_json,
+                    'retention_days', retention_days,
+                    'total_points', 0,
+                    'total_chunks', 0
+                )
+            else
+                -- Existing series: only update metric_name and tags (in case they changed)
+                -- Preserve existing stats like total_points and total_chunks
+                redis.call('HSET', series_meta_key,
+                    'metric_name', metric_name,
+                    'tags', tags_json,
+                    'retention_days', retention_days
+                )
+            end
 
-            return 1
+            return is_new and 1 or 0
             "#,
         )
     }

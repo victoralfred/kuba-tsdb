@@ -38,7 +38,7 @@ use crate::query::ast::{
     SeriesSelector, TagMatcher, WindowSpec, WindowType,
 };
 use crate::query::error::{QueryError, QueryResult};
-use crate::types::TimeRange;
+use crate::types::{current_time_ms, TimeRange};
 use std::time::Duration;
 
 // ============================================================================
@@ -127,7 +127,7 @@ fn parse_aggregation_expr(input: &str) -> IResult<&str, Query> {
     .parse(input)?;
 
     // Build time range (using milliseconds to match database timestamp format)
-    let now = current_time_millis();
+    let now = current_time_ms();
 
     // Apply offset if present - shifts entire time window backward
     let adjusted_now = if let Some(off) = offset {
@@ -230,7 +230,7 @@ fn parse_rate_expr(input: &str) -> IResult<&str, Query> {
     })?;
 
     // Build time range (using milliseconds to match database timestamp format)
-    let now = current_time_millis();
+    let now = current_time_ms();
 
     // Apply offset if present - shifts entire time window backward
     let adjusted_now = if let Some(off) = offset {
@@ -296,7 +296,7 @@ fn parse_vector_selector(input: &str) -> IResult<&str, Query> {
     .parse(input)?;
 
     // Build time range (using milliseconds to match database timestamp format)
-    let now = current_time_millis();
+    let now = current_time_ms();
 
     // Apply offset if present
     let adjusted_now = if let Some(off) = offset {
@@ -499,18 +499,6 @@ fn parse_duration(input: &str) -> IResult<&str, Duration> {
 /// Parse at least one whitespace
 fn multispace1(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_whitespace())(input)
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-/// Get current time in milliseconds (matching database timestamp format)
-fn current_time_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 // ============================================================================
@@ -732,7 +720,7 @@ mod tests {
         // Without offset: end ~= now, with 5m offset: end ~= now - 5min
         match result.unwrap() {
             Query::Select(q) => {
-                let now = current_time_millis();
+                let now = current_time_ms();
                 // End should be approximately now - 5min (300,000ms), with some tolerance
                 let offset_ms = 5 * 60 * 1000; // 5 minutes in ms
                 let expected_end = now - offset_ms;
@@ -754,7 +742,7 @@ mod tests {
 
         match result.unwrap() {
             Query::Aggregate(q) => {
-                let now = current_time_millis();
+                let now = current_time_ms();
                 // End should be approximately now - 1day (86,400,000ms)
                 let offset_ms = 24 * 60 * 60 * 1000; // 1 day in ms
                 let expected_end = now - offset_ms;
@@ -782,7 +770,7 @@ mod tests {
 
         match result.unwrap() {
             Query::Aggregate(q) => {
-                let now = current_time_millis();
+                let now = current_time_ms();
                 // End should be approximately now - 1hour (3,600,000ms)
                 let offset_ms = 60 * 60 * 1000; // 1 hour in ms
                 let expected_end = now - offset_ms;

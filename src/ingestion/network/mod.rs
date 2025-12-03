@@ -106,11 +106,18 @@ pub struct NetworkConfig {
 }
 
 impl Default for NetworkConfig {
+    /// Creates default network configuration with standard ports.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hardcoded address literals are invalid. This would be
+    /// a compile-time programming error, not a runtime condition.
     fn default() -> Self {
         Self {
-            tcp_addr: Some("0.0.0.0:8086".parse().expect("valid address")),
+            // These are compile-time literals - parse failures indicate code bugs
+            tcp_addr: Some("0.0.0.0:8086".parse().expect("hardcoded address invalid")),
             udp_addr: None, // Disabled by default
-            http_addr: Some("0.0.0.0:8087".parse().expect("valid address")),
+            http_addr: Some("0.0.0.0:8087".parse().expect("hardcoded address invalid")),
             tls: None,
             connection: ConnectionConfig::default(),
             rate_limit: RateLimitConfig::default(),
@@ -338,8 +345,23 @@ impl NetworkListener {
             debug!("UDP listener started on {}", addr);
         }
 
-        // HTTP listener would be started here
-        // (TODO: implement HTTP listener in separate task)
+        // Start HTTP listener if configured
+        if let Some(addr) = self.config.http_addr {
+            let http_listener =
+                HttpListener::new(addr, self.config.tls.as_ref(), HttpConfig::default()).await?;
+
+            let http_listener = http_listener
+                .with_rate_limiter(Arc::clone(&self.rate_limiter))
+                .with_shutdown(self.shutdown_tx.subscribe());
+
+            tokio::spawn(async move {
+                if let Err(e) = http_listener.run().await {
+                    warn!("HTTP listener error: {}", e);
+                }
+            });
+
+            debug!("HTTP listener started on {}", addr);
+        }
 
         debug!("Network listeners started");
         Ok(())

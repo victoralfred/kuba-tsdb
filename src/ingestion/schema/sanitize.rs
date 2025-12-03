@@ -291,6 +291,132 @@ fn is_control_char(c: char) -> bool {
     code <= 0x1F || code == 0x7F || (0x80..=0x9F).contains(&code)
 }
 
+// =============================================================================
+// Redis Key Sanitization
+// =============================================================================
+//
+// These functions provide sanitization specifically for values that will be
+// used in Redis key construction. They are more restrictive than general
+// sanitization because Redis keys use colons as separators.
+
+/// Characters that are NOT allowed in Redis key components.
+/// These characters could cause key injection or parsing issues:
+/// - Colon (:) - Redis key separator
+/// - Newline (\n) - Could break protocol
+/// - Carriage return (\r) - Could break protocol
+/// - Null (\0) - Could terminate strings early
+/// - Space ( ) - Could cause parsing ambiguity
+const REDIS_KEY_FORBIDDEN_CHARS: &[char] = &[':', '\n', '\r', '\0', ' '];
+
+/// Maximum length for Redis key components (tag keys and values)
+/// This prevents overly long keys that could cause memory issues
+pub const MAX_REDIS_KEY_COMPONENT_LENGTH: usize = 128;
+
+/// Sanitize a string for use in Redis key construction.
+///
+/// This function removes or replaces characters that could cause
+/// Redis key injection attacks when tags are used to construct
+/// secondary index keys like `ts:tag:{key}:{value}:series`.
+///
+/// # Security
+///
+/// This prevents attackers from:
+/// - Creating keys in unintended namespaces via colon injection
+/// - Breaking Redis protocol via newline injection
+/// - Creating excessively long keys via unbounded input
+///
+/// # Arguments
+///
+/// * `value` - The string to sanitize
+///
+/// # Returns
+///
+/// A sanitized string safe for use in Redis keys, with:
+/// - Forbidden characters replaced with underscores
+/// - Length truncated to `MAX_REDIS_KEY_COMPONENT_LENGTH`
+/// - Leading/trailing whitespace removed
+///
+/// # Examples
+///
+/// ```
+/// use gorilla_tsdb::ingestion::schema::sanitize::sanitize_for_redis_key;
+///
+/// // Normal values pass through (with trimming)
+/// assert_eq!(sanitize_for_redis_key("server1"), "server1");
+///
+/// // Colons are replaced to prevent key injection
+/// assert_eq!(sanitize_for_redis_key("host:port"), "host_port");
+///
+/// // Newlines are replaced to prevent protocol issues
+/// assert_eq!(sanitize_for_redis_key("value\nmalicious"), "value_malicious");
+/// ```
+pub fn sanitize_for_redis_key(value: &str) -> String {
+    // First trim the input to remove leading/trailing whitespace
+    let trimmed_input = value.trim();
+
+    if trimmed_input.is_empty() {
+        return "_empty_".to_string();
+    }
+
+    let mut result = String::with_capacity(trimmed_input.len().min(MAX_REDIS_KEY_COMPONENT_LENGTH));
+
+    for c in trimmed_input.chars() {
+        if result.len() >= MAX_REDIS_KEY_COMPONENT_LENGTH {
+            break;
+        }
+
+        if REDIS_KEY_FORBIDDEN_CHARS.contains(&c) {
+            // Replace forbidden characters with underscore
+            result.push('_');
+        } else if c.is_control() {
+            // Skip other control characters entirely
+            continue;
+        } else {
+            result.push(c);
+        }
+    }
+
+    // Handle case where all characters were control characters
+    if result.is_empty() {
+        "_empty_".to_string()
+    } else {
+        result
+    }
+}
+
+/// Sanitize a HashMap of tags for safe use in Redis key construction.
+///
+/// This is a convenience function that sanitizes both keys and values
+/// of a tag map, preparing them for use in Redis secondary indexes.
+///
+/// # Arguments
+///
+/// * `tags` - The tag key-value pairs to sanitize
+///
+/// # Returns
+///
+/// A new HashMap with sanitized keys and values
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use gorilla_tsdb::ingestion::schema::sanitize::sanitize_tags_for_redis;
+///
+/// let mut tags = HashMap::new();
+/// tags.insert("host:name".to_string(), "server:1".to_string());
+///
+/// let sanitized = sanitize_tags_for_redis(&tags);
+/// assert_eq!(sanitized.get("host_name"), Some(&"server_1".to_string()));
+/// ```
+pub fn sanitize_tags_for_redis(
+    tags: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    tags.iter()
+        .map(|(k, v)| (sanitize_for_redis_key(k), sanitize_for_redis_key(v)))
+        .collect()
+}
+
 /// Validate that a string contains only safe characters
 ///
 /// Returns true if the string is safe, false if it contains
@@ -448,5 +574,103 @@ mod tests {
         assert!(is_control_char('\x7F'));
         assert!(!is_control_char('a'));
         assert!(!is_control_char(' '));
+    }
+
+    // =========================================================================
+    // Redis Key Sanitization Tests
+    // =========================================================================
+
+    #[test]
+    fn test_sanitize_for_redis_key_basic() {
+        // Normal values pass through
+        assert_eq!(sanitize_for_redis_key("server1"), "server1");
+        assert_eq!(sanitize_for_redis_key("us-east-1"), "us-east-1");
+        assert_eq!(sanitize_for_redis_key("my_tag"), "my_tag");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_colon_injection() {
+        // Colons are replaced to prevent key injection
+        assert_eq!(sanitize_for_redis_key("host:port"), "host_port");
+        assert_eq!(sanitize_for_redis_key("ts:admin:root"), "ts_admin_root");
+        assert_eq!(
+            sanitize_for_redis_key("::multiple::colons::"),
+            "__multiple__colons__"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_newline_injection() {
+        // Newlines are replaced to prevent protocol issues
+        assert_eq!(
+            sanitize_for_redis_key("value\nmalicious"),
+            "value_malicious"
+        );
+        assert_eq!(sanitize_for_redis_key("value\r\nwindows"), "value__windows");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_null_bytes() {
+        // Null bytes are replaced
+        assert_eq!(sanitize_for_redis_key("value\0null"), "value_null");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_spaces() {
+        // Spaces are replaced
+        assert_eq!(sanitize_for_redis_key("hello world"), "hello_world");
+        assert_eq!(sanitize_for_redis_key("  trimmed  "), "trimmed");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_empty() {
+        // Empty or whitespace-only strings return placeholder
+        assert_eq!(sanitize_for_redis_key(""), "_empty_");
+        assert_eq!(sanitize_for_redis_key("   "), "_empty_");
+        assert_eq!(sanitize_for_redis_key("\n\r"), "_empty_");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_length_limit() {
+        // Long strings are truncated
+        let long_value = "a".repeat(200);
+        let result = sanitize_for_redis_key(&long_value);
+        assert_eq!(result.len(), MAX_REDIS_KEY_COMPONENT_LENGTH);
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_unicode() {
+        // Unicode characters are preserved (only ASCII control chars are special)
+        assert_eq!(sanitize_for_redis_key("日本語"), "日本語");
+        assert_eq!(sanitize_for_redis_key("émojis🎉"), "émojis🎉");
+    }
+
+    #[test]
+    fn test_sanitize_for_redis_key_complex_attack() {
+        // Complex attack patterns are sanitized
+        let attack = "admin:root\nSET password hacked\r\n";
+        let result = sanitize_for_redis_key(attack);
+        assert!(!result.contains(':'));
+        assert!(!result.contains('\n'));
+        assert!(!result.contains('\r'));
+    }
+
+    #[test]
+    fn test_sanitize_tags_for_redis() {
+        use std::collections::HashMap;
+
+        let mut tags = HashMap::new();
+        tags.insert("host:name".to_string(), "server:1".to_string());
+        tags.insert("region".to_string(), "us-east\n1".to_string());
+
+        let sanitized = sanitize_tags_for_redis(&tags);
+
+        // Keys are sanitized
+        assert!(sanitized.contains_key("host_name"));
+        assert!(!sanitized.contains_key("host:name"));
+
+        // Values are sanitized
+        assert_eq!(sanitized.get("host_name"), Some(&"server_1".to_string()));
+        assert_eq!(sanitized.get("region"), Some(&"us-east_1".to_string()));
     }
 }

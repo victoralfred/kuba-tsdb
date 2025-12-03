@@ -275,13 +275,26 @@ impl WalManager {
 
     /// Clean up old segments that have been checkpointed
     ///
+    /// Removes segments based on two retention policies:
+    /// 1. **Checkpoint-based**: Removes segments where all records have been persisted
+    ///    (i.e., max_sequence <= checkpoint_seq)
+    /// 2. **Count-based**: Ensures total segments don't exceed `max_segments` config
+    ///
+    /// When segment count exceeds max_segments, the oldest segments (by ID) are
+    /// removed first, even if they haven't been fully checkpointed. This provides
+    /// a hard cap on disk usage.
+    ///
     /// # Arguments
     ///
     /// * `checkpoint_seq` - Sequence number up to which data has been persisted
+    ///
+    /// # Returns
+    ///
+    /// Number of segments removed
     pub async fn cleanup(&self, checkpoint_seq: SequenceNumber) -> WalResult<usize> {
         let mut removed = 0;
 
-        // Remove sealed segments that are fully checkpointed
+        // Phase 1: Remove sealed segments that are fully checkpointed
         let to_remove: Vec<_> = {
             let segments = self.sealed_segments.read();
             segments
@@ -296,13 +309,61 @@ impl WalManager {
             removed += 1;
         }
 
-        // Update sealed segments list
+        // Update sealed segments list after checkpoint-based removal
         {
             let mut segments = self.sealed_segments.write();
             segments.retain(|s| s.max_sequence() > checkpoint_seq);
         }
 
+        // Phase 2: Enforce max_segments limit
+        // Count includes sealed segments plus the active segment (if any)
+        let active_count = if self.active_segment.read().is_some() {
+            1
+        } else {
+            0
+        };
+
+        let segments_to_remove_by_count = {
+            let segments = self.sealed_segments.read();
+            let total_count = segments.len() + active_count;
+
+            if total_count > self.config.max_segments {
+                // Remove oldest segments first (lowest IDs)
+                let excess = total_count - self.config.max_segments;
+                let mut sorted: Vec<_> = segments.iter().cloned().collect();
+                sorted.sort_by_key(|s| s.id());
+                sorted.into_iter().take(excess).collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
+
+        for segment in segments_to_remove_by_count {
+            warn!(
+                segment_id = segment.id(),
+                "Removing segment due to max_segments limit (data may not be checkpointed)"
+            );
+            segment.delete().await?;
+            removed += 1;
+        }
+
+        // Update sealed segments list after count-based removal
         if removed > 0 {
+            let mut segments = self.sealed_segments.write();
+            let max_segments = self.config.max_segments;
+            let active_count = if self.active_segment.read().is_some() {
+                1
+            } else {
+                0
+            };
+            // Keep only enough to stay under limit
+            if segments.len() + active_count > max_segments {
+                segments.sort_by_key(|s| s.id());
+                let keep_count = max_segments.saturating_sub(active_count);
+                // Keep the newest (highest ID) segments
+                let skip_count = segments.len().saturating_sub(keep_count);
+                *segments = segments.iter().skip(skip_count).cloned().collect();
+            }
             debug!("Cleaned up {} WAL segments", removed);
         }
 

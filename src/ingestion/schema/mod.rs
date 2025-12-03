@@ -53,7 +53,10 @@ pub mod validation;
 
 pub use bloom::{BloomFilter, ScalableBloomFilter};
 pub use registry::{FieldSchema, MeasurementSchema, SchemaRegistry};
-pub use sanitize::{SanitizeConfig, Sanitizer};
+pub use sanitize::{
+    sanitize_for_redis_key, sanitize_tags_for_redis, SanitizeConfig, Sanitizer,
+    MAX_REDIS_KEY_COMPONENT_LENGTH,
+};
 pub use validation::{ValidationConfig, ValidationError, ValidationResult, Validator};
 
 use std::collections::HashSet;

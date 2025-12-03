@@ -243,60 +243,54 @@ impl QueryExecutor {
     }
 
     /// Execute a SELECT query - fetch raw data points
+    ///
+    /// NOTE: This stub returns empty results. For production query execution,
+    /// use `QueryRouter::execute_select()` in `bin/server/query_router.rs` which
+    /// integrates with RedisTimeIndex and LocalDiskEngine for actual storage access.
     fn execute_select(
         &mut self,
         _query: &crate::query::ast::SelectQuery,
     ) -> Result<QueryResult, QueryError> {
-        // TODO: Implement select execution
-        // 1. Resolve series from selector
-        // 2. Determine chunks to scan using zone maps
-        // 3. Create chunk scanner operators
-        // 4. Apply filters (predicate pushdown where possible)
-        // 5. Apply ordering if requested
-        // 6. Apply limit/offset
-        // 7. Collect results
-
+        // Stub implementation - see bin/server/query_router.rs for production use
         Ok(QueryResult::empty())
     }
 
     /// Execute an AGGREGATE query - compute aggregations over time windows
+    ///
+    /// NOTE: This stub returns empty results. For production query execution,
+    /// use `QueryRouter::execute_aggregate()` in `bin/server/query_router.rs` and
+    /// the `aggregation` module which provide full aggregation support.
     fn execute_aggregate(
         &mut self,
         _query: &crate::query::ast::AggregateQuery,
     ) -> Result<QueryResult, QueryError> {
-        // TODO: Implement aggregate execution
-        // 1. Execute base select query
-        // 2. Group by series and time windows
-        // 3. Apply aggregation functions (vectorized)
-        // 4. Collect aggregated results
-
+        // Stub implementation - see bin/server/query_router.rs for production use
         Ok(QueryResult::empty())
     }
 
     /// Execute a DOWNSAMPLE query - reduce data for visualization
+    ///
+    /// NOTE: This stub returns empty results. For production query execution,
+    /// use `QueryRouter::execute_downsample()` in `bin/server/query_router.rs` and
+    /// `query::operators::downsample` which implement LTTB, M4, and Average algorithms.
     fn execute_downsample(
         &mut self,
         _query: &crate::query::ast::DownsampleQuery,
     ) -> Result<QueryResult, QueryError> {
-        // TODO: Implement downsample execution
-        // 1. Execute base select query
-        // 2. Apply downsampling algorithm (LTTB, M4, or simple)
-        // 3. Return reduced dataset
-
+        // Stub implementation - see bin/server/query_router.rs for production use
         Ok(QueryResult::empty())
     }
 
     /// Execute a LATEST query - fetch most recent values
+    ///
+    /// NOTE: This stub returns empty results. For production query execution,
+    /// use `QueryRouter::execute_latest()` in `bin/server/query_router.rs` which
+    /// efficiently finds the most recent values for each series.
     fn execute_latest(
         &mut self,
         _query: &crate::query::ast::LatestQuery,
     ) -> Result<QueryResult, QueryError> {
-        // TODO: Implement latest execution
-        // 1. Resolve series from selector
-        // 2. For each series, find the most recent chunk
-        // 3. Read the last N values
-        // 4. Return results
-
+        // Stub implementation - see bin/server/query_router.rs for production use
         Ok(QueryResult::empty())
     }
 
@@ -531,7 +525,8 @@ impl ExecutionStats {
         if self.total_queries == 0 {
             Duration::ZERO
         } else {
-            self.total_execution_time / self.total_queries as u32
+            // EDGE-005: Cap at u32::MAX to prevent truncation after 4 billion queries
+            self.total_execution_time / self.total_queries.min(u32::MAX as u64) as u32
         }
     }
 

@@ -296,7 +296,7 @@ mod tests {
             (0..100).map(|i| (i as i64 * 1000, i as f64, 1)).collect();
 
         ScanOperator::new(SeriesSelector::by_id(1), None)
-            .with_mock_data(data)
+            .with_test_data(data)
             .with_batch_size(100)
     }
 
