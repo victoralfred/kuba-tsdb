@@ -47,12 +47,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod detect;
 pub mod error;
 pub mod json;
 pub mod line;
 pub mod protobuf;
-// pub mod detect;    // TODO: Implement protocol detection
 
+pub use detect::{detect_protocol, detect_protocol_with_hint};
 pub use error::{ParseError, ParseErrorKind};
 pub use json::JsonParser;
 pub use line::{LineProtocolParser, ParsedLine};
