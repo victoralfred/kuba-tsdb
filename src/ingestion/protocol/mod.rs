@@ -62,7 +62,10 @@ pub use protobuf::{Label, ProtobufParser, Sample, TimeSeries, WriteRequest};
 // (ParsedPoint, OwnedParsedPoint, FieldValue, Protocol, ProtocolParser are already public)
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
+
+use crate::types::{DataPoint, SeriesId};
 
 /// Owned version of ParsedPoint (for when data needs to outlive input buffer)
 #[derive(Debug, Clone, PartialEq)]
@@ -387,6 +390,137 @@ impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
+}
+
+// =============================================================================
+// Series ID Generation and Point Conversion
+// =============================================================================
+
+/// Generate a deterministic series ID from metric name and tags
+///
+/// Uses a hash of the metric name and sorted tags to generate a consistent
+/// series ID. This allows the same series to always map to the same ID
+/// regardless of tag insertion order.
+///
+/// # Arguments
+///
+/// * `metric_name` - The measurement/metric name
+/// * `tags` - Tag key-value pairs
+///
+/// # Returns
+///
+/// A deterministic 64-bit series ID
+pub fn generate_series_id(metric_name: &str, tags: &HashMap<String, String>) -> SeriesId {
+    // Sort tags for deterministic hashing
+    let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metric_name.hash(&mut hasher);
+
+    for (key, value) in sorted_tags {
+        key.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+
+    hasher.finish() as SeriesId
+}
+
+/// Generate series ID from Cow strings (for ParsedPoint compatibility)
+///
+/// Same as `generate_series_id` but accepts Cow<str> references.
+pub fn generate_series_id_cow<'a>(
+    metric_name: &str,
+    tags: &HashMap<Cow<'a, str>, Cow<'a, str>>,
+) -> SeriesId {
+    let sorted_tags: BTreeMap<_, _> = tags.iter().collect();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    metric_name.hash(&mut hasher);
+
+    for (key, value) in sorted_tags {
+        key.as_ref().hash(&mut hasher);
+        value.as_ref().hash(&mut hasher);
+    }
+
+    hasher.finish() as SeriesId
+}
+
+/// Convert a ParsedPoint to DataPoints
+///
+/// A single ParsedPoint may produce multiple DataPoints if it has
+/// multiple numeric fields. Each field becomes a separate time series.
+///
+/// # Arguments
+///
+/// * `point` - The parsed point from protocol parsing
+/// * `default_timestamp` - Timestamp to use if point has no timestamp (epoch ms)
+///
+/// # Returns
+///
+/// Vector of DataPoints, one per numeric field in the parsed point.
+/// Non-numeric fields (strings, booleans) are skipped.
+pub fn parsed_point_to_data_points(
+    point: &ParsedPoint<'_>,
+    default_timestamp: i64,
+) -> Vec<DataPoint> {
+    let timestamp = point.timestamp.unwrap_or(default_timestamp);
+    let mut data_points = Vec::with_capacity(point.fields.len());
+
+    for (field_name, field_value) in &point.fields {
+        // Only convert numeric fields to DataPoints
+        let value = match field_value {
+            FieldValue::Float(v) => *v,
+            FieldValue::Integer(v) => *v as f64,
+            FieldValue::UInteger(v) => *v as f64,
+            // Skip non-numeric fields
+            FieldValue::String(_) | FieldValue::Boolean(_) => continue,
+        };
+
+        // Generate series ID including field name for multi-field measurements
+        // Format: metric_name + tags + field_name
+        let mut tags_with_field: HashMap<String, String> = point
+            .tags
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        // Add field name as a pseudo-tag for series differentiation
+        // This ensures cpu,host=a usage_user and cpu,host=a usage_system are different series
+        tags_with_field.insert("__field__".to_string(), field_name.to_string());
+
+        let series_id = generate_series_id(&point.measurement, &tags_with_field);
+        data_points.push(DataPoint::new(series_id, timestamp, value));
+    }
+
+    data_points
+}
+
+/// Convert an OwnedParsedPoint to DataPoints
+///
+/// Same as `parsed_point_to_data_points` but for owned points.
+pub fn owned_parsed_point_to_data_points(
+    point: &OwnedParsedPoint,
+    default_timestamp: i64,
+) -> Vec<DataPoint> {
+    let timestamp = point.timestamp.unwrap_or(default_timestamp);
+    let mut data_points = Vec::with_capacity(point.fields.len());
+
+    for (field_name, field_value) in &point.fields {
+        let value = match field_value {
+            FieldValue::Float(v) => *v,
+            FieldValue::Integer(v) => *v as f64,
+            FieldValue::UInteger(v) => *v as f64,
+            FieldValue::String(_) | FieldValue::Boolean(_) => continue,
+        };
+
+        let mut tags_with_field = point.tags.clone();
+        tags_with_field.insert("__field__".to_string(), field_name.clone());
+
+        let series_id = generate_series_id(&point.measurement, &tags_with_field);
+        data_points.push(DataPoint::new(series_id, timestamp, value));
+    }
+
+    data_points
 }
 
 #[cfg(test)]
