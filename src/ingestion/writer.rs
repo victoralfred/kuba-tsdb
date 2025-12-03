@@ -2,14 +2,24 @@
 //!
 //! Provides multi-threaded write workers that compress and persist
 //! data points to storage with high throughput.
+//!
+//! # Storage Integration
+//!
+//! Workers can operate in two modes:
+//! - **Stub mode** (default): Simulates writes for testing/benchmarking
+//! - **Storage mode**: Writes to actual storage via `TimeSeriesDB`
+//!
+//! To enable storage mode, use `WriteWorker::with_storage()` or
+//! `ParallelWriter::with_storage()`.
 
+use crate::engine::TimeSeriesDB;
 use crate::error::IngestionError;
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, Semaphore};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::buffer::WriteBatch;
 use super::metrics::IngestionMetrics;
@@ -110,6 +120,9 @@ pub struct WriteWorker {
     config: Arc<WriterConfig>,
     /// Metrics collector
     metrics: Arc<IngestionMetrics>,
+    /// Optional storage backend for actual persistence
+    /// When None, writes are simulated (stub mode)
+    storage: Option<Arc<TimeSeriesDB>>,
     /// Batches written
     batches_written: AtomicU64,
     /// Points written
@@ -125,12 +138,12 @@ pub struct WriteWorker {
 }
 
 impl WriteWorker {
-    /// Create a new write worker with an owned config
+    /// Create a new write worker with an owned config (stub mode)
     pub fn new(id: usize, config: WriterConfig, metrics: Arc<IngestionMetrics>) -> Self {
         Self::with_shared_config(id, Arc::new(config), metrics)
     }
 
-    /// Create a new write worker with a shared config
+    /// Create a new write worker with a shared config (stub mode)
     ///
     /// This is more efficient when creating multiple workers, as the config
     /// is not cloned for each worker.
@@ -143,6 +156,31 @@ impl WriteWorker {
             id,
             config,
             metrics,
+            storage: None,
+            batches_written: AtomicU64::new(0),
+            points_written: AtomicU64::new(0),
+            bytes_written: AtomicU64::new(0),
+            write_errors: AtomicU64::new(0),
+            retries: AtomicU64::new(0),
+            total_latency_us: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new write worker with storage backend (production mode)
+    ///
+    /// When storage is provided, writes are persisted to the actual database
+    /// instead of being simulated.
+    pub fn with_storage(
+        id: usize,
+        config: Arc<WriterConfig>,
+        metrics: Arc<IngestionMetrics>,
+        storage: Arc<TimeSeriesDB>,
+    ) -> Self {
+        Self {
+            id,
+            config,
+            metrics,
+            storage: Some(storage),
             batches_written: AtomicU64::new(0),
             points_written: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
@@ -217,30 +255,67 @@ impl WriteWorker {
             .unwrap_or_else(|| IngestionError::WriteError("Unknown write error".to_string())))
     }
 
-    /// Write points to storage (stub - will integrate with storage layer)
+    /// Write points to storage
+    ///
+    /// In storage mode, writes to the actual database via TimeSeriesDB.
+    /// In stub mode, simulates writes with compression size estimation.
     async fn write_points(&self, batch: &WriteBatch) -> Result<u64, IngestionError> {
-        // TODO: Integrate with actual storage layer
-        // For now, simulate write with compression size estimation
-
         let points = &batch.points;
         if points.is_empty() {
             return Ok(0);
         }
 
-        // Simulate compression - Gorilla typically achieves ~1.37 bytes/point
-        let compressed_size = if self.config.compress {
-            // Estimate: 2 bytes per point with Gorilla compression
-            (points.len() * 2) as u64
+        // If storage is configured, use actual persistence
+        if let Some(ref storage) = self.storage {
+            match storage.write(batch.series_id, points.clone()).await {
+                Ok(chunk_id) => {
+                    info!(
+                        worker = self.id,
+                        series_id = batch.series_id,
+                        points = points.len(),
+                        chunk_id = %chunk_id,
+                        "Persisted batch to storage"
+                    );
+
+                    // Estimate compressed size based on typical Gorilla compression ratio
+                    // (actual size tracked internally by storage engine)
+                    let compressed_size = if self.config.compress {
+                        (points.len() * 2) as u64 // ~1.37 bytes/point typical
+                    } else {
+                        (points.len() * 24) as u64
+                    };
+                    Ok(compressed_size)
+                }
+                Err(e) => {
+                    warn!(
+                        worker = self.id,
+                        series_id = batch.series_id,
+                        error = %e,
+                        "Storage write failed"
+                    );
+                    Err(IngestionError::WriteError(format!("Storage error: {}", e)))
+                }
+            }
         } else {
-            // Uncompressed: 24 bytes per point (timestamp + value + overhead)
-            (points.len() * 24) as u64
-        };
+            // Stub mode: simulate write with compression size estimation
+            debug!(
+                worker = self.id,
+                series_id = batch.series_id,
+                points = points.len(),
+                "Simulating write (stub mode)"
+            );
 
-        // Simulate write latency (remove this when integrating with real storage)
-        // In production, this would call the storage engine
-        tokio::time::sleep(Duration::from_micros(10)).await;
+            let compressed_size = if self.config.compress {
+                (points.len() * 2) as u64
+            } else {
+                (points.len() * 24) as u64
+            };
 
-        Ok(compressed_size)
+            // Simulate minimal write latency in stub mode
+            tokio::time::sleep(Duration::from_micros(10)).await;
+
+            Ok(compressed_size)
+        }
     }
 
     /// Get worker statistics
@@ -274,6 +349,8 @@ pub struct ParallelWriter {
     input: tokio::sync::RwLock<Option<mpsc::Receiver<WriteBatch>>>,
     /// Metrics collector
     metrics: Arc<IngestionMetrics>,
+    /// Optional storage backend for actual persistence
+    storage: Option<Arc<TimeSeriesDB>>,
     /// Concurrency limiter
     semaphore: Arc<Semaphore>,
     /// Active write count (wrapped in Arc for safe sharing across tasks)
@@ -285,7 +362,7 @@ pub struct ParallelWriter {
 }
 
 impl ParallelWriter {
-    /// Create a new parallel writer
+    /// Create a new parallel writer (stub mode)
     pub fn new(
         config: WriterConfig,
         input: mpsc::Receiver<WriteBatch>,
@@ -298,6 +375,31 @@ impl ParallelWriter {
             config: Arc::new(config),
             input: tokio::sync::RwLock::new(Some(input)),
             metrics,
+            storage: None,
+            semaphore,
+            active_writes: Arc::new(AtomicUsize::new(0)),
+            batches_processed: Arc::new(AtomicU64::new(0)),
+            points_written: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Create a new parallel writer with storage backend (production mode)
+    ///
+    /// When storage is provided, writes are persisted to the actual database.
+    pub fn with_storage(
+        config: WriterConfig,
+        input: mpsc::Receiver<WriteBatch>,
+        metrics: Arc<IngestionMetrics>,
+        storage: Arc<TimeSeriesDB>,
+    ) -> Self {
+        let max_concurrent = config.num_workers * config.max_concurrent_writes;
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+
+        Self {
+            config: Arc::new(config),
+            input: tokio::sync::RwLock::new(Some(input)),
+            metrics,
+            storage: Some(storage),
             semaphore,
             active_writes: Arc::new(AtomicUsize::new(0)),
             batches_processed: Arc::new(AtomicU64::new(0)),
@@ -356,9 +458,13 @@ impl ParallelWriter {
                     // Spawn task to process the batch
                     let point_count = batch.points.len() as u64;
                     let batch_seq = batch.sequence;
+                    let storage = self.storage.clone();
 
-                    // Create worker for this batch using shared config
-                    let worker = WriteWorker::with_shared_config(0, config, metrics);
+                    // Create worker for this batch, with storage if available
+                    let worker = match storage {
+                        Some(db) => WriteWorker::with_storage(0, config, metrics, db),
+                        None => WriteWorker::with_shared_config(0, config, metrics),
+                    };
 
                     tokio::spawn(async move {
                         let result = worker.process_batch(batch).await;
