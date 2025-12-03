@@ -239,7 +239,10 @@ impl MmapChunk {
         };
 
         // Parse header (first 64 bytes)
-        let header_bytes: &[u8; 64] = &mmap[0..64].try_into().expect("slice is exactly 64 bytes");
+        // Safety: file_size >= 64 was validated above, so this slice is exactly 64 bytes
+        let header_bytes: &[u8; 64] = mmap[0..64]
+            .try_into()
+            .map_err(|_| MmapError::HeaderParse("Header slice is not 64 bytes".to_string()))?;
         let header = ChunkHeader::from_bytes(header_bytes).map_err(MmapError::HeaderParse)?;
 
         // Validate header fields
@@ -446,14 +449,12 @@ impl MmapChunk {
             },
         };
 
-        // Decompress on blocking thread pool (CPU-intensive)
+        // Decompress using the compressor (it handles spawn_blocking internally)
         let compressor = GorillaCompressor::new();
-        tokio::task::spawn_blocking(move || {
-            futures::executor::block_on(compressor.decompress(&block))
-        })
-        .await
-        .map_err(|e| format!("Decompression task panicked: {}", e))?
-        .map_err(|e| format!("Decompression failed: {}", e))
+        compressor
+            .decompress(&block)
+            .await
+            .map_err(|e| format!("Decompression failed: {}", e))
     }
 
     /// Get file size in bytes
@@ -523,8 +524,37 @@ impl MmapChunk {
     }
 }
 
-// Safety: Mmap is Send + Sync for read-only mappings
-// Multiple threads can safely read concurrently
+// SAFETY: MmapChunk implements Send and Sync for the following reasons:
+//
+// 1. **File handle (File)**: File is Send + Sync, and we only keep it open to
+//    maintain the memory mapping lifetime. We never write to it after opening.
+//
+// 2. **Memory mapping (Mmap)**: The memmap2::Mmap is opened in read-only mode.
+//    Read-only memory mappings are safe to share across threads because:
+//    - Multiple threads can read the same memory without data races
+//    - The underlying file is not modified (sealed chunk)
+//    - The OS kernel handles page faults thread-safely
+//
+// 3. **Header (ChunkHeader)**: Immutable after construction, contains only
+//    Copy types (u32, u64, i64). Safe to share read-only references.
+//
+// 4. **Path (PathBuf)**: Immutable after construction. PathBuf is Send + Sync.
+//
+// 5. **last_accessed (AtomicI64)**: Uses atomic operations for thread-safe updates.
+//    AtomicI64 is already Send + Sync.
+//
+// 6. **file_size (u64)**: Immutable after construction, Copy type.
+//
+// INVARIANTS:
+// - The chunk file must be sealed (read-only) before creating MmapChunk
+// - The mmap is created with read-only permissions
+// - No mutable references to mmap data are ever created
+// - All mutations go through atomic operations (last_accessed)
+//
+// THREAD SAFETY:
+// - Concurrent reads: Safe (read-only mmap, immutable header)
+// - Concurrent last_accessed updates: Safe (atomic operations)
+// - No concurrent writes: Guaranteed by read-only mmap
 unsafe impl Send for MmapChunk {}
 unsafe impl Sync for MmapChunk {}
 

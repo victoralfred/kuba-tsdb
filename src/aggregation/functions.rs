@@ -295,7 +295,10 @@ pub fn moving_min(values: &[f64], window_size: usize) -> Vec<f64> {
         deque.push_back((i, value));
 
         // Front of deque is always the minimum
-        result.push(deque.front().unwrap().1);
+        // Safety: deque is never empty here since we just pushed to it
+        if let Some(&(_, min_val)) = deque.front() {
+            result.push(min_val);
+        }
     }
 
     result
@@ -340,7 +343,10 @@ pub fn moving_max(values: &[f64], window_size: usize) -> Vec<f64> {
         deque.push_back((i, value));
 
         // Front of deque is always the maximum
-        result.push(deque.front().unwrap().1);
+        // Safety: deque is never empty here since we just pushed to it
+        if let Some(&(_, max_val)) = deque.front() {
+            result.push(max_val);
+        }
     }
 
     result

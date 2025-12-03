@@ -313,6 +313,9 @@ impl BatchedWalWriter {
     }
 }
 
+/// Type alias for the flush callback to reduce type complexity
+type FlushCallback = Box<dyn FnMut(&[DataPoint]) + Send>;
+
 /// Write coalescer for grouping writes
 ///
 /// Combines multiple small writes into larger batches
@@ -322,15 +325,20 @@ pub struct WriteCoalescer {
     buffer: Vec<DataPoint>,
     /// Maximum buffer size
     max_size: usize,
-    /// Callback for flushing
-    on_flush: Box<dyn FnMut(Vec<DataPoint>) + Send>,
+    /// Callback for flushing - takes slice reference to avoid ownership transfer
+    /// This design enables panic-safe flushing without cloning the buffer
+    on_flush: FlushCallback,
 }
 
 impl WriteCoalescer {
     /// Create a new coalescer
+    ///
+    /// The `on_flush` callback receives a slice reference to the buffered points.
+    /// If the callback needs to store the data, it should clone the slice contents.
+    /// This design avoids 2x memory usage during flush while maintaining panic safety.
     pub fn new<F>(max_size: usize, on_flush: F) -> Self
     where
-        F: FnMut(Vec<DataPoint>) + Send + 'static,
+        F: FnMut(&[DataPoint]) + Send + 'static,
     {
         Self {
             buffer: Vec::with_capacity(max_size),
@@ -353,24 +361,27 @@ impl WriteCoalescer {
     /// # Panic Safety
     ///
     /// If the `on_flush` callback panics, the buffer data is preserved and
-    /// will be available for retry on the next flush call.
+    /// will be available for retry on the next flush call. Since the callback
+    /// receives a slice reference (not ownership), the buffer remains intact
+    /// without requiring a pre-emptive clone.
     pub fn flush(&mut self) {
         if !self.buffer.is_empty() {
-            // EDGE-013: Use catch_unwind to preserve buffer on callback panic
-            // Take buffer temporarily, restore if callback panics
-            let points = std::mem::take(&mut self.buffer);
-            let points_backup = points.clone();
-            self.buffer = Vec::with_capacity(self.max_size);
-
+            // PERF-003: Pass slice reference instead of owned Vec
+            // This avoids 2x memory usage from cloning while maintaining panic safety.
+            // The buffer is only cleared after successful callback completion.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (self.on_flush)(points);
+                (self.on_flush)(&self.buffer);
             }));
 
-            if let Err(panic_payload) = result {
-                // Restore buffer on panic so data is not lost
-                self.buffer = points_backup;
-                // Re-panic after restoring buffer
-                std::panic::resume_unwind(panic_payload);
+            match result {
+                Ok(()) => {
+                    // Callback succeeded - clear the buffer
+                    self.buffer.clear();
+                }
+                Err(panic_payload) => {
+                    // Buffer is automatically preserved since we only passed a reference
+                    std::panic::resume_unwind(panic_payload);
+                }
             }
         }
     }
@@ -460,8 +471,9 @@ mod tests {
         let flushed: Arc<Mutex<Vec<Vec<DataPoint>>>> = Arc::new(Mutex::new(Vec::new()));
         let flushed_clone = Arc::clone(&flushed);
 
-        let mut coalescer = WriteCoalescer::new(5, move |points| {
-            flushed_clone.lock().unwrap().push(points);
+        // Callback receives slice reference, clone if storage is needed
+        let mut coalescer = WriteCoalescer::new(5, move |points: &[DataPoint]| {
+            flushed_clone.lock().unwrap().push(points.to_vec());
         });
 
         // Add points

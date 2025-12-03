@@ -106,11 +106,18 @@ pub struct NetworkConfig {
 }
 
 impl Default for NetworkConfig {
+    /// Creates default network configuration with standard ports.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hardcoded address literals are invalid. This would be
+    /// a compile-time programming error, not a runtime condition.
     fn default() -> Self {
         Self {
-            tcp_addr: Some("0.0.0.0:8086".parse().expect("valid address")),
+            // These are compile-time literals - parse failures indicate code bugs
+            tcp_addr: Some("0.0.0.0:8086".parse().expect("hardcoded address invalid")),
             udp_addr: None, // Disabled by default
-            http_addr: Some("0.0.0.0:8087".parse().expect("valid address")),
+            http_addr: Some("0.0.0.0:8087".parse().expect("hardcoded address invalid")),
             tls: None,
             connection: ConnectionConfig::default(),
             rate_limit: RateLimitConfig::default(),
