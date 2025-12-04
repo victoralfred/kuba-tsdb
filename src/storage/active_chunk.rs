@@ -721,6 +721,58 @@ impl ActiveChunk {
 
         Ok(points)
     }
+
+    /// Read points from the active chunk without consuming them
+    ///
+    /// This method returns a copy of all points currently in the chunk,
+    /// leaving the chunk intact. Useful for queries that need to include
+    /// unbuffered data.
+    ///
+    /// # Returns
+    ///
+    /// A vector of cloned data points sorted by timestamp
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned
+    pub fn read_points(&self) -> Result<Vec<DataPoint>, String> {
+        let points_map = self
+            .points
+            .read()
+            .map_err(|_| "Lock poisoned: cannot read points from corrupted chunk".to_string())?;
+
+        // Clone all points from the BTreeMap
+        let points: Vec<DataPoint> = points_map.values().cloned().collect();
+        Ok(points)
+    }
+
+    /// Read points within a specific time range without consuming them
+    ///
+    /// This method returns a copy of points that fall within the given
+    /// time range, leaving the chunk intact.
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - Start timestamp (inclusive)
+    /// * `end` - End timestamp (inclusive)
+    ///
+    /// # Returns
+    ///
+    /// A vector of cloned data points within the time range
+    pub fn read_points_in_range(&self, start: i64, end: i64) -> Result<Vec<DataPoint>, String> {
+        let points_map = self
+            .points
+            .read()
+            .map_err(|_| "Lock poisoned: cannot read points from corrupted chunk".to_string())?;
+
+        // Use BTreeMap's range query for efficient filtering
+        let points: Vec<DataPoint> = points_map
+            .range(start..=end)
+            .map(|(_, point)| *point)
+            .collect();
+
+        Ok(points)
+    }
 }
 
 #[cfg(test)]

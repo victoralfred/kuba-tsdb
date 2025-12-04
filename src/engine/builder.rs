@@ -504,20 +504,29 @@ impl TimeSeriesDB {
             "Querying database"
         );
 
-        // Find matching chunks from index
+        let mut all_points = Vec::new();
+
+        // First, check active chunks for unbuffered data
+        {
+            let chunks = self.active_chunks.read().await;
+            if let Some(active_chunk) = chunks.get(&series_id) {
+                // Read points from active chunk without consuming them
+                if let Ok(active_points) =
+                    active_chunk.read_points_in_range(time_range.start, time_range.end)
+                {
+                    all_points.extend(active_points);
+                }
+            }
+        }
+
+        // Find matching chunks from index (sealed/persisted chunks)
         let chunk_refs = self
             .index
             .query_chunks(series_id, time_range)
             .await
             .map_err(Error::Index)?;
 
-        if chunk_refs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut all_points = Vec::new();
-
-        // Read and decompress each chunk
+        // Read and decompress each sealed chunk
         for chunk_ref in chunk_refs {
             // Skip deleted/archived chunks
             if matches!(
@@ -549,8 +558,11 @@ impl TimeSeriesDB {
             }
         }
 
-        // Sort by timestamp (in case chunks overlap)
+        // Sort by timestamp (in case chunks overlap or active chunk data interleaves)
         all_points.sort_by_key(|p| p.timestamp);
+
+        // Deduplicate points with same timestamp (active chunk might have duplicates with sealed)
+        all_points.dedup_by_key(|p| p.timestamp);
 
         debug!(
             series_id = series_id,
@@ -601,6 +613,19 @@ impl TimeSeriesDB {
             "Querying latest points"
         );
 
+        let mut collected_points: Vec<DataPoint> = Vec::with_capacity(count);
+
+        // First, check active chunks for the most recent unbuffered data
+        {
+            let chunks = self.active_chunks.read().await;
+            if let Some(active_chunk) = chunks.get(&series_id) {
+                if let Ok(active_points) = active_chunk.read_points() {
+                    // Active chunk points are already sorted by timestamp
+                    collected_points.extend(active_points);
+                }
+            }
+        }
+
         // Get all chunks for this series (no time range filter - we want all)
         let now = chrono::Utc::now().timestamp_millis();
         let full_range = TimeRange::new_unchecked(0, now);
@@ -611,15 +636,10 @@ impl TimeSeriesDB {
             .await
             .map_err(Error::Index)?;
 
-        if chunk_refs.is_empty() {
-            return Ok(Vec::new());
-        }
-
         // ENH-001: Sort chunks by end_timestamp descending (newest first)
         // This allows us to find the latest points with minimal chunk reads
         chunk_refs.sort_by(|a, b| b.time_range.end.cmp(&a.time_range.end));
 
-        let mut collected_points: Vec<DataPoint> = Vec::with_capacity(count);
         let mut chunks_read = 0;
 
         // Read chunks from newest to oldest, stopping when we have enough points
