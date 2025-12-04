@@ -21,13 +21,14 @@ use axum::{
 };
 use kuba_tsdb::cache::InvalidationPublisher;
 use kuba_tsdb::cache::SharedQueryCache;
+use kuba_tsdb::compression::global_metrics as compression_metrics;
 use kuba_tsdb::engine::TimeSeriesDB;
 use kuba_tsdb::ingestion::schema::sanitize_tags_for_redis;
 use kuba_tsdb::query::ast::{Query as AstQuery, SelectQuery, SeriesSelector};
 use kuba_tsdb::query::result::QueryResult;
 use kuba_tsdb::query::subscription::SubscriptionManager;
 use kuba_tsdb::security::{check_per_client_rate_limit, get_rate_limit_info};
-use kuba_tsdb::storage::LocalDiskEngine;
+use kuba_tsdb::storage::{CorruptionSeverity, IntegrityChecker, LocalDiskEngine};
 use kuba_tsdb::types::{generate_series_id, DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -852,4 +853,93 @@ pub async fn find_series(
             )
         }
     }
+}
+
+// =============================================================================
+// Compression Metrics Handler
+// =============================================================================
+
+/// Get compression performance metrics
+///
+/// Returns detailed compression statistics including:
+/// - Per-codec compression ratios
+/// - Bits per sample achieved
+/// - Encoding/decoding latencies
+/// - Error counts
+pub async fn get_compression_stats() -> Json<serde_json::Value> {
+    let metrics = compression_metrics();
+    let snapshot = metrics.snapshot();
+
+    Json(
+        serde_json::to_value(&snapshot).unwrap_or(serde_json::json!({
+            "error": "Failed to serialize compression stats"
+        })),
+    )
+}
+
+// =============================================================================
+// Integrity Scan Handler
+// =============================================================================
+
+/// Scan storage for corrupted chunks
+///
+/// This endpoint performs a comprehensive integrity check on all stored chunks.
+/// It verifies:
+/// - Magic bytes (IROG/GORI header)
+/// - Header structure and sizes
+/// - CRC-64 checksum of compressed data
+///
+/// Returns a detailed report of any corrupted chunks found.
+pub async fn integrity_scan(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<IntegrityScanRequest>,
+) -> impl IntoResponse {
+    tracing::info!(
+        deep_verify = req.deep_verify,
+        verbose = req.verbose,
+        "Starting integrity scan"
+    );
+
+    // Create integrity checker with requested options
+    let mut checker = IntegrityChecker::new();
+    if req.deep_verify {
+        checker = checker.with_deep_verify();
+    }
+    if req.verbose {
+        checker = checker.with_verbose();
+    }
+
+    // Scan the data directory
+    let report = checker.scan_directory(&state.config.data_dir).await;
+
+    // Convert corruptions to response format
+    let corruptions: Vec<CorruptedChunkInfo> = report
+        .corruptions
+        .iter()
+        .map(|c| CorruptedChunkInfo {
+            path: c.path.display().to_string(),
+            series_id: c.series_id,
+            chunk_id: c.chunk_id.clone(),
+            error: c.error.to_string(),
+            severity: match c.severity {
+                CorruptionSeverity::Recoverable => "recoverable".to_string(),
+                CorruptionSeverity::HeaderDamaged => "header_damaged".to_string(),
+                CorruptionSeverity::Unrecoverable => "unrecoverable".to_string(),
+            },
+            recovery_suggestion: c.recovery_suggestion.clone(),
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(IntegrityScanResponse {
+            healthy: report.is_healthy(),
+            valid_chunks: report.valid_chunks,
+            corrupted_chunks: report.corrupted_chunks,
+            bytes_scanned: report.bytes_scanned,
+            corruption_rate: report.corruption_rate(),
+            duration_ms: report.duration_ms,
+            corruptions,
+        }),
+    )
 }

@@ -434,3 +434,57 @@ pub struct OptimizationInfo {
     /// What this optimization does
     pub description: String,
 }
+
+// =============================================================================
+// Integrity Scan Types
+// =============================================================================
+
+/// Request for integrity scan (optional parameters)
+#[derive(Debug, Deserialize)]
+pub struct IntegrityScanRequest {
+    /// Enable deep verification (decompress and validate data)
+    #[serde(default)]
+    pub deep_verify: bool,
+    /// Enable verbose logging
+    #[serde(default)]
+    pub verbose: bool,
+}
+
+/// Response from integrity scan
+#[derive(Debug, Serialize)]
+pub struct IntegrityScanResponse {
+    /// Whether the storage is healthy (no corruption)
+    pub healthy: bool,
+    /// Number of valid chunks
+    pub valid_chunks: usize,
+    /// Number of corrupted chunks detected
+    pub corrupted_chunks: usize,
+    /// Total bytes scanned
+    pub bytes_scanned: u64,
+    /// Corruption rate as percentage
+    pub corruption_rate: f64,
+    /// Scan duration in milliseconds
+    pub duration_ms: u64,
+    /// Details of corrupted chunks (only present if corruptions found)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub corruptions: Vec<CorruptedChunkInfo>,
+}
+
+/// Information about a corrupted chunk
+#[derive(Debug, Serialize)]
+pub struct CorruptedChunkInfo {
+    /// Path to the corrupted chunk file
+    pub path: String,
+    /// Series ID if extractable from header
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<u64>,
+    /// Chunk ID if extractable from filename
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_id: Option<String>,
+    /// Type of corruption detected
+    pub error: String,
+    /// Severity level: "recoverable", "header_damaged", or "unrecoverable"
+    pub severity: String,
+    /// Suggested recovery action
+    pub recovery_suggestion: String,
+}

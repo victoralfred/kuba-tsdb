@@ -20,6 +20,8 @@
 //! - `GET /health` - Health check
 //! - `GET /metrics` - Prometheus metrics
 //! - `GET /api/v1/stats` - Database statistics
+//! - `POST /api/v1/integrity/scan` - Scan storage for corrupted chunks
+//! - `GET /api/v1/compression/stats` - Compression performance metrics
 //!
 //! # Configuration
 //!
@@ -102,6 +104,13 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/stats", get(handlers::get_stats))
         // Unified cache stats (Phase 4)
         .route("/api/v1/cache/stats", get(handlers::get_cache_stats))
+        // Integrity scan
+        .route("/api/v1/integrity/scan", post(handlers::integrity_scan))
+        // Compression metrics
+        .route(
+            "/api/v1/compression/stats",
+            get(handlers::get_compression_stats),
+        )
         // State and CORS
         .with_state(state.clone())
         .layer(build_cors_layer(&state.config.cors_allowed_origins))
@@ -121,7 +130,6 @@ async fn shutdown_signal() {
                     error = %e,
                     "Ctrl+C handler installation failed - graceful shutdown unavailable"
                 );
-                // Wait indefinitely; server will need to be killed forcefully
                 std::future::pending::<()>().await;
             }
         }
@@ -138,7 +146,6 @@ async fn shutdown_signal() {
                     error = %e,
                     "SIGTERM handler installation failed - SIGTERM shutdown unavailable"
                 );
-                // Wait indefinitely; this branch won't trigger shutdown
                 std::future::pending::<()>().await;
             }
         }
@@ -153,6 +160,33 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received, starting graceful shutdown");
+}
+
+/// Flush all active database buffers during shutdown
+///
+/// This ensures no data is lost when the server is stopped gracefully.
+/// Buffered points in active chunks are sealed and written to disk.
+async fn flush_database_on_shutdown(state: &Arc<AppState>) {
+    info!("Flushing active database buffers before shutdown...");
+
+    let start = std::time::Instant::now();
+
+    match state.db.flush_all().await {
+        Ok(chunk_ids) => {
+            let elapsed = start.elapsed();
+            info!(
+                chunks_flushed = chunk_ids.len(),
+                elapsed_ms = elapsed.as_millis(),
+                "Successfully flushed all active buffers"
+            );
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to flush some buffers during shutdown - data may be lost"
+            );
+        }
+    }
 }
 
 /// Initialize the database
@@ -363,7 +397,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Build router
-    let app = build_router(state);
+    let app = build_router(state.clone());
 
     // Parse listen address
     let addr: SocketAddr = config.listen_addr.parse()?;
@@ -371,12 +405,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server with ConnectInfo enabled for per-client rate limiting (SEC-003)
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Run the server until shutdown signal
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // Flush active database buffers before exit
+    // This ensures no data is lost when the server stops
+    flush_database_on_shutdown(&state).await;
 
     info!("Server shutdown complete");
     Ok(())
