@@ -2,64 +2,27 @@
 # Kuba TSDB - Application Configuration
 # ============================================================================
 #
-# This file contains all configurable settings for the Kuba TSDB server.
-# All values shown are defaults - uncomment and modify as needed.
-#
 # Configuration Priority (highest to lowest):
-#   1. Environment Variables (Kuba_*)
+#   1. Environment Variables (KUBA_*)
 #   2. This configuration file
 #   3. Built-in defaults
 #
-# Environment variable override format: Kuba_<SECTION>_<KEY>
-# Example: Kuba_SERVER_LISTEN_ADDR, Kuba_REDIS_URL
+# Environment variable override format: KUBA_<SECTION>_<KEY>
+# Example: KUBA_SERVER_LISTEN_ADDR, KUBA_REDIS_URL
 # ============================================================================
 
 # ----------------------------------------------------------------------------
 # Server Configuration
-# Network binding and runtime settings
 # ----------------------------------------------------------------------------
 [server]
 # Network binding address
 listen_addr = "0.0.0.0:8090"
 
-# Number of worker threads (0 = auto-detect CPU count)
-# workers = 0
-
-# Graceful shutdown timeout in seconds
-# shutdown_timeout_secs = 30
-
-# Enable request logging
-# request_logging = true
-
 # Log level: trace, debug, info, warn, error
-log_level = "trace"
-
-# ----------------------------------------------------------------------------
-# HTTP Configuration
-# HTTP listener and request handling settings
-# ----------------------------------------------------------------------------
-[http]
-# Maximum request body size in bytes (default: 10MB)
-# max_body_size_bytes = 10485760
-
-# Request timeout in seconds
-# request_timeout_secs = 30
-
-# Keep-alive timeout in seconds
-# keep_alive_secs = 60
-
-# Maximum concurrent connections (0 = unlimited)
-# max_connections = 10000
-
-# Enable gzip compression for responses
-# enable_compression = true
-
-# Minimum response size to compress (bytes)
-# compression_threshold_bytes = 1024
+log_level = "info"
 
 # ----------------------------------------------------------------------------
 # Storage Configuration
-# Data storage engine settings
 # ----------------------------------------------------------------------------
 [storage]
 # Base directory for all data files
@@ -68,437 +31,57 @@ data_dir = "/home/voseghale/data/tsdb"
 # Maximum chunk size in bytes before rotation (default: 1MB)
 # max_chunk_size_bytes = 1048576
 
-# Maximum points per chunk before sealing
-# max_chunk_points = 10000000
+# Write buffer configuration for batching points before AHPAC compression
+# Higher buffer_max_points values improve compression ratio but increase memory
 
-# Time-based sealing threshold in milliseconds (default: 1 hour)
-# seal_duration_ms = 3600000
+# Maximum points per active buffer before sealing (default: 1000)
+# buffer_max_points = 1000
 
-# Size-based sealing threshold in bytes (default: 100MB)
-# seal_size_bytes = 104857600
+# Maximum time span in milliseconds before sealing buffer (default: 60000 = 1 min)
+# buffer_max_duration_ms = 60000
 
-# Enable data checksums for integrity verification
-# enable_checksums = true
-
-# Sync writes to disk (true = safer, false = faster)
-# sync_writes = false
+# Maximum buffer size in bytes before sealing (default: 1MB)
+# buffer_max_size_bytes = 1048576
 
 # ----------------------------------------------------------------------------
 # Ingestion Configuration
-# Data ingestion pipeline settings
 # ----------------------------------------------------------------------------
 [ingestion]
-# Maximum memory for all series buffers combined (default: 512MB)
-# max_total_memory_bytes = 536870912
-
-# Maximum points buffered per series before flush
-# max_points_per_series = 10000
-
-# Maximum number of unique series in memory
-# max_series_count = 100000
-
-# Automatic flush interval in seconds
-# flush_interval_secs = 1
-
-# Maximum time a buffer can exist before forced flush
-# max_buffer_age_secs = 10
-
-# Number of shards for parallel processing (must be power of 2)
-# shard_count = 16
-
-# Maximum batch size for single ingest operation
+# Maximum batch size for single ingest operation (default: 100000)
 # max_batch_size = 100000
-
-# Channel buffer size for async processing
-# channel_buffer_size = 10000
-
-# ----------------------------------------------------------------------------
-# Backpressure Configuration
-# Memory and queue limit controls
-# ----------------------------------------------------------------------------
-[backpressure]
-# Memory limit that triggers backpressure (bytes) (default: 1GB)
-# memory_limit_bytes = 1073741824
-
-# Queue depth limit that triggers backpressure
-# queue_limit = 1000000
-
-# How often to check backpressure conditions (milliseconds)
-# check_interval_ms = 10
-
-# Maximum time to block a write under backpressure (seconds)
-# max_block_time_secs = 30
-
-# Percentage of limit at which to start throttling (0.0-1.0)
-# soft_limit_percent = 0.8
-
-# ----------------------------------------------------------------------------
-# Write-Ahead Log Configuration
-# WAL settings for durability
-# ----------------------------------------------------------------------------
-[wal]
-# WAL directory (relative to data_dir if not absolute)
-# directory = "./wal"
-
-# Maximum segment file size (default: 64MB)
-# segment_size_bytes = 67108864
-
-# Sync mode: "immediate", "interval", "none"
-# sync_mode = "interval"
-
-# Sync interval in milliseconds (when sync_mode = "interval")
-# sync_interval_ms = 100
-
-# Buffer size for pending writes
-# write_buffer_size = 10000
-
-# Maximum number of segments to retain
-# max_segments = 100
-
-# Enable WAL compression
-# compression_enabled = false
-
-# ----------------------------------------------------------------------------
-# Compression Configuration
-# Background compression settings
-# ----------------------------------------------------------------------------
-[compression]
-# Minimum age before chunk is eligible for compression (seconds) (default: 1 hour)
-# min_age_seconds = 3600
-
-# Number of parallel compression workers
-# worker_count = 4
-
-# How often to scan for compressible chunks (seconds) (default: 5 minutes)
-# scan_interval_seconds = 300
-
-# Maximum chunks to process per scan
-# max_chunks_per_scan = 100
-
-# Delete original files after compression
-# delete_original = true
-
-# Compression algorithm: "lz4", "zstd", "snappy"
-# algorithm = "lz4"
-
-# Compression level (algorithm-specific)
-# level = 1
-
-# ----------------------------------------------------------------------------
-# Compaction Configuration
-# Background compaction settings
-# ----------------------------------------------------------------------------
-[compaction]
-# Compaction strategy: "size_based", "time_based", "leveled"
-# strategy = "size_based"
-
-# Minimum chunks needed to trigger compaction
-# min_chunks_to_compact = 4
-
-# Maximum chunks to compact in single job
-# max_chunks_per_job = 10
-
-# Target size for compacted chunks (default: 64MB)
-# target_chunk_size_bytes = 67108864
-
-# Number of parallel compaction workers
-# worker_count = 2
-
-# How often to check for compaction opportunities (seconds)
-# check_interval_secs = 60
-
-# Maximum pending jobs in queue
-# max_queue_size = 1000
-
-# ----------------------------------------------------------------------------
-# Rate Limiting Configuration
-# Request rate limiting settings
-# ----------------------------------------------------------------------------
-[rate_limit]
-# Enable rate limiting
-# enabled = true
-
-# Maximum points per second per IP address
-# points_per_sec_per_ip = 100000
-
-# Maximum points per second per tenant
-# points_per_sec_per_tenant = 1000000
-
-# Burst capacity multiplier (allows temporary spikes)
-# burst_multiplier = 2.0
-
-# Time-to-live for rate limit buckets (seconds)
-# bucket_ttl_secs = 300
-
-# IP whitelist (bypass rate limiting)
-# ip_whitelist = ["127.0.0.1", "::1"]
-
-# IPv6 prefix length for grouping (/64 recommended)
-# ipv6_prefix_length = 64
-
-# ----------------------------------------------------------------------------
-# Query Configuration
-# Query engine settings
-# ----------------------------------------------------------------------------
-[query]
-# Enable query result cache
-# cache_enabled = true
-
-# Maximum cache size in bytes (default: 128MB)
-# cache_max_size_bytes = 134217728
-
-# Maximum number of cached entries
-# cache_max_entries = 10000
-
-# Cache entry time-to-live (seconds)
-# cache_default_ttl_secs = 60
-
-# Default limit for query results (if not specified)
-# default_limit = 10000
-
-# Maximum allowed limit for query results
-# max_limit = 1000000
-
-# Query timeout in seconds
-# timeout_secs = 30
-
-# Maximum concurrent queries
-# max_concurrent_queries = 100
-
-# Enable parallel query execution
-# parallel_execution = true
-
-# ----------------------------------------------------------------------------
-# Spill Configuration
-# Emergency overflow settings for memory pressure
-# ----------------------------------------------------------------------------
-[spill]
-# Spill directory (relative to data_dir if not absolute)
-# directory = "./spill"
-
-# Memory threshold that triggers spill (bytes) (default: 1GB)
-# memory_threshold_bytes = 1073741824
-
-# Memory threshold as percentage of system RAM (0.0-1.0)
-# memory_threshold_percent = 0.8
-
-# Maximum size per spill file (default: 256MB)
-# max_file_size_bytes = 268435456
-
-# Enable compression for spill files
-# compression_enabled = true
-
-# Compression level (1=fast, 12=best)
-# compression_level = 1
-
-# Maximum number of spill files to retain
-# max_files = 100
-
-# Automatically clean up spill files after recovery
-# auto_cleanup = true
-
-# Number of parallel workers for recovery
-# recovery_parallelism = 4
 
 # ----------------------------------------------------------------------------
 # Redis Configuration
-# Redis integration for distributed indexing
 # ----------------------------------------------------------------------------
 [redis]
-# Enable Redis integration
+# Enable Redis integration for distributed indexing
 enabled = true
 
 # Redis connection URL
 url = "redis://127.0.0.1:6379"
 
-# Connection pool size
+# Connection pool size (default: 16)
 # pool_size = 16
 
-# Connection timeout (seconds)
+# Connection timeout in seconds (default: 5)
 # connection_timeout_secs = 5
 
-# Command timeout (seconds)
+# Command timeout in seconds (default: 1)
 # command_timeout_secs = 1
 
-# Health check interval (seconds)
-# health_check_interval_secs = 30
-
-# Enable TLS
+# Enable TLS (default: false)
 # tls_enabled = false
-
-# TLS certificate path (if tls_enabled)
-# tls_cert_path = ""
-
-# TLS key path (if tls_enabled)
-# tls_key_path = ""
-
-# ----------------------------------------------------------------------------
-# Health Check Configuration
-# System health monitoring settings
-# ----------------------------------------------------------------------------
-[health]
-# Health check interval (seconds)
-# check_interval_secs = 30
-
-# Timeout for individual health checks (seconds)
-# check_timeout_secs = 5
-
-# Minimum free disk space percentage (0.0-100.0)
-# min_free_disk_percent = 10.0
-
-# Maximum write latency before unhealthy (microseconds)
-# max_write_latency_us = 10000
-
-# Maximum read latency before unhealthy (microseconds)
-# max_read_latency_us = 5000
-
-# Consecutive failures before marking unhealthy
-# failure_threshold = 3
-
-# Consecutive successes before marking healthy again
-# recovery_threshold = 2
 
 # ----------------------------------------------------------------------------
 # Monitoring Configuration
-# Metrics and observability settings
 # ----------------------------------------------------------------------------
 [monitoring]
-# Metrics collection interval (seconds)
-# collection_interval_secs = 10
-
-# Maximum samples to retain per metric
-# max_samples = 1000
-
-# Maximum custom metrics allowed
-# max_custom_metrics = 10000
-
-# Enable Prometheus metrics endpoint
+# Enable Prometheus metrics endpoint at /metrics (default: true)
 # prometheus_enabled = true
-
-# Prometheus metrics path
-# prometheus_path = "/metrics"
-
-# ----------------------------------------------------------------------------
-# Protocol Configuration
-# Ingestion protocol parser settings
-# ----------------------------------------------------------------------------
-[protocol]
-
-[protocol.line]
-# Maximum line length in bytes (default: 64KB)
-# max_line_length_bytes = 65536
-
-[protocol.json]
-# Maximum points in a single JSON array
-# max_array_points = 100000
-
-[protocol.protobuf]
-# Maximum timeseries in a single request
-# max_timeseries = 10000
-
-# Maximum samples per timeseries
-# max_samples_per_series = 100000
-
-# ----------------------------------------------------------------------------
-# Schema Configuration
-# Data schema validation settings
-# ----------------------------------------------------------------------------
-[schema]
-# Maximum measurement/metric name length
-# max_measurement_length = 256
-
-# Maximum tag key length
-# max_tag_key_length = 256
-
-# Maximum tag value length
-# max_tag_value_length = 256
-
-# Maximum field key length
-# max_field_key_length = 256
-
-# Maximum field string value length (default: 64KB)
-# max_field_string_length = 65536
-
-# Maximum tags per point
-# max_tags_per_point = 256
-
-# Maximum fields per point
-# max_fields_per_point = 256
-
-# ----------------------------------------------------------------------------
-# Timestamp Configuration
-# Timestamp validation settings
-# ----------------------------------------------------------------------------
-[timestamp]
-# Minimum valid timestamp (milliseconds since epoch) - 1970-01-01
-# min_valid_ms = 0
-
-# Maximum valid timestamp (milliseconds since epoch) - 2100-01-01
-# max_valid_ms = 4102444800000
-
-# Reject future timestamps beyond this threshold (seconds, 0 = allow any)
-# max_future_secs = 3600
-
-# ----------------------------------------------------------------------------
-# Performance Configuration
-# Performance tuning settings
-# ----------------------------------------------------------------------------
-[performance]
-# Parallel seal workers
-# seal_parallelism = 4
-
-# Mmap cache size (number of chunks)
-# mmap_cache_size = 1000
-
-# Enable memory-mapped file reads
-# use_mmap = true
-
-# Read-ahead buffer size for sequential reads (default: 1MB)
-# read_ahead_bytes = 1048576
-
-# Enable SIMD optimizations (if available)
-# enable_simd = true
 
 # ----------------------------------------------------------------------------
 # Security Configuration
-# Security and access control settings
 # ----------------------------------------------------------------------------
 [security]
-# Enable TLS for HTTP server
-# tls_enabled = false
-
-# TLS certificate path
-# tls_cert_path = ""
-
-# TLS private key path
-# tls_key_path = ""
-
-# Enable client certificate authentication
-# tls_client_auth = false
-
-# Trusted CA certificates for client auth
-# tls_ca_path = ""
-
-# Enable authentication
-# auth_enabled = false
-
-# Authentication token (if auth_enabled)
-# auth_token = ""
-
-# CORS allowed origins (empty = disabled)
+# CORS allowed origins (empty = allow all for development)
 # cors_allowed_origins = []
-
-# Enable request validation
-# validate_requests = true
-
-# Path traversal protection
-# path_validation_enabled = true
-
-# Enable rate limiting for writes/reads
-# enable_rate_limiting = true
-
-# Maximum writes per second (0 = unlimited)
-# max_writes_per_second = 0
-
-# Maximum reads per second (0 = unlimited)
-# max_reads_per_second = 0
