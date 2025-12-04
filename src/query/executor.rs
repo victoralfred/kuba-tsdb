@@ -215,10 +215,16 @@ impl QueryExecutor {
     pub fn execute(&mut self, query: Query) -> Result<QueryResult, QueryError> {
         let start = Instant::now();
 
-        // Check for timeout before starting (EDGE-007)
-        // Use is_zero() to catch sub-second timeouts like Duration::from_nanos(1)
+        // EDGE-002: Validate minimum timeout to prevent instant timeouts
+        // Very small timeouts (< 1ms) would time out immediately and waste resources
+        const MIN_TIMEOUT: Duration = Duration::from_millis(1);
         if self.config.timeout.is_zero() {
             return Err(QueryError::timeout("Query timeout is zero"));
+        }
+        if self.config.timeout < MIN_TIMEOUT {
+            return Err(QueryError::timeout(
+                "Query timeout too small (minimum 1ms)",
+            ));
         }
 
         // Execute based on query type
@@ -729,5 +735,41 @@ mod tests {
     fn test_executor_creation() {
         let executor = QueryExecutor::new();
         assert_eq!(executor.stats().total_queries, 0);
+    }
+
+    #[test]
+    fn test_executor_minimum_timeout_validation() {
+        // EDGE-002: Test that very small timeouts are rejected
+        use crate::query::ast::QueryBuilder;
+
+        // Create a simple query
+        let query = QueryBuilder::new()
+            .select_series(1)
+            .build()
+            .unwrap();
+
+        // Test zero timeout is rejected
+        let config = ExecutorConfig::new().with_timeout(Duration::ZERO);
+        let mut executor = QueryExecutor::with_config(config);
+        let result = executor.execute(query.clone());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("zero"));
+
+        // Test sub-millisecond timeout is rejected
+        let config = ExecutorConfig::new().with_timeout(Duration::from_nanos(100));
+        let mut executor = QueryExecutor::with_config(config);
+        let result = executor.execute(query.clone());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too small"));
+
+        // Test 1ms timeout is accepted (doesn't error on timeout validation)
+        let config = ExecutorConfig::new().with_timeout(Duration::from_millis(1));
+        let mut executor = QueryExecutor::with_config(config);
+        // This will fail for other reasons (no data source) but not timeout validation
+        let result = executor.execute(query);
+        // Should not be a timeout error about being too small
+        if let Err(e) = result {
+            assert!(!e.to_string().contains("too small"));
+        }
     }
 }
