@@ -44,8 +44,8 @@ disallowed-types = [
     # Weak random number generators
     { path = "rand::rngs::SmallRng", reason = "Use StdRng or OsRng for security-sensitive operations" },
     
-    # Potentially problematic types
-    { path = "std::collections::HashMap", reason = "Consider using hashbrown::HashMap or indexmap for deterministic behavior", allow-in-tests = true },
+    # Note: HashMap is allowed - deterministic behavior not always required
+    # { path = "std::collections::HashMap", reason = "Consider using hashbrown::HashMap or indexmap for deterministic behavior" },
 ]
 
 # Allowed wildcard imports (restrict to known safe modules)
