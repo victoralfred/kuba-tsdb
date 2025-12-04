@@ -180,8 +180,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # Pass the version once to derive major/minor/patch tags
-          version: ${{ needs.validate.outputs.version }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
