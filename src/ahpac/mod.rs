@@ -67,6 +67,10 @@ pub enum AhpacError {
     #[error("Codec error: {0}")]
     Codec(#[from] CodecError),
 
+    /// Codec-specific error message
+    #[error("Codec error: {0}")]
+    CodecError(String),
+
     /// Serialization or deserialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -83,6 +87,10 @@ pub enum AhpacError {
     /// Invalid data format
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
+
+    /// Unsupported codec ID
+    #[error("Unsupported codec ID: {0}")]
+    UnsupportedCodec(u8),
 }
 
 /// Main AHPAC compressor interface
@@ -201,6 +209,23 @@ impl AhpacCompressor {
         let codec = self.selector.get_codec(chunk.codec);
         let points = codec.decompress(&chunk.data, chunk.point_count as usize)?;
         Ok(points)
+    }
+
+    /// Decompress raw bytes back to data points
+    ///
+    /// This method first deserializes the bytes into a `CompressedChunk`,
+    /// then decompresses it using the appropriate codec.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw bytes from a serialized `CompressedChunk`
+    ///
+    /// # Returns
+    ///
+    /// A vector of `DataPoint` containing the decompressed data.
+    pub fn decompress_bytes(&self, data: &[u8]) -> Result<Vec<DataPoint>, AhpacError> {
+        let chunk = CompressedChunk::from_bytes(data)?;
+        self.decompress(&chunk)
     }
 
     /// Get the current selection strategy

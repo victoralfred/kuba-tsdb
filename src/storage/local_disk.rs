@@ -191,6 +191,8 @@ impl LocalDiskEngine {
             CompressionType::Kuba => "kub",
             CompressionType::Snappy => "snappy",
             CompressionType::KubaSnappy => "kub.snappy",
+            CompressionType::Ahpac => "ahpac",
+            CompressionType::AhpacSnappy => "ahpac.snappy",
         };
 
         self.series_path(series_id)

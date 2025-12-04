@@ -271,6 +271,10 @@ pub enum CompressionType {
     Snappy = 2,
     /// Kuba + Snappy (maximum compression)
     KubaSnappy = 3,
+    /// AHPAC adaptive compression
+    Ahpac = 4,
+    /// AHPAC + Snappy (adaptive with secondary compression)
+    AhpacSnappy = 5,
 }
 
 /// Chunk flags for additional metadata
