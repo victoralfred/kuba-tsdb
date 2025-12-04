@@ -4,10 +4,17 @@
 //! components into a cohesive database system.
 
 use super::traits::{
-    ChunkStatus, Compressor, IndexConfig, SeriesMetadata, StorageConfig, StorageEngine, TimeIndex,
+    ChunkLocation, ChunkStatus, Compressor, IndexConfig, SeriesMetadata, StorageConfig,
+    StorageEngine, TimeIndex,
 };
 use crate::error::{Error, Result};
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
+use crate::storage::background_sealer::{
+    BackgroundSealingConfig, BackgroundSealingService, BackgroundSealingStatsSnapshot,
+};
+use crate::storage::parallel_sealing::{
+    ParallelSealingConfig, ParallelSealingService, SealingStatsSnapshot,
+};
 use crate::types::{ChunkId, DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -72,6 +79,8 @@ pub struct TimeSeriesDBBuilder {
     index: Option<Arc<dyn TimeIndex + Send + Sync>>,
     config: DatabaseConfig,
     buffer_config: Option<BufferConfig>,
+    sealing_config: Option<ParallelSealingConfig>,
+    background_sealing_config: Option<BackgroundSealingConfig>,
 }
 
 impl TimeSeriesDBBuilder {
@@ -83,6 +92,8 @@ impl TimeSeriesDBBuilder {
             index: None,
             config: DatabaseConfig::default(),
             buffer_config: None,
+            sealing_config: None,
+            background_sealing_config: None,
         }
     }
 
@@ -153,6 +164,62 @@ impl TimeSeriesDBBuilder {
         self
     }
 
+    /// Set parallel sealing configuration
+    ///
+    /// Controls how chunks are compressed in parallel during flush operations.
+    /// Higher `max_concurrent_seals` enables more parallelism but uses more memory.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use kuba_tsdb::storage::ParallelSealingConfig;
+    ///
+    /// let sealing_config = ParallelSealingConfig {
+    ///     max_concurrent_seals: 8,
+    ///     memory_budget_bytes: 512 * 1024 * 1024, // 512MB
+    ///     ..Default::default()
+    /// };
+    /// let db = TimeSeriesDBBuilder::new()
+    ///     .with_sealing_config(sealing_config)
+    ///     // ... other configuration
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_sealing_config(mut self, sealing_config: ParallelSealingConfig) -> Self {
+        self.sealing_config = Some(sealing_config);
+        self
+    }
+
+    /// Set background sealing configuration
+    ///
+    /// Enables automatic background sealing of active chunks that meet threshold
+    /// conditions. Chunks are sealed without blocking writes, using the parallel
+    /// sealing service for compression.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use kuba_tsdb::storage::BackgroundSealingConfig;
+    ///
+    /// let bg_config = BackgroundSealingConfig {
+    ///     check_interval: Duration::from_millis(500),
+    ///     min_points_for_seal: 800,
+    ///     ..Default::default()
+    /// };
+    /// let db = TimeSeriesDBBuilder::new()
+    ///     .with_background_sealing_config(bg_config)
+    ///     // ... other configuration
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_background_sealing_config(
+        mut self,
+        background_sealing_config: BackgroundSealingConfig,
+    ) -> Self {
+        self.background_sealing_config = Some(background_sealing_config);
+        self
+    }
+
     /// Build the database with configured engines
     pub async fn build(self) -> Result<TimeSeriesDB> {
         // For now, we'll require all engines to be provided
@@ -181,6 +248,16 @@ impl TimeSeriesDBBuilder {
             .await
             .map_err(Error::Index)?;
 
+        // Create parallel sealing service
+        let sealing_service = Arc::new(ParallelSealingService::new(
+            self.sealing_config.unwrap_or_default(),
+        ));
+
+        // Create background sealing service if configured
+        let background_sealing_service = self
+            .background_sealing_config
+            .map(|config| Arc::new(BackgroundSealingService::new(config)));
+
         Ok(TimeSeriesDB {
             compressor,
             storage,
@@ -188,6 +265,8 @@ impl TimeSeriesDBBuilder {
             config: self.config,
             active_chunks: Arc::new(RwLock::new(HashMap::new())),
             buffer_config: self.buffer_config.unwrap_or_default(),
+            sealing_service,
+            background_sealing_service,
         })
     }
 }
@@ -243,6 +322,10 @@ pub struct TimeSeriesDB {
     active_chunks: Arc<RwLock<HashMap<SeriesId, Arc<ActiveChunk>>>>,
     /// Buffer configuration
     buffer_config: BufferConfig,
+    /// Parallel sealing service for concurrent chunk compression
+    sealing_service: Arc<ParallelSealingService>,
+    /// Background sealing service for automatic chunk sealing (optional)
+    background_sealing_service: Option<Arc<BackgroundSealingService>>,
 }
 
 impl TimeSeriesDB {
@@ -342,44 +425,78 @@ impl TimeSeriesDB {
             "Writing points to buffer"
         );
 
-        // Get or create active chunk for this series
-        let active_chunk = {
+        let mut last_chunk_id = ChunkId::new();
+        let mut points_iter = points.into_iter().peekable();
+
+        // Process all points, sealing chunks as needed
+        while points_iter.peek().is_some() {
+            // Get or create active chunk for this series
+            let active_chunk = self.get_or_create_active_chunk(series_id).await;
+
+            // Append points until chunk is full or we run out of points
+            while let Some(point) = points_iter.peek() {
+                match active_chunk.append(*point) {
+                    Ok(()) => {
+                        points_iter.next(); // Consume the point
+                    }
+                    Err(e) => {
+                        // Check if it's a "chunk full" error
+                        if e.contains("Chunk full") || e.contains("max:") {
+                            // Seal the current chunk and continue with a new one
+                            break;
+                        } else if e.contains("Duplicate timestamp") {
+                            // Skip duplicate timestamps
+                            warn!(series_id = series_id, error = %e, "Skipping duplicate point");
+                            points_iter.next();
+                        } else {
+                            // Log other errors and continue
+                            warn!(series_id = series_id, error = %e, "Failed to append point");
+                            points_iter.next();
+                        }
+                    }
+                }
+            }
+
+            // Check if we should seal (either full or threshold reached)
+            if active_chunk.should_seal()
+                || active_chunk.point_count() >= self.buffer_config.max_points as u32
+            {
+                match self.seal_active_chunk(series_id).await {
+                    Ok(chunk_id) => {
+                        last_chunk_id = chunk_id;
+                    }
+                    Err(e) => {
+                        warn!(series_id = series_id, error = %e, "Failed to seal chunk");
+                    }
+                }
+            }
+        }
+
+        Ok(last_chunk_id)
+    }
+
+    /// Get or create an active chunk for a series
+    async fn get_or_create_active_chunk(&self, series_id: SeriesId) -> Arc<ActiveChunk> {
+        // First try to get existing chunk
+        {
             let chunks = self.active_chunks.read().await;
-            chunks.get(&series_id).cloned()
-        };
-
-        let active_chunk = match active_chunk {
-            Some(chunk) => chunk,
-            None => {
-                // Create new active chunk
-                let seal_config = self.buffer_config.to_seal_config();
-                let new_chunk = Arc::new(ActiveChunk::new(
-                    series_id,
-                    self.buffer_config.initial_capacity,
-                    seal_config,
-                ));
-                let mut chunks = self.active_chunks.write().await;
-                chunks.insert(series_id, Arc::clone(&new_chunk));
-                new_chunk
-            }
-        };
-
-        // Append points to active chunk
-        for point in &points {
-            if let Err(e) = active_chunk.append(*point) {
-                warn!(series_id = series_id, error = %e, "Failed to append point");
-                // If append fails (e.g., duplicate), continue with other points
+            if let Some(chunk) = chunks.get(&series_id) {
+                if !chunk.is_sealed() {
+                    return Arc::clone(chunk);
+                }
             }
         }
 
-        // Check if we should seal
-        if active_chunk.should_seal() {
-            return self.seal_active_chunk(series_id).await;
-        }
-
-        // Return a placeholder chunk ID for buffered writes
-        // The actual chunk ID will be created when sealed
-        Ok(ChunkId::new())
+        // Create new active chunk
+        let seal_config = self.buffer_config.to_seal_config();
+        let new_chunk = Arc::new(ActiveChunk::new(
+            series_id,
+            self.buffer_config.initial_capacity,
+            seal_config,
+        ));
+        let mut chunks = self.active_chunks.write().await;
+        chunks.insert(series_id, Arc::clone(&new_chunk));
+        new_chunk
     }
 
     /// Seal the active chunk for a series and write to storage
@@ -449,28 +566,163 @@ impl TimeSeriesDB {
         Ok(chunk_id)
     }
 
-    /// Flush all active chunks to storage
+    /// Flush all active chunks to storage using parallel compression
     ///
     /// Call this during graceful shutdown to ensure no data is lost.
+    /// Uses the parallel sealing service for concurrent compression of multiple chunks.
     pub async fn flush_all(&self) -> Result<Vec<ChunkId>> {
-        let series_ids: Vec<SeriesId> = {
-            let chunks = self.active_chunks.read().await;
-            chunks.keys().cloned().collect()
+        // Collect all chunks to seal
+        let chunks_to_seal: Vec<_> = {
+            let mut chunks = self.active_chunks.write().await;
+            let mut to_seal = Vec::new();
+
+            for (series_id, active_chunk) in chunks.drain() {
+                if let Ok(points) = active_chunk.take_points() {
+                    if !points.is_empty() {
+                        let path = self.chunk_path(series_id);
+                        to_seal.push((series_id, points, path));
+                    }
+                }
+            }
+            to_seal
         };
 
-        let mut chunk_ids = Vec::new();
-        for series_id in series_ids {
-            match self.seal_active_chunk(series_id).await {
-                Ok(chunk_id) => chunk_ids.push(chunk_id),
-                Err(e) => warn!(series_id = series_id, error = %e, "Failed to flush series"),
-            }
+        if chunks_to_seal.is_empty() {
+            return Ok(Vec::new());
         }
 
         info!(
-            chunks_flushed = chunk_ids.len(),
-            "Flushed all active chunks"
+            chunks = chunks_to_seal.len(),
+            "Flushing all chunks in parallel"
         );
+
+        // Seal all in parallel using the sealing service
+        let results = self.sealing_service.seal_all_and_wait(chunks_to_seal).await;
+
+        // Process results and register with index
+        let mut chunk_ids = Vec::new();
+        for result in results {
+            match result {
+                Ok(seal_result) => {
+                    // Register with index
+                    let time_range = TimeRange::new_unchecked(
+                        seal_result.start_timestamp,
+                        seal_result.end_timestamp,
+                    );
+
+                    let location = ChunkLocation {
+                        engine_id: "local-disk-v1".to_string(),
+                        path: seal_result.path.to_string_lossy().to_string(),
+                        offset: None,
+                        size: Some(seal_result.compressed_size),
+                    };
+
+                    if let Err(e) = self
+                        .index
+                        .add_chunk(
+                            seal_result.series_id,
+                            seal_result.chunk_id.clone(),
+                            time_range,
+                            location,
+                        )
+                        .await
+                    {
+                        warn!(
+                            series_id = seal_result.series_id,
+                            error = %e,
+                            "Failed to register sealed chunk with index"
+                        );
+                    } else {
+                        chunk_ids.push(seal_result.chunk_id);
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to seal chunk during parallel flush");
+                }
+            }
+        }
+
+        info!(chunks_flushed = chunk_ids.len(), "Parallel flush complete");
+
         Ok(chunk_ids)
+    }
+
+    /// Generate the file path for a chunk
+    fn chunk_path(&self, series_id: SeriesId) -> PathBuf {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        self.config
+            .data_dir
+            .join(format!("series_{}", series_id))
+            .join(format!("chunk_{}.kub", timestamp))
+    }
+
+    /// Get parallel sealing statistics
+    ///
+    /// Returns statistics about the parallel sealing service including
+    /// active seals, total sealed chunks, and compression ratios.
+    pub fn sealing_stats(&self) -> SealingStatsSnapshot {
+        self.sealing_service.stats()
+    }
+
+    /// Start the background sealing service
+    ///
+    /// Spawns a background task that monitors active chunks and seals them
+    /// automatically when they meet threshold conditions (min points, max age).
+    /// This enables non-blocking writes with automatic chunk management.
+    ///
+    /// # Note
+    ///
+    /// Background sealing must be configured with `with_background_sealing_config()`
+    /// during database construction for this method to have effect.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db = TimeSeriesDBBuilder::new()
+    ///     .with_background_sealing_config(BackgroundSealingConfig::default())
+    ///     // ... other configuration
+    ///     .build()
+    ///     .await?;
+    ///
+    /// db.start_background_sealing().await;
+    /// ```
+    pub async fn start_background_sealing(&self) {
+        if let Some(ref service) = self.background_sealing_service {
+            let service = Arc::clone(service);
+            let active_chunks = Arc::clone(&self.active_chunks);
+            let data_dir = self.config.data_dir.clone();
+            let index = Arc::clone(&self.index);
+
+            service.start(active_chunks, data_dir, index).await;
+        } else {
+            warn!("Background sealing not configured - use with_background_sealing_config()");
+        }
+    }
+
+    /// Stop the background sealing service
+    ///
+    /// Gracefully stops the background sealing task. Any in-progress seals
+    /// will complete before the service fully stops.
+    pub async fn stop_background_sealing(&self) {
+        if let Some(ref service) = self.background_sealing_service {
+            service.stop().await;
+        }
+    }
+
+    /// Check if background sealing is running
+    pub fn is_background_sealing_running(&self) -> bool {
+        self.background_sealing_service
+            .as_ref()
+            .map(|s| s.is_running())
+            .unwrap_or(false)
+    }
+
+    /// Get background sealing statistics
+    ///
+    /// Returns statistics about the background sealing service including
+    /// chunks sealed, streaming stats, and failure counts.
+    pub fn background_sealing_stats(&self) -> Option<BackgroundSealingStatsSnapshot> {
+        self.background_sealing_service.as_ref().map(|s| s.stats())
     }
 
     /// Query data points from the database
