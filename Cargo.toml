@@ -146,3 +146,15 @@ harness = false
 [[bench]]
 name = "ahpac_benchmark"
 harness = false
+
+[[bench]]
+name = "simd_benchmark"
+harness = false
+
+[[bench]]
+name = "ans_benchmark"
+harness = false
+
+[[bench]]
+name = "parallel_benchmark"
+harness = false
