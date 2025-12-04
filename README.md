@@ -1,6 +1,6 @@
 [![Rust CI/CD](https://github.com/victoralfred/gorilla-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/gorilla-tsdb/actions/workflows/rust.yml)
 
-# Gorilla TSDB
+# KUBA TSDB
 
 A high-performance time-series database written in Rust, featuring Facebook's Gorilla compression algorithm for 10:1+ compression ratios and sub-millisecond query latencies.
 
@@ -365,7 +365,7 @@ cargo bench
 ## Documentation
 
 - [Technical Documentation](TECHNICAL.md) - Architecture, internals, and configuration reference
-- [API Documentation](https://docs.rs/gorilla-tsdb) - Rust API docs
+- [API Documentation](https://docs.rs/kuba-tsdb) - Rust API docs
 
 ## Contributing
 
@@ -381,5 +381,4 @@ MIT License
 
 ## References
 
-- [Gorilla Paper](http://www.vldb.org/pvldb/vol8/p1816-teller.pdf) - Facebook's original research
 - [Prometheus](https://prometheus.io/) - Query language inspiration
