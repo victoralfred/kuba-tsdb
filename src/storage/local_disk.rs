@@ -151,7 +151,11 @@ impl LocalDiskEngine {
             } else {
                 StorageError::Io(std::io::Error::new(
                     e.kind(),
-                    format!("Failed to lock data directory {}: {}", base_path.display(), e),
+                    format!(
+                        "Failed to lock data directory {}: {}",
+                        base_path.display(),
+                        e
+                    ),
                 ))
             }
         })?;

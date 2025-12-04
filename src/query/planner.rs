@@ -405,14 +405,12 @@ impl QueryPlanner {
                             ),
                         }
                     }
-                    FoldedPredicate::Simplified(new_predicate) => {
-                        LogicalPlan::ScanWithPredicate {
-                            selector,
-                            time_range,
-                            columns,
-                            predicate: new_predicate,
-                        }
-                    }
+                    FoldedPredicate::Simplified(new_predicate) => LogicalPlan::ScanWithPredicate {
+                        selector,
+                        time_range,
+                        columns,
+                        predicate: new_predicate,
+                    },
                     FoldedPredicate::Unchanged => LogicalPlan::ScanWithPredicate {
                         selector,
                         time_range,
@@ -517,13 +515,11 @@ impl QueryPlanner {
             }
 
             // Normalize integer values to float for consistent zone map pruning
-            (op, PredicateValue::Int(i)) => {
-                FoldedPredicate::Simplified(Predicate::new(
-                    predicate.field.clone(),
-                    *op,
-                    PredicateValue::Float(*i as f64),
-                ))
-            }
+            (op, PredicateValue::Int(i)) => FoldedPredicate::Simplified(Predicate::new(
+                predicate.field.clone(),
+                *op,
+                PredicateValue::Float(*i as f64),
+            )),
 
             // Comparisons with infinity that are always true
             // value > -Infinity is always true (for non-NaN values)
@@ -710,11 +706,7 @@ impl QueryPlanner {
 
     /// Apply column pruning to Scan nodes based on required columns
     #[allow(clippy::only_used_in_recursion)]
-    fn apply_column_pruning(
-        &self,
-        plan: LogicalPlan,
-        required: &HashSet<String>,
-    ) -> LogicalPlan {
+    fn apply_column_pruning(&self, plan: LogicalPlan, required: &HashSet<String>) -> LogicalPlan {
         match plan {
             LogicalPlan::Scan {
                 selector,
@@ -1540,7 +1532,9 @@ mod tests {
         match result {
             FoldedPredicate::Simplified(p) => {
                 assert_eq!(p.op, PredicateOp::Eq);
-                assert!(matches!(p.value, PredicateValue::Float(v) if (v - 10.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(p.value, PredicateValue::Float(v) if (v - 10.0).abs() < f64::EPSILON)
+                );
             }
             _ => panic!("Expected Simplified result"),
         }
@@ -1566,7 +1560,9 @@ mod tests {
         match result {
             FoldedPredicate::Simplified(p) => {
                 assert_eq!(p.op, PredicateOp::Eq);
-                assert!(matches!(p.value, PredicateValue::Float(v) if (v - 42.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(p.value, PredicateValue::Float(v) if (v - 42.0).abs() < f64::EPSILON)
+                );
             }
             _ => panic!("Expected Simplified result"),
         }
@@ -1592,7 +1588,9 @@ mod tests {
         match result {
             FoldedPredicate::Simplified(p) => {
                 assert_eq!(p.op, PredicateOp::Gt);
-                assert!(matches!(p.value, PredicateValue::Float(v) if (v - 100.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(p.value, PredicateValue::Float(v) if (v - 100.0).abs() < f64::EPSILON)
+                );
             }
             _ => panic!("Expected Simplified result"),
         }
@@ -1616,8 +1614,11 @@ mod tests {
     fn test_fold_gt_neg_infinity_always_true() {
         // value > -Infinity is always true
         let planner = QueryPlanner::new();
-        let predicate =
-            Predicate::new("value", PredicateOp::Gt, PredicateValue::Float(f64::NEG_INFINITY));
+        let predicate = Predicate::new(
+            "value",
+            PredicateOp::Gt,
+            PredicateValue::Float(f64::NEG_INFINITY),
+        );
 
         let result = planner.fold_predicate(&predicate);
         assert!(matches!(result, FoldedPredicate::AlwaysTrue));
@@ -1627,8 +1628,11 @@ mod tests {
     fn test_fold_lt_infinity_always_true() {
         // value < +Infinity is always true
         let planner = QueryPlanner::new();
-        let predicate =
-            Predicate::new("value", PredicateOp::Lt, PredicateValue::Float(f64::INFINITY));
+        let predicate = Predicate::new(
+            "value",
+            PredicateOp::Lt,
+            PredicateValue::Float(f64::INFINITY),
+        );
 
         let result = planner.fold_predicate(&predicate);
         assert!(matches!(result, FoldedPredicate::AlwaysTrue));
@@ -1840,11 +1844,7 @@ mod tests {
                 start: 0,
                 end: 1000,
             }),
-            columns: vec![
-                "timestamp".into(),
-                "value".into(),
-                "unused_col".into(),
-            ],
+            columns: vec!["timestamp".into(), "value".into(), "unused_col".into()],
         };
 
         // Prune columns - only timestamp and value should remain

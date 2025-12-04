@@ -429,11 +429,7 @@ impl TimeSeriesDB {
     /// // Get the 10 most recent points
     /// let latest = db.query_latest(series_id, 10).await?;
     /// ```
-    pub async fn query_latest(
-        &self,
-        series_id: SeriesId,
-        count: usize,
-    ) -> Result<Vec<DataPoint>> {
+    pub async fn query_latest(&self, series_id: SeriesId, count: usize) -> Result<Vec<DataPoint>> {
         if count == 0 {
             return Ok(Vec::new());
         }

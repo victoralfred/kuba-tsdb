@@ -20,17 +20,17 @@ use axum::{
     Json,
 };
 use gorilla_tsdb::cache::InvalidationPublisher;
-use gorilla_tsdb::security::{check_per_client_rate_limit, get_rate_limit_info};
-use std::net::SocketAddr;
 use gorilla_tsdb::cache::SharedQueryCache;
 use gorilla_tsdb::engine::TimeSeriesDB;
 use gorilla_tsdb::ingestion::schema::sanitize_tags_for_redis;
 use gorilla_tsdb::query::ast::{Query as AstQuery, SelectQuery, SeriesSelector};
 use gorilla_tsdb::query::result::QueryResult;
 use gorilla_tsdb::query::subscription::SubscriptionManager;
+use gorilla_tsdb::security::{check_per_client_rate_limit, get_rate_limit_info};
 use gorilla_tsdb::storage::LocalDiskEngine;
 use gorilla_tsdb::types::{generate_series_id, DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
@@ -68,15 +68,27 @@ pub struct AppState {
 /// - X-RateLimit-Remaining header showing 0 requests remaining
 /// - X-RateLimit-Reset header showing ms until rate limit resets
 /// - Retry-After header for RFC compliance
-fn rate_limit_response(client_id: &str) -> (StatusCode, [(axum::http::HeaderName, String); 3], Json<serde_json::Value>) {
+fn rate_limit_response(
+    client_id: &str,
+) -> (
+    StatusCode,
+    [(axum::http::HeaderName, String); 3],
+    Json<serde_json::Value>,
+) {
     let (remaining, reset_ms) = get_rate_limit_info(client_id).unwrap_or((0, 1000));
     let reset_secs = (reset_ms / 1000).max(1);
 
     (
         StatusCode::TOO_MANY_REQUESTS,
         [
-            (axum::http::header::HeaderName::from_static("x-ratelimit-remaining"), remaining.to_string()),
-            (axum::http::header::HeaderName::from_static("x-ratelimit-reset"), reset_ms.to_string()),
+            (
+                axum::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+                remaining.to_string(),
+            ),
+            (
+                axum::http::header::HeaderName::from_static("x-ratelimit-reset"),
+                reset_ms.to_string(),
+            ),
             (axum::http::header::RETRY_AFTER, reset_secs.to_string()),
         ],
         Json(serde_json::json!({

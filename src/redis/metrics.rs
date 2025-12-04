@@ -105,12 +105,16 @@ impl LatencyHistogram {
         let _ = self.buckets[bucket_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             Some(v.saturating_add(1))
         });
-        let _ = self.sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_add(latency_us))
-        });
-        let _ = self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_add(1))
-        });
+        let _ = self
+            .sum
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(latency_us))
+            });
+        let _ = self
+            .count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
 
         // Update min/max
         self.min.fetch_min(latency_us, Ordering::Relaxed);
@@ -186,17 +190,23 @@ impl OperationMetrics {
 
     fn record(&self, latency_us: u64, success: bool) {
         // SEC-006: Use saturating arithmetic to prevent overflow
-        let _ = self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_add(1))
-        });
+        let _ = self
+            .count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         if success {
-            let _ = self.successes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ = self
+                .successes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
         } else {
-            let _ = self.failures.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ = self
+                .failures
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
         }
         self.latency.record(latency_us);
     }
@@ -379,15 +389,19 @@ impl RedisMetrics {
     /// * `success` - Whether the operation succeeded
     pub fn record_operation(&self, operation: &str, latency_us: u64, success: bool) {
         // SEC-006: Use saturating arithmetic to prevent overflow
-        let _ = self.total_operations.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_add(1))
-        });
+        let _ = self
+            .total_operations
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         self.operation_rate.record(1);
 
         if !success {
-            let _ = self.total_errors.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ = self
+                .total_errors
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
             self.error_rate.record(1);
         }
 
@@ -404,16 +418,22 @@ impl RedisMetrics {
     pub fn record_connection(&self, success: bool) {
         // SEC-006: Use saturating arithmetic to prevent overflow
         if success {
-            let _ = self.connections_created.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
-            let _ = self.connections_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ =
+                self.connections_created
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                        Some(v.saturating_add(1))
+                    });
+            let _ =
+                self.connections_active
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                        Some(v.saturating_add(1))
+                    });
         } else {
-            let _ = self.connections_failed.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ =
+                self.connections_failed
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                        Some(v.saturating_add(1))
+                    });
         }
     }
 
@@ -426,26 +446,34 @@ impl RedisMetrics {
     pub fn record_cache_access(&self, hit: bool) {
         // SEC-006: Use saturating arithmetic to prevent overflow
         if hit {
-            let _ = self.cache_hits.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ = self
+                .cache_hits
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
         } else {
-            let _ = self.cache_misses.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_add(1))
-            });
+            let _ = self
+                .cache_misses
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
         }
     }
 
     /// Record a script execution
     pub fn record_script_execution(&self, success: bool) {
         // SEC-006: Use saturating arithmetic to prevent overflow
-        let _ = self.script_executions.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_add(1))
-        });
-        if !success {
-            let _ = self.script_errors.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        let _ = self
+            .script_executions
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_add(1))
             });
+        if !success {
+            let _ = self
+                .script_errors
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_add(1))
+                });
         }
     }
 

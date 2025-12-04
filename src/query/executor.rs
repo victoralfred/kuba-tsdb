@@ -222,9 +222,7 @@ impl QueryExecutor {
             return Err(QueryError::timeout("Query timeout is zero"));
         }
         if self.config.timeout < MIN_TIMEOUT {
-            return Err(QueryError::timeout(
-                "Query timeout too small (minimum 1ms)",
-            ));
+            return Err(QueryError::timeout("Query timeout too small (minimum 1ms)"));
         }
 
         // Execute based on query type
@@ -743,10 +741,7 @@ mod tests {
         use crate::query::ast::QueryBuilder;
 
         // Create a simple query
-        let query = QueryBuilder::new()
-            .select_series(1)
-            .build()
-            .unwrap();
+        let query = QueryBuilder::new().select_series(1).build().unwrap();
 
         // Test zero timeout is rejected
         let config = ExecutorConfig::new().with_timeout(Duration::ZERO);

@@ -367,7 +367,6 @@ pub struct ChunkReference {
     pub status: ChunkStatus,
 
     // ENH-003: Chunk statistics for cost estimation and zone map pruning
-
     /// Number of data points in this chunk (for accurate row count estimation)
     #[serde(default)]
     pub row_count: u32,

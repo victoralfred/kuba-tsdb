@@ -408,9 +408,8 @@ impl MmapChunk {
         // 2. mmap.len() returns the exact size of the mapped region
         // 3. The advice values are valid POSIX madvise hints
         // 4. The Mmap object guarantees the memory region remains valid for its lifetime
-        let result = unsafe {
-            libc::madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), advice)
-        };
+        let result =
+            unsafe { libc::madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), advice) };
 
         if result != 0 {
             // madvise failures are typically non-fatal (ENOSYS on some systems,

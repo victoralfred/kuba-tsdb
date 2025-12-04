@@ -101,7 +101,6 @@ pub enum StorageError {
     },
 
     // STYLE-001: Additional variants for chunk operations
-
     /// Invalid chunk header (magic number, version, etc.)
     #[error("Invalid chunk header: {0}")]
     InvalidHeader(String),

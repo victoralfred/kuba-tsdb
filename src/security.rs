@@ -406,7 +406,10 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     // SEC-008: Comprehensive Unicode homograph detection
     // Check for characters that could be confused with path-sensitive ASCII chars
     if contains_homograph_characters(&path_str) {
-        return Err("Path contains suspicious Unicode characters that could be confused with ASCII".to_string());
+        return Err(
+            "Path contains suspicious Unicode characters that could be confused with ASCII"
+                .to_string(),
+        );
     }
 
     // Ensure filename doesn't contain suspicious characters
@@ -629,7 +632,9 @@ mod tests {
     #[test]
     fn test_homograph_detection_safe_ascii() {
         // Normal ASCII should be safe
-        assert!(!contains_homograph_characters("/data/gorilla-tsdb/chunk.gor"));
+        assert!(!contains_homograph_characters(
+            "/data/gorilla-tsdb/chunk.gor"
+        ));
         assert!(!contains_homograph_characters("abcdefghijklmnopqrstuvwxyz"));
         assert!(!contains_homograph_characters("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
         assert!(!contains_homograph_characters("0123456789"));
