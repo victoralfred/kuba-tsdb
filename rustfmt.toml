@@ -1,0 +1,38 @@
+# rustfmt.toml - Rust formatting configuration (stable options only)
+# Documentation: https://rust-lang.github.io/rustfmt/
+
+# Edition to use for parsing
+edition = "2021"
+
+# Maximum line width
+max_width = 100
+
+# Use spaces instead of tabs
+hard_tabs = false
+
+# Number of spaces per tab
+tab_spaces = 4
+
+# Unix-style line endings
+newline_style = "Unix"
+
+# Heuristics for small constructs
+use_small_heuristics = "Default"
+
+# Reorder imports alphabetically
+reorder_imports = true
+
+# Reorder modules alphabetically
+reorder_modules = true
+
+# Use field init shorthand where possible
+use_field_init_shorthand = true
+
+# Use try! shorthand where possible
+use_try_shorthand = true
+
+# Trailing comma in match arms
+match_block_trailing_comma = true
+
+# Force explicit ABI on extern blocks
+force_explicit_abi = true

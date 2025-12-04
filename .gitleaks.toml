@@ -1,0 +1,79 @@
+# .gitleaks.toml
+# Gitleaks configuration for secret scanning
+# Documentation: https://github.com/gitleaks/gitleaks
+
+title = "Gitleaks Configuration"
+
+[extend]
+# Use default rules
+useDefault = true
+
+# Additional rules for Rust-specific patterns
+[[rules]]
+id = "rust-api-key"
+description = "Rust API Key Pattern"
+regex = '''(?i)(api[_-]?key|apikey)\s*[:=]\s*["']?([a-zA-Z0-9_\-]{20,})["']?'''
+entropy = 3.5
+secretGroup = 2
+tags = ["api", "key"]
+
+[[rules]]
+id = "rust-secret"
+description = "Rust Secret Pattern"
+regex = '''(?i)(secret|password|passwd|pwd)\s*[:=]\s*["']([^"']{8,})["']'''
+entropy = 3.5
+secretGroup = 2
+tags = ["secret", "password"]
+
+[[rules]]
+id = "jwt-token"
+description = "JWT Token"
+regex = '''eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'''
+tags = ["jwt", "token"]
+
+[[rules]]
+id = "base64-secret"
+description = "Base64 Encoded Secret"
+regex = '''(?i)(secret|key|token|password)[_-]?base64\s*[:=]\s*["']?([A-Za-z0-9+/]{40,}={0,2})["']?'''
+entropy = 4.0
+secretGroup = 2
+tags = ["base64", "secret"]
+
+# Paths to exclude from scanning
+[allowlist]
+description = "Global allowlist"
+paths = [
+    '''(^|/)target/''',
+    '''(^|/)\.git/''',
+    '''(^|/)Cargo\.lock$''',
+    '''(^|/)\.cargo/''',
+    '''\.md$''',
+    '''(^|/)tests?/fixtures/''',
+    '''(^|/)testdata/''',
+]
+
+# Specific regex to ignore (false positives)
+regexes = [
+    '''example[_-]?(api[_-]?)?key''',
+    '''your[_-]?api[_-]?key''',
+    '''placeholder''',
+    '''xxxx+''',
+    '''test[_-]?(api[_-]?)?key''',
+    '''dummy''',
+    '''fake[_-]?key''',
+]
+
+# Commits to ignore (known safe commits)
+commits = [
+    # Add commit hashes to ignore
+]
+
+# Stop words (will not be flagged)
+stopwords = [
+    "example",
+    "placeholder",
+    "changeme",
+    "replace_me",
+    "your_key_here",
+    "xxx",
+]
