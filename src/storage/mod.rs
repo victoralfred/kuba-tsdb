@@ -51,6 +51,8 @@ pub mod integrity;
 pub mod local_disk;
 /// Memory-mapped chunk implementation for zero-copy reads
 pub mod mmap;
+/// Parallel chunk sealing for concurrent compression
+pub mod parallel_sealing;
 /// High-level chunk reader with query capabilities
 pub mod reader;
 /// High-level chunk writer with batching and auto-rotation
@@ -67,6 +69,10 @@ pub use integrity::{
 };
 pub use local_disk::LocalDiskEngine;
 pub use mmap::MmapChunk;
+pub use parallel_sealing::{
+    ParallelSealingConfig, ParallelSealingService, SealError, SealHandle, SealResult,
+    SealingStatsSnapshot,
+};
 pub use reader::{ChunkReader, QueryOptions};
 pub use writer::{ChunkWriter, ChunkWriterConfig, WriteStats};
 

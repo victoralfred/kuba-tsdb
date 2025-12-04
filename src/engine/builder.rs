@@ -4,10 +4,14 @@
 //! components into a cohesive database system.
 
 use super::traits::{
-    ChunkStatus, Compressor, IndexConfig, SeriesMetadata, StorageConfig, StorageEngine, TimeIndex,
+    ChunkLocation, ChunkStatus, Compressor, IndexConfig, SeriesMetadata, StorageConfig,
+    StorageEngine, TimeIndex,
 };
 use crate::error::{Error, Result};
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
+use crate::storage::parallel_sealing::{
+    ParallelSealingConfig, ParallelSealingService, SealResult, SealingStatsSnapshot,
+};
 use crate::types::{ChunkId, DataPoint, SeriesId, TagFilter, TimeRange};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -72,6 +76,7 @@ pub struct TimeSeriesDBBuilder {
     index: Option<Arc<dyn TimeIndex + Send + Sync>>,
     config: DatabaseConfig,
     buffer_config: Option<BufferConfig>,
+    sealing_config: Option<ParallelSealingConfig>,
 }
 
 impl TimeSeriesDBBuilder {
@@ -83,6 +88,7 @@ impl TimeSeriesDBBuilder {
             index: None,
             config: DatabaseConfig::default(),
             buffer_config: None,
+            sealing_config: None,
         }
     }
 
