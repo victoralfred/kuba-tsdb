@@ -153,10 +153,7 @@ impl Compressor for AhpacCompressor {
         let start = Instant::now();
 
         // Compress using AHPAC
-        let chunk = self
-            .inner
-            .compress(points)
-            .map_err(convert_ahpac_error)?;
+        let chunk = self.inner.compress(points).map_err(convert_ahpac_error)?;
 
         // Serialize the compressed chunk to bytes
         let data = chunk.to_bytes();
@@ -292,10 +289,11 @@ fn convert_ahpac_error(err: AhpacError) -> CompressionError {
 }
 
 /// Calculate CRC64 checksum for data integrity
+///
+/// Uses the same CRC-64-ECMA-182 polynomial as KubaCompressor for consistency
+/// across all compression algorithms in the storage layer.
 fn crc64_checksum(data: &[u8]) -> u64 {
-    // Use CRC32 and extend to 64 bits for compatibility
-    let crc32 = crc32fast::hash(data);
-    crc32 as u64
+    crc::Crc::<u64>::new(&crc::CRC_64_ECMA_182).checksum(data)
 }
 
 #[cfg(test)]

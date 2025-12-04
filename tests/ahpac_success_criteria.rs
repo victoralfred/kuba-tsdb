@@ -88,9 +88,9 @@ fn create_financial_points(count: usize) -> Vec<DataPoint> {
 /// Structure to hold compression ratio results
 struct CompressionResult {
     name: &'static str,
-    ahpac_bps: f64,  // bits per sample
-    kuba_bps: f64,   // bits per sample
-    delta: f64,      // improvement (positive = AHPAC better)
+    ahpac_bps: f64, // bits per sample
+    kuba_bps: f64,  // bits per sample
+    delta: f64,     // improvement (positive = AHPAC better)
 }
 
 /// Calculate bits per sample for a compressed block
@@ -105,8 +105,14 @@ async fn compare_compression(
     ahpac: &AhpacCompressor,
     kuba: &KubaCompressor,
 ) -> CompressionResult {
-    let ahpac_result = ahpac.compress(points).await.expect("AHPAC compression failed");
-    let kuba_result = kuba.compress(points).await.expect("Kuba compression failed");
+    let ahpac_result = ahpac
+        .compress(points)
+        .await
+        .expect("AHPAC compression failed");
+    let kuba_result = kuba
+        .compress(points)
+        .await
+        .expect("Kuba compression failed");
 
     let ahpac_bps = bits_per_sample(ahpac_result.compressed_size, points.len());
     let kuba_bps = bits_per_sample(kuba_result.compressed_size, points.len());
@@ -185,7 +191,10 @@ async fn test_success_criteria_compression_ratio() {
         "AHPAC must achieve average Δ > 1.0 bits/sample, got {:.2}",
         average_delta
     );
-    println!("\n✓ SUCCESS: AHPAC achieves average Δ = {:.2} bits/sample", average_delta);
+    println!(
+        "\n✓ SUCCESS: AHPAC achieves average Δ = {:.2} bits/sample",
+        average_delta
+    );
 }
 
 #[tokio::test]
@@ -207,7 +216,10 @@ async fn test_success_criteria_lossless_roundtrip() {
 
     for (name, points) in &datasets {
         let compressed = ahpac.compress(points).await.expect("Compression failed");
-        let decompressed = ahpac.decompress(&compressed).await.expect("Decompression failed");
+        let decompressed = ahpac
+            .decompress(&compressed)
+            .await
+            .expect("Decompression failed");
 
         assert_eq!(
             points.len(),
@@ -232,7 +244,11 @@ async fn test_success_criteria_lossless_roundtrip() {
             );
         }
 
-        println!("✓ {} ({} points): Lossless round-trip verified", name, points.len());
+        println!(
+            "✓ {} ({} points): Lossless round-trip verified",
+            name,
+            points.len()
+        );
     }
 
     println!("\n✓ SUCCESS: All data types pass lossless round-trip verification");
@@ -266,7 +282,10 @@ async fn test_success_criteria_integer_data_performance() {
         delta
     );
 
-    println!("\n✓ SUCCESS: Integer data achieves Δ = {:.2} bits/sample", delta);
+    println!(
+        "\n✓ SUCCESS: Integer data achieves Δ = {:.2} bits/sample",
+        delta
+    );
 }
 
 #[tokio::test]
@@ -296,7 +315,10 @@ async fn test_success_criteria_financial_data_performance() {
         delta
     );
 
-    println!("\n✓ SUCCESS: Financial data achieves Δ = {:.2} bits/sample", delta);
+    println!(
+        "\n✓ SUCCESS: Financial data achieves Δ = {:.2} bits/sample",
+        delta
+    );
 }
 
 #[tokio::test]
@@ -313,8 +335,14 @@ async fn test_selection_strategies() {
     println!("\n=== Selection Strategy Validation ===\n");
 
     for (name, compressor) in strategies {
-        let compressed = compressor.compress(&points).await.expect("Compression failed");
-        let decompressed = compressor.decompress(&compressed).await.expect("Decompression failed");
+        let compressed = compressor
+            .compress(&points)
+            .await
+            .expect("Compression failed");
+        let decompressed = compressor
+            .decompress(&compressed)
+            .await
+            .expect("Decompression failed");
 
         assert_eq!(points.len(), decompressed.len());
 

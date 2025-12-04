@@ -527,28 +527,38 @@ mod tests {
         let points = create_points(&values);
         let profile = ChunkProfile::compute(&points, 256);
 
-        assert!(profile.is_high_entropy(), "Random data should be high entropy");
+        assert!(
+            profile.is_high_entropy(),
+            "Random data should be high entropy"
+        );
 
         // Smooth data should NOT be high entropy
-        let smooth_values: Vec<f64> = (0..100)
-            .map(|i| 100.0 + i as f64 * 0.001)
-            .collect();
+        let smooth_values: Vec<f64> = (0..100).map(|i| 100.0 + i as f64 * 0.001).collect();
         let smooth_points = create_points(&smooth_values);
         let smooth_profile = ChunkProfile::compute(&smooth_points, 256);
 
-        assert!(!smooth_profile.is_high_entropy(), "Smooth data should not be high entropy");
+        assert!(
+            !smooth_profile.is_high_entropy(),
+            "Smooth data should not be high entropy"
+        );
 
         // Integer data should NOT be high entropy
         let int_values: Vec<f64> = (0..100).map(|i| (100 + i) as f64).collect();
         let int_points = create_points(&int_values);
         let int_profile = ChunkProfile::compute(&int_points, 256);
 
-        assert!(!int_profile.is_high_entropy(), "Integer data should not be high entropy");
+        assert!(
+            !int_profile.is_high_entropy(),
+            "Integer data should not be high entropy"
+        );
 
         // Constant data should NOT be high entropy
         let const_points = create_points(&[42.0; 100]);
         let const_profile = ChunkProfile::compute(&const_points, 256);
 
-        assert!(!const_profile.is_high_entropy(), "Constant data should not be high entropy");
+        assert!(
+            !const_profile.is_high_entropy(),
+            "Constant data should not be high entropy"
+        );
     }
 }

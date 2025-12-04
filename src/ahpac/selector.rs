@@ -128,9 +128,9 @@ impl CodecSelector {
 
     /// Select codec using heuristics with verification
     ///
-    /// Uses heuristic selection but verifies against Chimp as fallback.
-    /// Chimp is used as the universal fallback because it handles all data
-    /// types correctly and provides good compression for most patterns.
+    /// Uses heuristic selection but verifies against an appropriate fallback:
+    /// - For high-entropy data: Uses Kuba (Gorilla) which is optimized for random-like patterns
+    /// - For other data: Uses Chimp as fallback which handles most data types well
     pub fn select_verified(
         &self,
         points: &[DataPoint],
@@ -141,10 +141,16 @@ impl CodecSelector {
 
         let primary_result = primary_codec.compress(points);
 
-        // Always use Chimp as fallback - it's reliable and handles all data types well
-        let fallback_id = CodecId::Chimp;
+        // Choose fallback based on data characteristics:
+        // - High-entropy data: Kuba is slightly better than Chimp for random patterns
+        // - Other data: Chimp is a reliable all-rounder
+        let fallback_id = if profile.is_high_entropy() {
+            CodecId::Kuba
+        } else {
+            CodecId::Chimp
+        };
 
-        // If primary is already Chimp, just use it
+        // If primary is already the same as fallback, just use it
         if primary_id == fallback_id {
             return match primary_result {
                 Ok(data) => (primary_id, data),
@@ -155,7 +161,7 @@ impl CodecSelector {
             };
         }
 
-        // Also try Chimp as fallback
+        // Also try fallback codec
         let fallback = self.get_codec(fallback_id);
         let fallback_result = fallback.compress(points);
 

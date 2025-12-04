@@ -200,6 +200,10 @@ impl KubaCodec {
     }
 
     /// Compress values using XOR encoding
+    ///
+    /// Uses the Gorilla algorithm with fixes for edge cases:
+    /// - Leading zeros clamped to 31 (5-bit limit)
+    /// - Meaningful bits stored as (value - 1) to fit 64 in 6 bits
     fn compress_values(points: &[DataPoint], writer: &mut BitWriter) {
         if points.is_empty() {
             return;
@@ -209,7 +213,7 @@ impl KubaCodec {
         writer.write_bits(points[0].value.to_bits(), 64);
 
         let mut prev_value = points[0].value.to_bits();
-        let mut prev_leading = 255u8; // Invalid initial value
+        let mut prev_leading = 255u8; // Invalid initial value to force first new window
         let mut prev_trailing = 0u8;
 
         for point in &points[1..] {
@@ -222,12 +226,20 @@ impl KubaCodec {
             } else {
                 writer.write_bit(true);
 
-                let leading = xor.leading_zeros() as u8;
+                let actual_leading = xor.leading_zeros() as u8;
                 let trailing = xor.trailing_zeros() as u8;
+
+                // Clamp leading to 31 (5-bit max) - this expands the "meaningful" region
+                // to include some extra leading zeros, but decoding still works correctly
+                let leading = actual_leading.min(31);
+
+                // Meaningful bits: 1-64 range (since XOR is non-zero, at least 1 bit is set)
+                // With clamped leading: meaningful = 64 - clamped_leading - trailing
                 let meaningful_bits = 64 - leading - trailing;
 
                 // Check if we can reuse previous leading/trailing info
-                if leading >= prev_leading && trailing >= prev_trailing {
+                // Use actual_leading for comparison to ensure the XOR fits in the window
+                if actual_leading >= prev_leading && trailing >= prev_trailing {
                     // Control bit '0': reuse previous window
                     writer.write_bit(false);
                     let prev_meaningful = 64 - prev_leading - prev_trailing;
@@ -236,7 +248,9 @@ impl KubaCodec {
                     // Control bit '1': new window
                     writer.write_bit(true);
                     writer.write_bits(leading as u64, 5);
-                    writer.write_bits(meaningful_bits as u64, 6);
+                    // Store (meaningful_bits - 1) so that 64 fits in 6 bits (stored as 63)
+                    // meaningful_bits is always >= 1 for non-zero XOR
+                    writer.write_bits((meaningful_bits - 1) as u64, 6);
                     writer.write_bits(xor >> trailing, meaningful_bits);
                     prev_leading = leading;
                     prev_trailing = trailing;
@@ -295,13 +309,17 @@ impl KubaCodec {
                 let leading = reader.read_bits(5).map_err(|e| {
                     CodecError::DecompressionFailed(format!("Failed to read leading: {}", e))
                 })? as u8;
-                let meaningful = reader.read_bits(6).map_err(|e| {
+                // Encoder stores (meaningful - 1) so that 64 fits in 6 bits as 63
+                // We read and add 1 to recover the original meaningful value (1-64)
+                let meaningful_minus_one = reader.read_bits(6).map_err(|e| {
                     CodecError::DecompressionFailed(format!("Failed to read meaningful: {}", e))
                 })? as u8;
+                let meaningful = meaningful_minus_one + 1;
                 let meaningful_data = reader.read_bits(meaningful).map_err(|e| {
                     CodecError::DecompressionFailed(format!("Failed to read value data: {}", e))
                 })?;
-                let trailing = 64 - leading - meaningful;
+                // Use saturating subtraction to handle edge case where meaningful = 64
+                let trailing = 64_u8.saturating_sub(leading).saturating_sub(meaningful);
                 prev_leading = leading;
                 prev_meaningful = meaningful;
                 meaningful_data << trailing
@@ -501,5 +519,71 @@ mod tests {
         let codec = KubaCodec::new();
         assert_eq!(codec.id(), CodecId::Kuba);
         assert_eq!(codec.name(), "kuba");
+    }
+
+    /// Test with random-like data that produces XOR values with many meaningful bits
+    /// This tests the edge case where meaningful_bits = 64 (no leading or trailing zeros)
+    #[test]
+    fn test_compress_decompress_random_data() {
+        let codec = KubaCodec::new();
+
+        // Generate random-like data that will produce high-entropy XOR values
+        let points: Vec<DataPoint> = (0..100)
+            .map(|i| {
+                let x = i as f64;
+                let value = (x * 1.23456).sin() * 100.0 + (x * 7.89).cos() * 50.0;
+                DataPoint::new(0, 1000000 + i as i64 * 1000, value)
+            })
+            .collect();
+
+        let compressed = codec.compress(&points).unwrap();
+        let decompressed = codec.decompress(&compressed, points.len()).unwrap();
+
+        assert_eq!(decompressed.len(), points.len(), "Point count mismatch");
+        for (i, (orig, dec)) in points.iter().zip(decompressed.iter()).enumerate() {
+            assert_eq!(
+                orig.timestamp, dec.timestamp,
+                "Timestamp mismatch at index {}: {} != {}",
+                i, orig.timestamp, dec.timestamp
+            );
+            assert!(
+                (orig.value - dec.value).abs() < 1e-10,
+                "Value mismatch at index {}: {} != {}",
+                i,
+                orig.value,
+                dec.value
+            );
+        }
+    }
+
+    /// Test with extreme values that produce XOR with all 64 bits set
+    #[test]
+    fn test_compress_decompress_extreme_xor() {
+        let codec = KubaCodec::new();
+
+        // Values that maximize XOR differences (bit patterns with no common bits)
+        let points = vec![
+            DataPoint::new(0, 1000000, f64::from_bits(0xAAAAAAAAAAAAAAAA)),
+            DataPoint::new(0, 1001000, f64::from_bits(0x5555555555555555)),
+            DataPoint::new(0, 1002000, f64::from_bits(0xFFFFFFFFFFFFFFFF)),
+            DataPoint::new(0, 1003000, f64::from_bits(0x0000000000000000)),
+            DataPoint::new(0, 1004000, f64::from_bits(0x123456789ABCDEF0)),
+        ];
+
+        let compressed = codec.compress(&points).unwrap();
+        let decompressed = codec.decompress(&compressed, points.len()).unwrap();
+
+        assert_eq!(decompressed.len(), points.len());
+        for (i, (orig, dec)) in points.iter().zip(decompressed.iter()).enumerate() {
+            assert_eq!(orig.timestamp, dec.timestamp);
+            assert_eq!(
+                orig.value.to_bits(),
+                dec.value.to_bits(),
+                "Value bits mismatch at index {}: {:016x} != {:016x}",
+                i,
+                orig.value.to_bits(),
+                dec.value.to_bits()
+            );
+        }
     }
 }

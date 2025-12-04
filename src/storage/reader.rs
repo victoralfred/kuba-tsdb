@@ -30,9 +30,9 @@
 //! # Ok(())
 //! # }
 //! ```
-use crate::compression::kuba::KubaCompressor;
+use crate::compression::{AhpacCompressor, KubaCompressor};
 use crate::engine::traits::Compressor;
-use crate::storage::chunk::Chunk;
+use crate::storage::chunk::{Chunk, CompressionType};
 use crate::storage::mmap::MmapChunk;
 use crate::types::DataPoint;
 use std::cmp::Reverse;
@@ -69,13 +69,21 @@ impl Default for QueryOptions {
 }
 
 /// High-level chunk reader with query capabilities
+///
+/// The reader automatically detects the compression algorithm from chunk headers
+/// and uses the appropriate decompressor (AHPAC or Kuba).
 pub struct ChunkReader {
-    /// Compressor/decompressor for chunk data
-    compressor: Arc<KubaCompressor>,
+    /// AHPAC compressor for adaptive-compressed chunks
+    ahpac_compressor: Arc<AhpacCompressor>,
+    /// Kuba compressor for Gorilla-compressed chunks
+    kuba_compressor: Arc<KubaCompressor>,
 }
 
 impl ChunkReader {
     /// Create a new chunk reader
+    ///
+    /// The reader supports both AHPAC and Kuba compression formats and
+    /// automatically selects the appropriate decompressor based on chunk headers.
     ///
     /// # Example
     ///
@@ -86,7 +94,8 @@ impl ChunkReader {
     /// ```
     pub fn new() -> Self {
         Self {
-            compressor: Arc::new(KubaCompressor::new()),
+            ahpac_compressor: Arc::new(AhpacCompressor::new()),
+            kuba_compressor: Arc::new(KubaCompressor::new()),
         }
     }
 
@@ -280,6 +289,9 @@ impl ChunkReader {
     }
 
     /// Read chunk using memory-mapped I/O
+    ///
+    /// Automatically detects compression algorithm from chunk header and
+    /// uses the appropriate decompressor.
     async fn read_chunk_mmap(
         &self,
         path: PathBuf,
@@ -293,9 +305,15 @@ impl ChunkReader {
         let compressed_data = mmap_chunk.compressed_data();
         let header = mmap_chunk.header();
 
+        // Determine algorithm ID from compression type
+        let algorithm_id = match header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => "ahpac",
+            _ => "kuba",
+        };
+
         // Create compressed block for decompression
         let compressed_block = crate::engine::traits::CompressedBlock {
-            algorithm_id: "Kuba".to_string(),
+            algorithm_id: algorithm_id.to_string(),
             original_size: header.uncompressed_size as usize,
             compressed_size: header.compressed_size as usize,
             checksum: header.checksum,
@@ -308,12 +326,19 @@ impl ChunkReader {
             },
         };
 
-        // Decompress
-        let points = self
-            .compressor
-            .decompress(&compressed_block)
-            .await
-            .map_err(|e| format!("Decompression failed: {:?}", e))?;
+        // Decompress using the appropriate compressor based on header's compression_type
+        let points = match header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => self
+                .ahpac_compressor
+                .decompress(&compressed_block)
+                .await
+                .map_err(|e| format!("AHPAC decompression failed: {:?}", e))?,
+            _ => self
+                .kuba_compressor
+                .decompress(&compressed_block)
+                .await
+                .map_err(|e| format!("Kuba decompression failed: {:?}", e))?,
+        };
 
         Ok(points)
     }
@@ -355,7 +380,8 @@ impl ChunkReader {
     /// Clone reader for parallel execution
     fn clone_for_parallel(&self) -> Self {
         Self {
-            compressor: Arc::clone(&self.compressor),
+            ahpac_compressor: Arc::clone(&self.ahpac_compressor),
+            kuba_compressor: Arc::clone(&self.kuba_compressor),
         }
     }
 }
@@ -376,7 +402,9 @@ mod tests {
     #[tokio::test]
     async fn test_reader_creation() {
         let reader = ChunkReader::new();
-        assert!(Arc::strong_count(&reader.compressor) == 1);
+        // Both compressors should have exactly one reference
+        assert_eq!(Arc::strong_count(&reader.ahpac_compressor), 1);
+        assert_eq!(Arc::strong_count(&reader.kuba_compressor), 1);
     }
 
     #[tokio::test]

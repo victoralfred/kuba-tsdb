@@ -36,7 +36,7 @@
 //! # }
 //! ```
 
-use crate::storage::chunk::{ChunkHeader, CHUNK_MAGIC, CHUNK_VERSION};
+use crate::storage::chunk::{ChunkHeader, CompressionType, CHUNK_MAGIC, CHUNK_VERSION};
 use crate::types::DataPoint;
 use memmap2::Mmap;
 use std::fs::File;
@@ -479,17 +479,27 @@ impl MmapChunk {
     /// # Ok(())
     /// # }
     /// ```
+    /// Decompress the chunk data to retrieve data points
+    ///
+    /// Automatically detects the compression algorithm from the chunk header
+    /// and uses the appropriate decompressor (AHPAC or Kuba).
     pub async fn decompress(&self) -> Result<Vec<DataPoint>, String> {
-        use crate::compression::kuba::KubaCompressor;
+        use crate::compression::{AhpacCompressor, KubaCompressor};
         use crate::engine::traits::{CompressedBlock, Compressor};
         use bytes::Bytes;
 
         // Get compressed data (zero-copy reference)
         let compressed_data = self.compressed_data();
 
+        // Determine algorithm ID from compression type
+        let algorithm_id = match self.header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => "ahpac",
+            _ => "kuba",
+        };
+
         // Create CompressedBlock (must copy for Send to thread pool)
         let block = CompressedBlock {
-            algorithm_id: "Kuba".to_string(),
+            algorithm_id: algorithm_id.to_string(),
             original_size: self.header.uncompressed_size as usize,
             compressed_size: self.header.compressed_size as usize,
             checksum: self.header.checksum,
@@ -502,12 +512,23 @@ impl MmapChunk {
             },
         };
 
-        // Decompress using the compressor (it handles spawn_blocking internally)
-        let compressor = KubaCompressor::new();
-        compressor
-            .decompress(&block)
-            .await
-            .map_err(|e| format!("Decompression failed: {}", e))
+        // Decompress using the appropriate compressor based on header's compression_type
+        match self.header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => {
+                let compressor = AhpacCompressor::new();
+                compressor
+                    .decompress(&block)
+                    .await
+                    .map_err(|e| format!("AHPAC decompression failed: {}", e))
+            }
+            _ => {
+                let compressor = KubaCompressor::new();
+                compressor
+                    .decompress(&block)
+                    .await
+                    .map_err(|e| format!("Kuba decompression failed: {}", e))
+            }
+        }
     }
 
     /// Get file size in bytes

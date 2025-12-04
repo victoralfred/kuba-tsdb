@@ -261,9 +261,13 @@ fn bench_compression_ratios(c: &mut Criterion) {
         );
 
         // Benchmark to get timing (the actual measurement)
-        group.bench_with_input(BenchmarkId::new("ratio_check", name), points, |b, points| {
-            b.iter(|| rt.block_on(async { black_box(ahpac.compress(points).await.unwrap()) }));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("ratio_check", name),
+            points,
+            |b, points| {
+                b.iter(|| rt.block_on(async { black_box(ahpac.compress(points).await.unwrap()) }));
+            },
+        );
     }
 
     println!("{:-<62}", "");

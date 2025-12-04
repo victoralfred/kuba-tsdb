@@ -237,6 +237,8 @@ impl ChunkHeader {
             1 => CompressionType::Kuba,
             2 => CompressionType::Snappy,
             3 => CompressionType::KubaSnappy,
+            4 => CompressionType::Ahpac,
+            5 => CompressionType::AhpacSnappy,
             n => return Err(format!("Invalid compression type: {}", n)),
         };
 
@@ -849,8 +851,45 @@ impl Chunk {
     /// # Ok(())
     /// # }
     /// ```
+    /// Seal chunk using the default compression algorithm (AHPAC)
+    ///
+    /// For backward compatibility or specific use cases, use `seal_with_compression()`
+    /// to specify a different compression algorithm.
     pub async fn seal(&mut self, path: PathBuf) -> Result<(), String> {
-        use crate::compression::kuba::KubaCompressor;
+        // Default to AHPAC for better compression on most data types
+        self.seal_with_compression(path, CompressionType::Ahpac)
+            .await
+    }
+
+    /// Seal chunk with a specific compression algorithm
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - File path to write the sealed chunk
+    /// * `compression_type` - Compression algorithm to use
+    ///
+    /// # Supported Compression Types
+    ///
+    /// * `CompressionType::Ahpac` - Adaptive compression, best for most data (default)
+    /// * `CompressionType::Kuba` - Gorilla-based, good for random/high-entropy data
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use kuba_tsdb::storage::chunk::{Chunk, CompressionType};
+    /// # async fn example() -> Result<(), String> {
+    /// let mut chunk = Chunk::new_active(1, 100);
+    /// // ... append data ...
+    /// chunk.seal_with_compression("/tmp/chunk.kub".into(), CompressionType::Kuba).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn seal_with_compression(
+        &mut self,
+        path: PathBuf,
+        compression_type: CompressionType,
+    ) -> Result<(), String> {
+        use crate::compression::{AhpacCompressor, KubaCompressor};
         use crate::engine::traits::Compressor;
         use tokio::fs;
         use tokio::io::AsyncWriteExt;
@@ -896,12 +935,27 @@ impl Chunk {
             })?;
         }
 
-        // P1.2: Compress data with Kuba on blocking thread pool
+        // P1.2: Compress data on blocking thread pool
         // This prevents CPU-intensive compression from blocking async runtime
+        let comp_type = compression_type;
         let compressed = tokio::task::spawn_blocking(move || {
-            let compressor = KubaCompressor::new();
-            // Use blocking version to avoid async overhead in blocking context
-            futures::executor::block_on(compressor.compress(&points))
+            match comp_type {
+                CompressionType::Ahpac | CompressionType::AhpacSnappy => {
+                    // Use AHPAC adaptive compression
+                    let compressor = AhpacCompressor::new();
+                    futures::executor::block_on(compressor.compress(&points))
+                }
+                CompressionType::Kuba | CompressionType::KubaSnappy | CompressionType::None => {
+                    // Use Kuba (Gorilla-based) compression
+                    let compressor = KubaCompressor::new();
+                    futures::executor::block_on(compressor.compress(&points))
+                }
+                CompressionType::Snappy => {
+                    // Snappy-only not supported for time-series, fall back to Kuba
+                    let compressor = KubaCompressor::new();
+                    futures::executor::block_on(compressor.compress(&points))
+                }
+            }
         })
         .await
         .map_err(|e| format!("Compression task panicked: {}", e))?
@@ -915,7 +969,7 @@ impl Chunk {
         header.compressed_size = compressed.compressed_size as u32;
         header.uncompressed_size = compressed.original_size as u32;
         header.checksum = compressed.checksum;
-        header.compression_type = CompressionType::Kuba;
+        header.compression_type = compression_type;
         header.flags = ChunkFlags::sealed();
 
         // Validate header
@@ -1100,7 +1154,7 @@ impl Chunk {
     /// # }
     /// ```
     pub async fn decompress(&self) -> Result<Vec<crate::types::DataPoint>, String> {
-        use crate::compression::kuba::KubaCompressor;
+        use crate::compression::{AhpacCompressor, KubaCompressor};
         use crate::engine::traits::{CompressedBlock, Compressor};
         use bytes::Bytes;
         use tokio::fs;
@@ -1167,9 +1221,15 @@ impl Chunk {
             (header, compressed_data)
         };
 
+        // Determine algorithm ID from compression type
+        let algorithm_id = match header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => "ahpac",
+            _ => "kuba",
+        };
+
         // Create CompressedBlock for decompressor
         let compressed_block = CompressedBlock {
-            algorithm_id: "Kuba".to_string(),
+            algorithm_id: algorithm_id.to_string(),
             original_size: header.uncompressed_size as usize,
             compressed_size: header.compressed_size as usize,
             checksum: header.checksum,
@@ -1182,12 +1242,24 @@ impl Chunk {
             },
         };
 
-        // Decompress
-        let compressor = KubaCompressor::new();
-        compressor
-            .decompress(&compressed_block)
-            .await
-            .map_err(|e| format!("Decompression failed: {}", e))
+        // Decompress using the appropriate compressor based on header's compression_type
+        match header.compression_type {
+            CompressionType::Ahpac | CompressionType::AhpacSnappy => {
+                let compressor = AhpacCompressor::new();
+                compressor
+                    .decompress(&compressed_block)
+                    .await
+                    .map_err(|e| format!("AHPAC decompression failed: {}", e))
+            }
+            _ => {
+                // Kuba, KubaSnappy, Snappy, None - all use Kuba decompressor
+                let compressor = KubaCompressor::new();
+                compressor
+                    .decompress(&compressed_block)
+                    .await
+                    .map_err(|e| format!("Kuba decompression failed: {}", e))
+            }
+        }
     }
 
     /// Get current point count
