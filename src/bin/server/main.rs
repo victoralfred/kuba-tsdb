@@ -48,7 +48,7 @@ use config::{load_config_with_app, ServerConfig};
 use handlers::AppState;
 use kuba_tsdb::{
     cache::{setup_cache_invalidation, InvalidationPublisher, QueryCache, QueryCacheConfig},
-    compression::kuba::KubaCompressor,
+    compression::AhpacCompressor,
     config::ApplicationConfig,
     engine::{DatabaseConfig, TimeSeriesDBBuilder},
     query::subscription::{SubscriptionConfig, SubscriptionManager},
@@ -178,7 +178,7 @@ async fn init_database(
         );
     }
 
-    let compressor = KubaCompressor::new();
+    let compressor = AhpacCompressor::new();
 
     let redis_url = if app_config.redis.enabled {
         Some(app_config.redis.url.clone())
