@@ -142,3 +142,7 @@ harness = false
 [[bench]]
 name = "mmap_performance"
 harness = false
+
+[[bench]]
+name = "ahpac_benchmark"
+harness = false
