@@ -9,6 +9,9 @@ use super::traits::{
 };
 use crate::error::{Error, Result};
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
+use crate::storage::background_sealer::{
+    BackgroundSealingConfig, BackgroundSealingService, BackgroundSealingStatsSnapshot,
+};
 use crate::storage::parallel_sealing::{
     ParallelSealingConfig, ParallelSealingService, SealingStatsSnapshot,
 };
@@ -77,6 +80,7 @@ pub struct TimeSeriesDBBuilder {
     config: DatabaseConfig,
     buffer_config: Option<BufferConfig>,
     sealing_config: Option<ParallelSealingConfig>,
+    background_sealing_config: Option<BackgroundSealingConfig>,
 }
 
 impl TimeSeriesDBBuilder {
@@ -89,6 +93,7 @@ impl TimeSeriesDBBuilder {
             config: DatabaseConfig::default(),
             buffer_config: None,
             sealing_config: None,
+            background_sealing_config: None,
         }
     }
 
@@ -185,6 +190,36 @@ impl TimeSeriesDBBuilder {
         self
     }
 
+    /// Set background sealing configuration
+    ///
+    /// Enables automatic background sealing of active chunks that meet threshold
+    /// conditions. Chunks are sealed without blocking writes, using the parallel
+    /// sealing service for compression.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use kuba_tsdb::storage::BackgroundSealingConfig;
+    ///
+    /// let bg_config = BackgroundSealingConfig {
+    ///     check_interval: Duration::from_millis(500),
+    ///     min_points_for_seal: 800,
+    ///     ..Default::default()
+    /// };
+    /// let db = TimeSeriesDBBuilder::new()
+    ///     .with_background_sealing_config(bg_config)
+    ///     // ... other configuration
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_background_sealing_config(
+        mut self,
+        background_sealing_config: BackgroundSealingConfig,
+    ) -> Self {
+        self.background_sealing_config = Some(background_sealing_config);
+        self
+    }
+
     /// Build the database with configured engines
     pub async fn build(self) -> Result<TimeSeriesDB> {
         // For now, we'll require all engines to be provided
@@ -218,6 +253,11 @@ impl TimeSeriesDBBuilder {
             self.sealing_config.unwrap_or_default(),
         ));
 
+        // Create background sealing service if configured
+        let background_sealing_service = self
+            .background_sealing_config
+            .map(|config| Arc::new(BackgroundSealingService::new(config)));
+
         Ok(TimeSeriesDB {
             compressor,
             storage,
@@ -226,6 +266,7 @@ impl TimeSeriesDBBuilder {
             active_chunks: Arc::new(RwLock::new(HashMap::new())),
             buffer_config: self.buffer_config.unwrap_or_default(),
             sealing_service,
+            background_sealing_service,
         })
     }
 }
@@ -283,6 +324,8 @@ pub struct TimeSeriesDB {
     buffer_config: BufferConfig,
     /// Parallel sealing service for concurrent chunk compression
     sealing_service: Arc<ParallelSealingService>,
+    /// Background sealing service for automatic chunk sealing (optional)
+    background_sealing_service: Option<Arc<BackgroundSealingService>>,
 }
 
 impl TimeSeriesDB {
@@ -619,6 +662,67 @@ impl TimeSeriesDB {
     /// active seals, total sealed chunks, and compression ratios.
     pub fn sealing_stats(&self) -> SealingStatsSnapshot {
         self.sealing_service.stats()
+    }
+
+    /// Start the background sealing service
+    ///
+    /// Spawns a background task that monitors active chunks and seals them
+    /// automatically when they meet threshold conditions (min points, max age).
+    /// This enables non-blocking writes with automatic chunk management.
+    ///
+    /// # Note
+    ///
+    /// Background sealing must be configured with `with_background_sealing_config()`
+    /// during database construction for this method to have effect.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db = TimeSeriesDBBuilder::new()
+    ///     .with_background_sealing_config(BackgroundSealingConfig::default())
+    ///     // ... other configuration
+    ///     .build()
+    ///     .await?;
+    ///
+    /// db.start_background_sealing().await;
+    /// ```
+    pub async fn start_background_sealing(&self) {
+        if let Some(ref service) = self.background_sealing_service {
+            let service = Arc::clone(service);
+            let active_chunks = Arc::clone(&self.active_chunks);
+            let data_dir = self.config.data_dir.clone();
+            let index = Arc::clone(&self.index);
+
+            service.start(active_chunks, data_dir, index).await;
+        } else {
+            warn!("Background sealing not configured - use with_background_sealing_config()");
+        }
+    }
+
+    /// Stop the background sealing service
+    ///
+    /// Gracefully stops the background sealing task. Any in-progress seals
+    /// will complete before the service fully stops.
+    pub async fn stop_background_sealing(&self) {
+        if let Some(ref service) = self.background_sealing_service {
+            service.stop().await;
+        }
+    }
+
+    /// Check if background sealing is running
+    pub fn is_background_sealing_running(&self) -> bool {
+        self.background_sealing_service
+            .as_ref()
+            .map(|s| s.is_running())
+            .unwrap_or(false)
+    }
+
+    /// Get background sealing statistics
+    ///
+    /// Returns statistics about the background sealing service including
+    /// chunks sealed, streaming stats, and failure counts.
+    pub fn background_sealing_stats(&self) -> Option<BackgroundSealingStatsSnapshot> {
+        self.background_sealing_service.as_ref().map(|s| s.stats())
     }
 
     /// Query data points from the database

@@ -39,6 +39,8 @@
 
 /// Thread-safe active chunk implementation with concurrent write support
 pub mod active_chunk;
+/// Background sealing service for automatic chunk sealing
+pub mod background_sealer;
 /// Core chunk storage with lifecycle management
 pub mod chunk;
 /// Background compression service for sealed chunks
@@ -59,6 +61,9 @@ pub mod reader;
 pub mod writer;
 
 pub use active_chunk::ActiveChunk;
+pub use background_sealer::{
+    BackgroundSealingConfig, BackgroundSealingService, BackgroundSealingStatsSnapshot,
+};
 pub use chunk::*;
 pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
