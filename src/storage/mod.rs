@@ -45,6 +45,8 @@ pub mod chunk;
 pub mod compressor;
 /// Directory management utilities (metadata, locks, cleanup)
 pub mod directory;
+/// Data integrity verification and corruption detection
+pub mod integrity;
 /// Local disk storage engine implementation
 pub mod local_disk;
 /// Memory-mapped chunk implementation for zero-copy reads
@@ -58,6 +60,11 @@ pub use active_chunk::ActiveChunk;
 pub use chunk::*;
 pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
+pub use integrity::{
+    attempt_chunk_repair, calculate_checksum, verify_checksum, CorruptedChunk, CorruptionSeverity,
+    IntegrityChecker, IntegrityError, IntegrityReport, RecoveryManager, RecoveryReport,
+    RepairResult,
+};
 pub use local_disk::LocalDiskEngine;
 pub use mmap::MmapChunk;
 pub use reader::{ChunkReader, QueryOptions};
