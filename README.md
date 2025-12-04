@@ -1,5 +1,5 @@
 [![CodeQL Analysis](https://github.com/victoralfred/kuba-tsdb/actions/workflows/codeql.yml/badge.svg)](https://github.com/victoralfred/kuba-tsdb/actions/workflows/codeql.yml) 
-[![Rust CI/CD](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml)
+[![Rust CI/CD](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml) [![Rust CI/CD](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml) [![Rust CI/CD](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml/badge.svg)](https://github.com/victoralfred/kuba-tsdb/actions/workflows/rust.yml)
 # KUBA TSDB
 
 A high-performance time-series database written in Rust, an efficient compression algorithm for 10:1+ compression ratios and sub-millisecond query latencies.

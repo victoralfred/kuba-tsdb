@@ -5,10 +5,10 @@ name: Rust CI/CD
 
 on:
   push:
-    branches: ["main", "develop", "fet/**", "fix/**", "release/**", "hotfix/**"," **/**","*"]
+    branches: ["main", "develop", "fet/**","feature/*", "fix/**", "release/**", "hotfix/**"," **/**","*"]
     tags: ["v*.*.*"]
   pull_request:
-    branches: ["main", "develop"]
+    branches: ["main", "*"]
   workflow_dispatch:
     inputs:
       run_benchmarks:
