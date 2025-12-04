@@ -400,6 +400,139 @@ impl TimeSeriesDB {
         Ok(all_points)
     }
 
+    /// Query the N most recent data points for a series (ENH-001)
+    ///
+    /// This is an optimized query method that scans chunks in reverse
+    /// chronological order (newest first) and stops early once enough
+    /// points are collected. For large series, this is much more efficient
+    /// than querying all data and taking the last N points.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - The series to query
+    /// * `count` - Maximum number of points to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of the most recent `count` data points, sorted by timestamp
+    /// (oldest to newest within the returned set).
+    ///
+    /// # Performance
+    ///
+    /// - **Best case:** O(1) when the most recent chunk contains >= `count` points
+    /// - **Worst case:** O(n) when all chunks must be scanned (rare for LATEST queries)
+    /// - **Typical:** O(k) where k is the number of chunks needed to find `count` points
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get the 10 most recent points
+    /// let latest = db.query_latest(series_id, 10).await?;
+    /// ```
+    pub async fn query_latest(
+        &self,
+        series_id: SeriesId,
+        count: usize,
+    ) -> Result<Vec<DataPoint>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        debug!(
+            series_id = series_id,
+            count = count,
+            "Querying latest points"
+        );
+
+        // Get all chunks for this series (no time range filter - we want all)
+        let now = chrono::Utc::now().timestamp_millis();
+        let full_range = TimeRange::new_unchecked(0, now);
+
+        let mut chunk_refs = self
+            .index
+            .query_chunks(series_id, full_range)
+            .await
+            .map_err(Error::Index)?;
+
+        if chunk_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // ENH-001: Sort chunks by end_timestamp descending (newest first)
+        // This allows us to find the latest points with minimal chunk reads
+        chunk_refs.sort_by(|a, b| b.time_range.end.cmp(&a.time_range.end));
+
+        let mut collected_points: Vec<DataPoint> = Vec::with_capacity(count);
+        let mut chunks_read = 0;
+
+        // Read chunks from newest to oldest, stopping when we have enough points
+        for chunk_ref in chunk_refs {
+            // Skip deleted/archived chunks
+            if matches!(
+                chunk_ref.status,
+                ChunkStatus::Deleted | ChunkStatus::Archived
+            ) {
+                continue;
+            }
+
+            // Read and decompress the chunk
+            let compressed = self
+                .storage
+                .read_chunk(&chunk_ref.location)
+                .await
+                .map_err(Error::Storage)?;
+
+            let mut points = self
+                .compressor
+                .decompress(&compressed)
+                .await
+                .map_err(Error::Compression)?;
+
+            chunks_read += 1;
+
+            // Sort points within chunk by timestamp descending (newest first)
+            points.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+            // Collect points until we have enough
+            for point in points {
+                collected_points.push(point);
+                if collected_points.len() >= count {
+                    break;
+                }
+            }
+
+            // Early termination: stop reading chunks if we have enough points
+            if collected_points.len() >= count {
+                debug!(
+                    series_id = series_id,
+                    chunks_read = chunks_read,
+                    "Early termination - found enough points"
+                );
+                break;
+            }
+        }
+
+        // Reverse to get chronological order (oldest to newest)
+        collected_points.reverse();
+
+        // Take only the latest `count` points if we collected more
+        // This can happen when the last chunk had more points than needed
+        if collected_points.len() > count {
+            // Skip older points, keeping only the most recent `count`
+            let skip = collected_points.len() - count;
+            collected_points = collected_points.into_iter().skip(skip).collect();
+        }
+
+        debug!(
+            series_id = series_id,
+            points = collected_points.len(),
+            chunks_read = chunks_read,
+            "Query latest returned points"
+        );
+
+        Ok(collected_points)
+    }
+
     /// Register a new series with metadata
     ///
     /// # Arguments

@@ -30,6 +30,10 @@ pub mod security;
 
 /// Redis integration for time-series indexing
 /// Provides Redis-based indexing using Sorted Sets for ultra-fast time-based lookups
+///
+/// This module is optional and enabled via the `redis-index` feature flag.
+/// When disabled, use the local in-memory index from `engine::stubs::InMemoryIndex`.
+#[cfg(feature = "redis-index")]
 pub mod redis;
 
 /// Async ingestion pipeline for high-throughput data ingestion

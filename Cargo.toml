@@ -15,9 +15,18 @@ name = "tsdb-server"
 path = "src/bin/server/main.rs"
 
 [features]
-default = []
+# ORG-002: Feature flags for optional dependencies
+# Default features include Redis for backwards compatibility
+default = ["redis-index"]
+
+# Redis integration for distributed chunk indexing
+# Provides RedisTimeIndex for multi-node setups and shared chunk metadata
+redis-index = ["dep:redis"]
+
 # Enable TLS support for Redis connections (uses rustls)
-redis-tls = ["redis/tokio-rustls-comp"]
+# Requires redis-index feature
+redis-tls = ["redis-index", "redis/tokio-rustls-comp"]
+
 # Enable SIMD-accelerated filtering for large batches (64+ elements)
 simd = []
 
@@ -37,8 +46,8 @@ lru = "0.16.2"
 memmap2 = "0.9"
 snap = "1.0"
 
-# Index
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# Index (optional, enabled via redis-index feature)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

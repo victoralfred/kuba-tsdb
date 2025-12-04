@@ -181,6 +181,14 @@ pub struct RedisChunkMetadata {
     compression: String,
     status: String,
     created_at: i64,
+
+    // ENH-003: Statistics for cost estimation and zone map pruning
+    /// Minimum value in the chunk (optional, for zone map pruning)
+    #[serde(default)]
+    min_value: Option<f64>,
+    /// Maximum value in the chunk (optional, for zone map pruning)
+    #[serde(default)]
+    max_value: Option<f64>,
 }
 
 impl RedisTimeIndex {
@@ -278,6 +286,9 @@ impl RedisTimeIndex {
                 compression: "gorilla".to_string(),
                 status: "sealed".to_string(),
                 created_at: current_time,
+                // ENH-003: Statistics will be populated during compaction or on first scan
+                min_value: None,
+                max_value: None,
             };
 
             let metadata_json = serde_json::to_string(&metadata)
@@ -616,6 +627,9 @@ impl TimeIndex for RedisTimeIndex {
             compression: "gorilla".to_string(),
             status: "sealed".to_string(),
             created_at: current_time,
+            // ENH-003: Statistics will be populated during compaction or on first scan
+            min_value: None,
+            max_value: None,
         };
 
         let metadata_json = serde_json::to_string(&chunk_metadata)
@@ -745,21 +759,29 @@ impl TimeIndex for RedisTimeIndex {
                         _ => ChunkStatus::Sealed,
                     };
 
-                    references.push(ChunkReference {
-                        // Use unchecked since these are internal IDs from Redis
-                        chunk_id: ChunkId::from_string_unchecked(chunk_id_str),
-                        location: ChunkLocation {
+                    // ENH-003: Include statistics for cost estimation and zone map pruning
+                    let mut chunk_ref = ChunkReference::new(
+                        ChunkId::from_string_unchecked(chunk_id_str),
+                        ChunkLocation {
                             engine_id: "local-disk-v1".to_string(),
                             path: metadata.path,
                             offset: None,
                             size: Some(metadata.size_bytes),
                         },
-                        time_range: TimeRange {
+                        TimeRange {
                             start: metadata.start_time,
                             end: metadata.end_time,
                         },
                         status,
-                    });
+                    );
+
+                    // Populate statistics from Redis metadata
+                    chunk_ref.row_count = metadata.point_count as u32;
+                    chunk_ref.size_bytes = metadata.size_bytes as u64;
+                    chunk_ref.min_value = metadata.min_value;
+                    chunk_ref.max_value = metadata.max_value;
+
+                    references.push(chunk_ref);
                 } else {
                     warn!(
                         "Failed to parse metadata for chunk {}, skipping",
@@ -1254,6 +1276,8 @@ mod tests {
             compression: "gorilla".to_string(),
             status: "sealed".to_string(),
             created_at: 1700000000000,
+            min_value: Some(10.0),
+            max_value: Some(100.0),
         };
 
         // Serialize
@@ -1286,6 +1310,8 @@ mod tests {
             compression: "gorilla".to_string(),
             status: "active".to_string(),
             created_at: 0,
+            min_value: None,
+            max_value: None,
         };
 
         let cloned = metadata.clone();

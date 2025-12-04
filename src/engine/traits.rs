@@ -352,6 +352,9 @@ pub struct SeriesMetadata {
 }
 
 /// Chunk reference in the index
+///
+/// Contains metadata about a chunk for efficient query planning and pruning.
+/// The statistics fields enable zone map pruning and accurate cost estimation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkReference {
     /// Unique chunk identifier
@@ -362,6 +365,104 @@ pub struct ChunkReference {
     pub time_range: TimeRange,
     /// Current status of the chunk
     pub status: ChunkStatus,
+
+    // ENH-003: Chunk statistics for cost estimation and zone map pruning
+
+    /// Number of data points in this chunk (for accurate row count estimation)
+    #[serde(default)]
+    pub row_count: u32,
+
+    /// Size of the chunk on disk in bytes (for I/O cost estimation)
+    #[serde(default)]
+    pub size_bytes: u64,
+
+    /// Minimum value in the chunk (for zone map pruning)
+    /// None if statistics haven't been computed
+    #[serde(default)]
+    pub min_value: Option<f64>,
+
+    /// Maximum value in the chunk (for zone map pruning)
+    /// None if statistics haven't been computed
+    #[serde(default)]
+    pub max_value: Option<f64>,
+}
+
+impl ChunkReference {
+    /// Create a new chunk reference with basic information
+    pub fn new(
+        chunk_id: ChunkId,
+        location: ChunkLocation,
+        time_range: TimeRange,
+        status: ChunkStatus,
+    ) -> Self {
+        Self {
+            chunk_id,
+            location,
+            time_range,
+            status,
+            row_count: 0,
+            size_bytes: 0,
+            min_value: None,
+            max_value: None,
+        }
+    }
+
+    /// Create a chunk reference with full statistics
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_statistics(
+        chunk_id: ChunkId,
+        location: ChunkLocation,
+        time_range: TimeRange,
+        status: ChunkStatus,
+        row_count: u32,
+        size_bytes: u64,
+        min_value: f64,
+        max_value: f64,
+    ) -> Self {
+        Self {
+            chunk_id,
+            location,
+            time_range,
+            status,
+            row_count,
+            size_bytes,
+            min_value: Some(min_value),
+            max_value: Some(max_value),
+        }
+    }
+
+    /// Check if this chunk has computed statistics
+    pub fn has_statistics(&self) -> bool {
+        self.min_value.is_some() && self.max_value.is_some()
+    }
+
+    /// Check if this chunk can be pruned based on a value predicate
+    ///
+    /// Returns true if the chunk can definitely be skipped (no matching data).
+    /// Returns false if the chunk might contain matching data.
+    pub fn can_prune_by_value(&self, min_query: Option<f64>, max_query: Option<f64>) -> bool {
+        // If we don't have statistics, we can't prune
+        let Some(chunk_min) = self.min_value else {
+            return false;
+        };
+        let Some(chunk_max) = self.max_value else {
+            return false;
+        };
+
+        // Check if query range is completely outside chunk range
+        if let Some(query_min) = min_query {
+            if chunk_max < query_min {
+                return true; // All chunk values are below query minimum
+            }
+        }
+        if let Some(query_max) = max_query {
+            if chunk_min > query_max {
+                return true; // All chunk values are above query maximum
+            }
+        }
+
+        false
+    }
 }
 
 /// Chunk status
@@ -392,4 +493,149 @@ pub struct IndexStats {
     pub cache_hits: u64,
     /// Number of cache misses
     pub cache_misses: u64,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // ENH-003: ChunkReference Statistics Tests
+    // ========================================================================
+
+    #[test]
+    fn test_chunk_reference_new() {
+        let chunk_ref = ChunkReference::new(
+            ChunkId::new(),
+            ChunkLocation {
+                engine_id: "test".to_string(),
+                path: "/test/chunk".to_string(),
+                offset: None,
+                size: Some(1024),
+            },
+            TimeRange {
+                start: 1000,
+                end: 2000,
+            },
+            ChunkStatus::Sealed,
+        );
+
+        assert_eq!(chunk_ref.status, ChunkStatus::Sealed);
+        assert_eq!(chunk_ref.time_range.start, 1000);
+        assert_eq!(chunk_ref.time_range.end, 2000);
+        assert_eq!(chunk_ref.row_count, 0);
+        assert_eq!(chunk_ref.size_bytes, 0);
+        assert!(chunk_ref.min_value.is_none());
+        assert!(chunk_ref.max_value.is_none());
+    }
+
+    #[test]
+    fn test_chunk_reference_with_statistics() {
+        let chunk_ref = ChunkReference::with_statistics(
+            ChunkId::new(),
+            ChunkLocation {
+                engine_id: "test".to_string(),
+                path: "/test/chunk".to_string(),
+                offset: None,
+                size: Some(1024),
+            },
+            TimeRange {
+                start: 1000,
+                end: 2000,
+            },
+            ChunkStatus::Sealed,
+            10000,  // row_count
+            102400, // size_bytes
+            10.0,   // min_value
+            100.0,  // max_value
+        );
+
+        assert_eq!(chunk_ref.row_count, 10000);
+        assert_eq!(chunk_ref.size_bytes, 102400);
+        assert_eq!(chunk_ref.min_value, Some(10.0));
+        assert_eq!(chunk_ref.max_value, Some(100.0));
+        assert!(chunk_ref.has_statistics());
+    }
+
+    #[test]
+    fn test_chunk_reference_has_statistics() {
+        let mut chunk_ref = ChunkReference::new(
+            ChunkId::new(),
+            ChunkLocation {
+                engine_id: "test".to_string(),
+                path: "/test/chunk".to_string(),
+                offset: None,
+                size: None,
+            },
+            TimeRange { start: 0, end: 100 },
+            ChunkStatus::Sealed,
+        );
+
+        // Initially no statistics
+        assert!(!chunk_ref.has_statistics());
+
+        // Add partial statistics
+        chunk_ref.min_value = Some(10.0);
+        assert!(!chunk_ref.has_statistics());
+
+        // Add complete statistics
+        chunk_ref.max_value = Some(100.0);
+        assert!(chunk_ref.has_statistics());
+    }
+
+    #[test]
+    fn test_chunk_reference_can_prune_by_value() {
+        let chunk_ref = ChunkReference::with_statistics(
+            ChunkId::new(),
+            ChunkLocation {
+                engine_id: "test".to_string(),
+                path: "/test/chunk".to_string(),
+                offset: None,
+                size: None,
+            },
+            TimeRange { start: 0, end: 100 },
+            ChunkStatus::Sealed,
+            1000,
+            10240,
+            50.0,  // min_value
+            100.0, // max_value
+        );
+
+        // Query entirely above chunk values - can prune
+        assert!(chunk_ref.can_prune_by_value(Some(200.0), None));
+
+        // Query entirely below chunk values - can prune
+        assert!(chunk_ref.can_prune_by_value(None, Some(25.0)));
+
+        // Query overlaps chunk values - cannot prune
+        assert!(!chunk_ref.can_prune_by_value(Some(75.0), None));
+        assert!(!chunk_ref.can_prune_by_value(None, Some(75.0)));
+        assert!(!chunk_ref.can_prune_by_value(Some(25.0), Some(75.0)));
+
+        // No query bounds - cannot prune
+        assert!(!chunk_ref.can_prune_by_value(None, None));
+    }
+
+    #[test]
+    fn test_chunk_reference_prune_without_statistics() {
+        let chunk_ref = ChunkReference::new(
+            ChunkId::new(),
+            ChunkLocation {
+                engine_id: "test".to_string(),
+                path: "/test/chunk".to_string(),
+                offset: None,
+                size: None,
+            },
+            TimeRange { start: 0, end: 100 },
+            ChunkStatus::Sealed,
+        );
+
+        // Without statistics, cannot prune
+        assert!(!chunk_ref.can_prune_by_value(Some(200.0), None));
+        assert!(!chunk_ref.can_prune_by_value(None, Some(25.0)));
+    }
 }

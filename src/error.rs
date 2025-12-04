@@ -63,6 +63,9 @@ pub enum CompressionError {
 }
 
 /// Storage errors
+///
+/// STYLE-001: Comprehensive error type for storage operations
+/// Replaces `Result<T, String>` with structured error variants
 #[derive(Error, Debug)]
 pub enum StorageError {
     /// IO operation failed
@@ -95,6 +98,73 @@ pub enum StorageError {
         expected: u64,
         /// The actual checksum computed from the data
         actual: u64,
+    },
+
+    // STYLE-001: Additional variants for chunk operations
+
+    /// Invalid chunk header (magic number, version, etc.)
+    #[error("Invalid chunk header: {0}")]
+    InvalidHeader(String),
+
+    /// Chunk is in wrong state for the requested operation
+    #[error("Invalid chunk state: expected {expected}, got {actual}")]
+    InvalidState {
+        /// Expected chunk state
+        expected: String,
+        /// Actual chunk state
+        actual: String,
+    },
+
+    /// Series ID mismatch (point doesn't belong to chunk's series)
+    #[error("Series ID mismatch: chunk has {chunk_series}, point has {point_series}")]
+    SeriesMismatch {
+        /// The series ID the chunk belongs to
+        chunk_series: u128,
+        /// The series ID of the data point
+        point_series: u128,
+    },
+
+    /// Duplicate timestamp detected
+    #[error("Duplicate timestamp {timestamp}: existing value {existing}, new value {new}")]
+    DuplicateTimestamp {
+        /// The duplicate timestamp
+        timestamp: i64,
+        /// The existing value at that timestamp
+        existing: f64,
+        /// The new value being inserted
+        new: f64,
+    },
+
+    /// Chunk capacity exceeded
+    #[error("Chunk capacity exceeded: limit is {limit} points")]
+    CapacityExceeded {
+        /// Maximum allowed points
+        limit: usize,
+    },
+
+    /// Empty data (cannot create chunk from empty data)
+    #[error("Cannot create chunk from empty data")]
+    EmptyData,
+
+    /// Compression operation failed
+    #[error("Compression failed: {0}")]
+    CompressionFailed(String),
+
+    /// Decompression operation failed
+    #[error("Decompression failed: {0}")]
+    DecompressionFailed(String),
+
+    /// Path validation failed
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
+
+    /// Time range validation failed
+    #[error("Invalid time range: start {start} > end {end}")]
+    InvalidTimeRange {
+        /// Start timestamp
+        start: i64,
+        /// End timestamp
+        end: i64,
     },
 }
 
@@ -164,6 +234,48 @@ pub enum IndexError {
     /// Parsing failed
     #[error("Parse error: {0}")]
     ParseError(String),
+}
+
+/// Validation errors
+///
+/// STYLE-001: Error type for configuration and input validation
+#[derive(Error, Debug)]
+pub enum ValidationError {
+    /// Value is out of allowed range
+    #[error("{field} value {value} is out of range [{min}, {max}]")]
+    OutOfRange {
+        /// Field name being validated
+        field: String,
+        /// The invalid value
+        value: String,
+        /// Minimum allowed value
+        min: String,
+        /// Maximum allowed value
+        max: String,
+    },
+
+    /// Required field is missing
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+
+    /// Invalid format
+    #[error("Invalid format for {field}: {message}")]
+    InvalidFormat {
+        /// Field name being validated
+        field: String,
+        /// Description of the format error
+        message: String,
+    },
+
+    /// Generic validation failure
+    #[error("Validation failed: {0}")]
+    Failed(String),
+}
+
+impl From<ValidationError> for Error {
+    fn from(e: ValidationError) -> Self {
+        Error::Configuration(e.to_string())
+    }
 }
 
 /// Result type alias

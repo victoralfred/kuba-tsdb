@@ -867,12 +867,8 @@ impl TimeIndex for InMemoryTimeIndex {
         time_range: TimeRange,
         location: ChunkLocation,
     ) -> Result<(), IndexError> {
-        let chunk_ref = ChunkReference {
-            chunk_id,
-            location,
-            time_range,
-            status: ChunkStatus::Sealed,
-        };
+        // ENH-003: Use the new constructor; statistics will be None by default
+        let chunk_ref = ChunkReference::new(chunk_id, location, time_range, ChunkStatus::Sealed);
 
         let mut chunks = self.chunks.write();
         chunks.entry(series_id).or_default().push(chunk_ref);
