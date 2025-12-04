@@ -382,44 +382,78 @@ impl TimeSeriesDB {
             "Writing points to buffer"
         );
 
-        // Get or create active chunk for this series
-        let active_chunk = {
+        let mut last_chunk_id = ChunkId::new();
+        let mut points_iter = points.into_iter().peekable();
+
+        // Process all points, sealing chunks as needed
+        while points_iter.peek().is_some() {
+            // Get or create active chunk for this series
+            let active_chunk = self.get_or_create_active_chunk(series_id).await;
+
+            // Append points until chunk is full or we run out of points
+            while let Some(point) = points_iter.peek() {
+                match active_chunk.append(*point) {
+                    Ok(()) => {
+                        points_iter.next(); // Consume the point
+                    }
+                    Err(e) => {
+                        // Check if it's a "chunk full" error
+                        if e.contains("Chunk full") || e.contains("max:") {
+                            // Seal the current chunk and continue with a new one
+                            break;
+                        } else if e.contains("Duplicate timestamp") {
+                            // Skip duplicate timestamps
+                            warn!(series_id = series_id, error = %e, "Skipping duplicate point");
+                            points_iter.next();
+                        } else {
+                            // Log other errors and continue
+                            warn!(series_id = series_id, error = %e, "Failed to append point");
+                            points_iter.next();
+                        }
+                    }
+                }
+            }
+
+            // Check if we should seal (either full or threshold reached)
+            if active_chunk.should_seal()
+                || active_chunk.point_count() >= self.buffer_config.max_points as u32
+            {
+                match self.seal_active_chunk(series_id).await {
+                    Ok(chunk_id) => {
+                        last_chunk_id = chunk_id;
+                    }
+                    Err(e) => {
+                        warn!(series_id = series_id, error = %e, "Failed to seal chunk");
+                    }
+                }
+            }
+        }
+
+        Ok(last_chunk_id)
+    }
+
+    /// Get or create an active chunk for a series
+    async fn get_or_create_active_chunk(&self, series_id: SeriesId) -> Arc<ActiveChunk> {
+        // First try to get existing chunk
+        {
             let chunks = self.active_chunks.read().await;
-            chunks.get(&series_id).cloned()
-        };
-
-        let active_chunk = match active_chunk {
-            Some(chunk) => chunk,
-            None => {
-                // Create new active chunk
-                let seal_config = self.buffer_config.to_seal_config();
-                let new_chunk = Arc::new(ActiveChunk::new(
-                    series_id,
-                    self.buffer_config.initial_capacity,
-                    seal_config,
-                ));
-                let mut chunks = self.active_chunks.write().await;
-                chunks.insert(series_id, Arc::clone(&new_chunk));
-                new_chunk
-            }
-        };
-
-        // Append points to active chunk
-        for point in &points {
-            if let Err(e) = active_chunk.append(*point) {
-                warn!(series_id = series_id, error = %e, "Failed to append point");
-                // If append fails (e.g., duplicate), continue with other points
+            if let Some(chunk) = chunks.get(&series_id) {
+                if !chunk.is_sealed() {
+                    return Arc::clone(chunk);
+                }
             }
         }
 
-        // Check if we should seal
-        if active_chunk.should_seal() {
-            return self.seal_active_chunk(series_id).await;
-        }
-
-        // Return a placeholder chunk ID for buffered writes
-        // The actual chunk ID will be created when sealed
-        Ok(ChunkId::new())
+        // Create new active chunk
+        let seal_config = self.buffer_config.to_seal_config();
+        let new_chunk = Arc::new(ActiveChunk::new(
+            series_id,
+            self.buffer_config.initial_capacity,
+            seal_config,
+        ));
+        let mut chunks = self.active_chunks.write().await;
+        chunks.insert(series_id, Arc::clone(&new_chunk));
+        new_chunk
     }
 
     /// Seal the active chunk for a series and write to storage
