@@ -321,11 +321,15 @@ impl<'a> BitReader<'a> {
     /// Bits are read MSB-first and accumulated left-to-right.
     ///
     /// # Arguments
-    /// * `num_bits` - Number of bits to read (must be <= 64)
+    /// * `num_bits` - Number of bits to read (0-64 inclusive)
     ///
     /// # Returns
     /// - `Ok(u64)` - The assembled value from the bits read
     /// - `Err(CompressionError)` - If num_bits > 64 or buffer ends prematurely
+    ///
+    /// # Edge Cases
+    /// - `num_bits = 0`: Returns `Ok(0)` without advancing the read position.
+    ///   This is intentional for variable-width encoding schemes.
     ///
     /// # Errors
     /// - `InvalidData` if num_bits > 64
@@ -341,6 +345,14 @@ impl<'a> BitReader<'a> {
     /// assert_eq!(value, 0b1010);
     /// ```
     pub fn read_bits(&mut self, num_bits: u8) -> Result<u64, CompressionError> {
+        // EDGE-003: Handle zero bits case explicitly
+        // Reading 0 bits returns 0 without advancing the position.
+        // This is intentional and useful for variable-width encoding schemes
+        // where the bit count may be computed dynamically.
+        if num_bits == 0 {
+            return Ok(0);
+        }
+
         // Validate input: can't read more than 64 bits into a u64
         if num_bits > 64 {
             return Err(CompressionError::InvalidData(format!(

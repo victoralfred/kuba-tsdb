@@ -58,7 +58,7 @@ use handlers::AppState;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // Router and Server Setup
@@ -109,24 +109,39 @@ fn build_router(state: Arc<AppState>) -> Router {
 
 /// Graceful shutdown signal handler
 ///
-/// # Panics
-///
-/// Panics if signal handlers cannot be installed. This is intentional as
-/// the server cannot provide graceful shutdown without signal handling,
-/// and there's no reasonable recovery path if the OS rejects signal registration.
+/// EDGE-010: Handles signal registration failures gracefully by logging
+/// a warning and waiting indefinitely (server must be killed forcefully).
+/// This is preferable to panicking during startup.
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("Ctrl+C handler installation failed - OS rejected signal registration");
+        match signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Ctrl+C handler installation failed - graceful shutdown unavailable"
+                );
+                // Wait indefinitely; server will need to be killed forcefully
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler installation failed - OS rejected signal registration")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "SIGTERM handler installation failed - SIGTERM shutdown unavailable"
+                );
+                // Wait indefinitely; this branch won't trigger shutdown
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -184,7 +199,9 @@ async fn init_database(
         storage.clone();
 
     let db = if app_config.redis.enabled {
-        debug!("Connecting to Redis at {}...", app_config.redis.url);
+        // SEC-004: Use sanitized URL in logs to prevent credential leakage
+        let sanitized_url = gorilla_tsdb::redis::util::sanitize_url(&app_config.redis.url);
+        debug!("Connecting to Redis at {}...", sanitized_url);
 
         // Build RedisConfig using the builder pattern
         let redis_config = RedisPoolConfig::with_url(&app_config.redis.url)
@@ -356,11 +373,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = config.listen_addr.parse()?;
     info!("Server listening on http://{}", addr);
 
-    // Start server
+    // Start server with ConnectInfo enabled for per-client rate limiting (SEC-003)
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("Server shutdown complete");
     Ok(())

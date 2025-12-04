@@ -90,6 +90,12 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use std::mem::size_of_val;
 use std::sync::Arc;
+use tracing::warn;
+
+/// Maximum reasonable timestamp delta (approximately 10 years in nanoseconds)
+/// Used for EDGE-004 validation to detect potentially corrupted data
+/// Deltas larger than this are logged as warnings but still processed
+const MAX_REASONABLE_DELTA_NS: i64 = 10 * 365 * 24 * 60 * 60 * 1_000_000_000; // ~10 years
 
 /// Gorilla compression implementation
 ///
@@ -239,6 +245,19 @@ impl GorillaCompressor {
             // Calculate current delta and delta-of-delta
             // Using wrapping arithmetic to handle potential overflow safely
             let delta = point.timestamp.wrapping_sub(prev_timestamp);
+
+            // EDGE-004: Validate delta is within reasonable bounds
+            // Log a warning if delta seems unusually large (potential data corruption)
+            // but continue processing to maintain backward compatibility
+            if delta.abs() > MAX_REASONABLE_DELTA_NS {
+                warn!(
+                    delta_ns = delta,
+                    prev_ts = prev_timestamp,
+                    curr_ts = point.timestamp,
+                    "Unusually large timestamp delta detected - possible data corruption"
+                );
+            }
+
             let dod = delta.wrapping_sub(prev_delta);
 
             // Variable bit packing based on delta-of-delta magnitude

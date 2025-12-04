@@ -270,6 +270,100 @@ pub fn get_rate_limit_info(client_id: &str) -> Option<(u32, u64)> {
     PER_CLIENT_LIMITER.get_client_info(client_id)
 }
 
+/// SEC-008: Check for Unicode characters that could be confused with ASCII path chars
+///
+/// Detects homograph attacks where Unicode characters visually similar to ASCII
+/// are used to bypass path validation. For example:
+/// - Cyrillic 'а' (U+0430) looks like Latin 'a'
+/// - Full-width '/' (U+FF0F) looks like ASCII '/'
+/// - Unicode dots that look like periods
+///
+/// # Arguments
+///
+/// * `s` - The string to check for homograph characters
+///
+/// # Returns
+///
+/// `true` if suspicious Unicode characters are found, `false` otherwise.
+fn contains_homograph_characters(s: &str) -> bool {
+    for c in s.chars() {
+        match c {
+            // Unicode dots that look like periods (could bypass ".." detection)
+            '\u{2024}' |  // One dot leader
+            '\u{2025}' |  // Two dot leader
+            '\u{2026}' |  // Horizontal ellipsis
+            '\u{FE52}' |  // Small full stop
+            '\u{FF0E}' |  // Fullwidth full stop
+            '\u{3002}' => return true, // Ideographic full stop
+
+            // Full-width ASCII look-alikes (path separators)
+            '\u{FF0F}' |  // Fullwidth solidus (/)
+            '\u{FF3C}' => return true, // Fullwidth reverse solidus (\)
+
+            // Zero-width and invisible characters (could hide malicious components)
+            '\u{200B}' |  // Zero width space
+            '\u{200C}' |  // Zero width non-joiner
+            '\u{200D}' |  // Zero width joiner
+            '\u{FEFF}' |  // Zero width no-break space (BOM)
+            '\u{00AD}' => return true, // Soft hyphen (invisible)
+
+            // Direction control characters (could reorder path visually)
+            '\u{202A}' |  // Left-to-right embedding
+            '\u{202B}' |  // Right-to-left embedding
+            '\u{202C}' |  // Pop directional formatting
+            '\u{202D}' |  // Left-to-right override
+            '\u{202E}' |  // Right-to-left override
+            '\u{2066}' |  // Left-to-right isolate
+            '\u{2067}' |  // Right-to-left isolate
+            '\u{2068}' |  // First strong isolate
+            '\u{2069}' => return true, // Pop directional isolate
+
+            // Common Cyrillic characters that look like Latin letters
+            // These could make "..` look different while being semantically similar
+            '\u{0430}' |  // Cyrillic small a (looks like 'a')
+            '\u{0435}' |  // Cyrillic small ie (looks like 'e')
+            '\u{043E}' |  // Cyrillic small o (looks like 'o')
+            '\u{0440}' |  // Cyrillic small er (looks like 'p')
+            '\u{0441}' |  // Cyrillic small es (looks like 'c')
+            '\u{0445}' |  // Cyrillic small ha (looks like 'x')
+            '\u{0443}' |  // Cyrillic small u (looks like 'y')
+            '\u{0410}' |  // Cyrillic capital A
+            '\u{0412}' |  // Cyrillic capital Ve (looks like 'B')
+            '\u{0415}' |  // Cyrillic capital Ie (looks like 'E')
+            '\u{041A}' |  // Cyrillic capital Ka (looks like 'K')
+            '\u{041C}' |  // Cyrillic capital Em (looks like 'M')
+            '\u{041D}' |  // Cyrillic capital En (looks like 'H')
+            '\u{041E}' |  // Cyrillic capital O
+            '\u{0420}' |  // Cyrillic capital Er (looks like 'P')
+            '\u{0421}' |  // Cyrillic capital Es (looks like 'C')
+            '\u{0422}' |  // Cyrillic capital Te (looks like 'T')
+            '\u{0425}' => return true, // Cyrillic capital Ha (looks like 'X')
+
+            // Greek characters that look like Latin
+            '\u{03BF}' |  // Greek small omicron (looks like 'o')
+            '\u{03B1}' |  // Greek small alpha (looks like 'a')
+            '\u{03B5}' |  // Greek small epsilon (looks like 'e')
+            '\u{039F}' |  // Greek capital omicron (looks like 'O')
+            '\u{0391}' |  // Greek capital alpha (looks like 'A')
+            '\u{0392}' |  // Greek capital beta (looks like 'B')
+            '\u{0395}' |  // Greek capital epsilon (looks like 'E')
+            '\u{0397}' |  // Greek capital eta (looks like 'H')
+            '\u{0399}' |  // Greek capital iota (looks like 'I')
+            '\u{039A}' |  // Greek capital kappa (looks like 'K')
+            '\u{039C}' |  // Greek capital mu (looks like 'M')
+            '\u{039D}' |  // Greek capital nu (looks like 'N')
+            '\u{03A1}' |  // Greek capital rho (looks like 'P')
+            '\u{03A4}' |  // Greek capital tau (looks like 'T')
+            '\u{03A7}' |  // Greek capital chi (looks like 'X')
+            '\u{03A5}' |  // Greek capital upsilon (looks like 'Y')
+            '\u{0396}' => return true, // Greek capital zeta (looks like 'Z')
+
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Validate and sanitize a chunk file path
 ///
 /// This function prevents:
@@ -309,12 +403,10 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
         ));
     }
 
-    // Check for Unicode look-alike characters (homograph attacks)
-    if path_str.contains('\u{2024}')
-        || path_str.contains('\u{2025}')
-        || path_str.contains('\u{2026}')
-    {
-        return Err("Path contains suspicious Unicode characters".to_string());
+    // SEC-008: Comprehensive Unicode homograph detection
+    // Check for characters that could be confused with path-sensitive ASCII chars
+    if contains_homograph_characters(&path_str) {
+        return Err("Path contains suspicious Unicode characters that could be confused with ASCII".to_string());
     }
 
     // Ensure filename doesn't contain suspicious characters
@@ -333,26 +425,46 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
         }
     }
 
-    // For existing paths or paths with existing parents, check for symlink attacks
-    let check_path = if path.exists() {
-        Some(path)
-    } else {
-        path.parent().filter(|parent| parent.exists())
-    };
+    // SEC-005: Walk up the path tree to find the nearest existing ancestor
+    // This prevents bypassing validation for completely non-existent paths
+    let mut check_path: Option<&Path> = Some(path);
+    let mut existing_ancestor: Option<&Path> = None;
+    let mut remaining_components: Vec<&std::ffi::OsStr> = Vec::new();
 
-    if let Some(check_path) = check_path {
-        // Check if path is a symlink
-        if check_path.is_symlink() {
+    while let Some(current) = check_path {
+        if current.exists() {
+            existing_ancestor = Some(current);
+            break;
+        }
+        // Store the component we're removing
+        if let Some(name) = current.file_name() {
+            remaining_components.push(name);
+        }
+        check_path = current.parent();
+    }
+
+    // Reverse to get components in order from ancestor to target
+    remaining_components.reverse();
+
+    if let Some(ancestor) = existing_ancestor {
+        // Check if ancestor is a symlink
+        if ancestor.is_symlink() {
             return Err(format!(
                 "Symlink detected: {:?} - symlinks are not allowed for security",
-                check_path
+                ancestor
             ));
         }
 
-        // Canonicalize to resolve any symlinks in the path
-        let canonical = check_path
+        // Canonicalize the existing ancestor to resolve any symlinks
+        let canonical_ancestor = ancestor
             .canonicalize()
-            .map_err(|e| format!("Failed to canonicalize path {:?}: {}", check_path, e))?;
+            .map_err(|e| format!("Failed to canonicalize path {:?}: {}", ancestor, e))?;
+
+        // Reconstruct the full canonical path by appending remaining components
+        let mut canonical_full = canonical_ancestor.clone();
+        for component in &remaining_components {
+            canonical_full.push(component);
+        }
 
         // Get data directory from environment or use default
         let data_dir =
@@ -365,21 +477,25 @@ pub fn validate_chunk_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
                 .canonicalize()
                 .map_err(|e| format!("Failed to canonicalize data dir {:?}: {}", data_dir, e))?;
 
-            if !canonical.starts_with(&canonical_data) {
+            if !canonical_full.starts_with(&canonical_data) {
                 return Err(format!(
                     "Security violation: path {:?} is outside data directory {:?}",
-                    canonical, canonical_data
+                    canonical_full, canonical_data
                 ));
             }
         }
 
         // Return the original path (not canonical) if validation passes
-        // This allows tests with temp directories to work
         return Ok(path.to_path_buf());
     }
 
-    // Path doesn't exist and parent doesn't exist - basic validation passed
-    Ok(path.to_path_buf())
+    // No existing ancestor found at all - this means we're dealing with
+    // a completely non-existent path tree. This is suspicious.
+    // SEC-005: Reject paths where no ancestor exists (likely attack attempt)
+    Err(format!(
+        "Security violation: no existing ancestor found for path {:?}",
+        path
+    ))
 }
 
 /// Check if write operation is allowed by rate limiter
@@ -472,6 +588,52 @@ mod tests {
     fn test_validate_chunk_path_wrong_extension() {
         let result = validate_chunk_path("/data/gorilla-tsdb/chunk.txt");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_homograph_detection_unicode_dots() {
+        // Test Unicode dot characters that could bypass ".." detection
+        assert!(contains_homograph_characters("\u{2024}")); // One dot leader
+        assert!(contains_homograph_characters("\u{2025}")); // Two dot leader
+        assert!(contains_homograph_characters("\u{2026}")); // Horizontal ellipsis
+    }
+
+    #[test]
+    fn test_homograph_detection_cyrillic() {
+        // Cyrillic 'а' looks like Latin 'a'
+        assert!(contains_homograph_characters("\u{0430}"));
+        // Cyrillic 'е' looks like Latin 'e'
+        assert!(contains_homograph_characters("\u{0435}"));
+    }
+
+    #[test]
+    fn test_homograph_detection_invisible() {
+        // Zero-width space
+        assert!(contains_homograph_characters("\u{200B}"));
+        // Zero-width joiner
+        assert!(contains_homograph_characters("\u{200D}"));
+    }
+
+    #[test]
+    fn test_homograph_detection_direction_control() {
+        // Right-to-left override (could visually reorder path components)
+        assert!(contains_homograph_characters("\u{202E}"));
+    }
+
+    #[test]
+    fn test_homograph_detection_fullwidth() {
+        // Full-width solidus (looks like /)
+        assert!(contains_homograph_characters("\u{FF0F}"));
+    }
+
+    #[test]
+    fn test_homograph_detection_safe_ascii() {
+        // Normal ASCII should be safe
+        assert!(!contains_homograph_characters("/data/gorilla-tsdb/chunk.gor"));
+        assert!(!contains_homograph_characters("abcdefghijklmnopqrstuvwxyz"));
+        assert!(!contains_homograph_characters("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+        assert!(!contains_homograph_characters("0123456789"));
+        assert!(!contains_homograph_characters("._-"));
     }
 
     #[test]

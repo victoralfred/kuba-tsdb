@@ -100,9 +100,17 @@ impl LatencyHistogram {
             .position(|&b| latency_us <= b)
             .unwrap_or(self.boundaries.len());
 
-        self.buckets[bucket_idx].fetch_add(1, Ordering::Relaxed);
-        self.sum.fetch_add(latency_us, Ordering::Relaxed);
-        self.count.fetch_add(1, Ordering::Relaxed);
+        // SEC-006: Use saturating arithmetic to prevent overflow
+        // This caps values at u64::MAX instead of wrapping
+        let _ = self.buckets[bucket_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(1))
+        });
+        let _ = self.sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(latency_us))
+        });
+        let _ = self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(1))
+        });
 
         // Update min/max
         self.min.fetch_min(latency_us, Ordering::Relaxed);
@@ -177,11 +185,18 @@ impl OperationMetrics {
     }
 
     fn record(&self, latency_us: u64, success: bool) {
-        self.count.fetch_add(1, Ordering::Relaxed);
+        // SEC-006: Use saturating arithmetic to prevent overflow
+        let _ = self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(1))
+        });
         if success {
-            self.successes.fetch_add(1, Ordering::Relaxed);
+            let _ = self.successes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         } else {
-            self.failures.fetch_add(1, Ordering::Relaxed);
+            let _ = self.failures.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         }
         self.latency.record(latency_us);
     }
@@ -363,11 +378,16 @@ impl RedisMetrics {
     /// * `latency_us` - Latency in microseconds
     /// * `success` - Whether the operation succeeded
     pub fn record_operation(&self, operation: &str, latency_us: u64, success: bool) {
-        self.total_operations.fetch_add(1, Ordering::Relaxed);
+        // SEC-006: Use saturating arithmetic to prevent overflow
+        let _ = self.total_operations.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(1))
+        });
         self.operation_rate.record(1);
 
         if !success {
-            self.total_errors.fetch_add(1, Ordering::Relaxed);
+            let _ = self.total_errors.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
             self.error_rate.record(1);
         }
 
@@ -382,11 +402,18 @@ impl RedisMetrics {
 
     /// Record a connection event
     pub fn record_connection(&self, success: bool) {
+        // SEC-006: Use saturating arithmetic to prevent overflow
         if success {
-            self.connections_created.fetch_add(1, Ordering::Relaxed);
-            self.connections_active.fetch_add(1, Ordering::Relaxed);
+            let _ = self.connections_created.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
+            let _ = self.connections_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         } else {
-            self.connections_failed.fetch_add(1, Ordering::Relaxed);
+            let _ = self.connections_failed.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         }
     }
 
@@ -397,18 +424,28 @@ impl RedisMetrics {
 
     /// Record a cache access
     pub fn record_cache_access(&self, hit: bool) {
+        // SEC-006: Use saturating arithmetic to prevent overflow
         if hit {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            let _ = self.cache_hits.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         } else {
-            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            let _ = self.cache_misses.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         }
     }
 
     /// Record a script execution
     pub fn record_script_execution(&self, success: bool) {
-        self.script_executions.fetch_add(1, Ordering::Relaxed);
+        // SEC-006: Use saturating arithmetic to prevent overflow
+        let _ = self.script_executions.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(1))
+        });
         if !success {
-            self.script_errors.fetch_add(1, Ordering::Relaxed);
+            let _ = self.script_errors.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_add(1))
+            });
         }
     }
 

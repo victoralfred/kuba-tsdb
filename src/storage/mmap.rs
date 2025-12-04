@@ -53,8 +53,18 @@ const MAX_POINTS: u32 = 10_000_000;
 ///
 /// Provides zero-copy access to sealed chunk data with proper validation
 /// and security. Thread-safe for concurrent reads.
+///
+/// # Security: File Locking (SEC-001)
+///
+/// When opened, this chunk acquires a shared (read) lock on the file using
+/// `flock()`. This prevents other processes from acquiring an exclusive lock
+/// and modifying the file while it's memory-mapped. The lock is automatically
+/// released when the MmapChunk is dropped (file handle closed).
+///
+/// Multiple readers can hold shared locks simultaneously, but writers must
+/// wait until all readers release their locks.
 pub struct MmapChunk {
-    /// File handle (kept open for lock lifetime)
+    /// File handle (kept open for lock lifetime and to maintain shared lock)
     #[allow(dead_code)]
     file: File,
 
@@ -165,6 +175,10 @@ pub enum MmapError {
     /// Header parsing error
     #[error("Header parse error: {0}")]
     HeaderParse(String),
+
+    /// SEC-001: File lock acquisition failed
+    #[error("Failed to acquire shared lock on chunk file: {0}")]
+    LockFailed(std::io::Error),
 }
 
 impl MmapChunk {
@@ -213,6 +227,11 @@ impl MmapChunk {
 
         // Open file (use fd to prevent TOCTOU)
         let file = File::open(&path)?;
+
+        // SEC-001: Acquire shared lock to prevent concurrent modification
+        // while the file is memory-mapped. This ensures no other process
+        // can write to the file while we have it mapped.
+        file.lock_shared().map_err(MmapError::LockFailed)?;
 
         // Get file metadata
         let metadata = file.metadata()?;
@@ -327,10 +346,35 @@ impl MmapChunk {
         Ok(())
     }
 
-    /// Apply madvise hints for optimal access pattern (Unix only)
+    /// SEC-002: Safe madvise wrapper for optimal access pattern (Unix only)
+    ///
+    /// This wrapper provides a safe interface to the madvise(2) syscall with:
+    /// - Validation that the memory region is valid and non-empty
+    /// - Proper error handling with informative error messages
+    /// - Platform-specific fallbacks for non-Linux systems
+    ///
+    /// # Safety
+    ///
+    /// The unsafe block is sound because:
+    /// 1. The pointer comes from a valid `Mmap` which guarantees the memory is mapped
+    /// 2. The length comes from `mmap.len()` which is the actual mapped size
+    /// 3. The advice value is one of the known-safe POSIX madvise hints
+    /// 4. madvise is an advisory call that cannot cause UB even on failure
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if madvise fails, but this is non-fatal - the mapping
+    /// still works correctly, just potentially with suboptimal performance.
     #[cfg(unix)]
     fn apply_madvise(mmap: &Mmap, advise: MmapAdvise) -> Result<(), MmapError> {
         use std::io::Error;
+
+        // SEC-002: Validate that the memory region is valid before calling madvise
+        // Empty mappings are technically valid but madvise on them is pointless
+        if mmap.is_empty() {
+            // No-op for empty mappings - not an error, just nothing to advise
+            return Ok(());
+        }
 
         // Platform-specific madvise constants
         #[cfg(target_os = "linux")]
@@ -342,6 +386,7 @@ impl MmapChunk {
         #[cfg(target_os = "linux")]
         const MADV_WILLNEED: libc::c_int = libc::MADV_WILLNEED;
 
+        // Fallback values for non-Linux Unix systems (macOS, BSD, etc.)
         #[cfg(not(target_os = "linux"))]
         const MADV_NORMAL: libc::c_int = 0;
         #[cfg(not(target_os = "linux"))]
@@ -358,12 +403,20 @@ impl MmapChunk {
             MmapAdvise::WillNeed => MADV_WILLNEED,
         };
 
-        unsafe {
-            let result = libc::madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), advice);
+        // SAFETY: This is sound because:
+        // 1. mmap.as_ptr() returns a valid pointer to the start of the mapped region
+        // 2. mmap.len() returns the exact size of the mapped region
+        // 3. The advice values are valid POSIX madvise hints
+        // 4. The Mmap object guarantees the memory region remains valid for its lifetime
+        let result = unsafe {
+            libc::madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), advice)
+        };
 
-            if result != 0 {
-                return Err(MmapError::Io(Error::last_os_error()));
-            }
+        if result != 0 {
+            // madvise failures are typically non-fatal (ENOSYS on some systems,
+            // or EINVAL for unsupported advice), but we propagate the error
+            // so callers can log it if desired
+            return Err(MmapError::Io(Error::last_os_error()));
         }
 
         Ok(())
@@ -372,6 +425,7 @@ impl MmapChunk {
     /// Apply madvise hints (no-op on non-Unix platforms)
     #[cfg(not(unix))]
     fn apply_madvise(_mmap: &Mmap, _advise: MmapAdvise) -> Result<(), MmapError> {
+        // madvise is Unix-specific; on other platforms this is a no-op
         Ok(())
     }
 

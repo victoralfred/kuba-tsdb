@@ -966,6 +966,21 @@ fn last_per_bucket(points: &[DataPoint], target: usize) -> Vec<DataPoint> {
 }
 
 /// Execute a LATEST query
+///
+/// # ENH-001: Performance Optimization Opportunity
+///
+/// Currently this function queries all data and then sorts to find the latest points.
+/// For large series, this could be optimized by:
+/// 1. Querying chunks in reverse chronological order (newest first)
+/// 2. Stopping early once `count` points are found
+/// 3. Only decompressing the most recent chunks
+///
+/// This would require:
+/// - Adding a `query_reverse` method to TimeSeriesDB
+/// - Storage engine support for reverse chunk iteration
+/// - Early termination logic when enough points are found
+///
+/// Expected improvement: O(1) instead of O(n) for single latest value queries.
 async fn execute_latest(
     db: &TimeSeriesDB,
     q: LatestQuery,

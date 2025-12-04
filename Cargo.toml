@@ -66,6 +66,7 @@ url = "2.5"
 # System
 libc = "0.2"
 num_cpus = "1.16"
+fs2 = "0.4"  # Cross-platform file locking
 
 # Metrics and monitoring
 prometheus = { version = "0.14.0", features = ["process"] }

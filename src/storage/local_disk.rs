@@ -8,15 +8,17 @@ use crate::error::StorageError;
 use crate::storage::chunk::{ChunkMetadata, CompressionType};
 use crate::types::{ChunkId, SeriesId};
 use async_trait::async_trait;
+use fs2::FileExt;
 use futures::StreamExt;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Persisted series metadata entry
 /// Contains all information needed to reconstruct the in-memory index on startup
@@ -56,6 +58,25 @@ struct PersistedSeriesEntry {
 /// # Ok(())
 /// # }
 /// ```
+/// Lock file name used to ensure single instance access
+const LOCK_FILE_NAME: &str = ".tsdb.lock";
+
+/// Local disk storage engine for the time-series database
+///
+/// Provides persistent storage of compressed time-series data on the local filesystem.
+/// Uses memory-mapped files for efficient read access and maintains an in-memory
+/// index of chunks for fast lookups.
+///
+/// # Security Features
+///
+/// - SEC-007: Acquires an exclusive lock on the data directory at startup
+///   to prevent multiple instances from corrupting data
+/// - Uses file locking to ensure single-writer semantics
+///
+/// # Thread Safety
+///
+/// This struct is thread-safe and can be shared across async tasks.
+/// All mutable state is protected by `RwLock`.
 pub struct LocalDiskEngine {
     /// Base directory for all storage
     base_path: PathBuf,
@@ -70,6 +91,11 @@ pub struct LocalDiskEngine {
 
     /// Storage statistics
     stats: Arc<RwLock<StorageStats>>,
+
+    /// SEC-007: Directory lock file handle
+    /// Held for the engine's lifetime to prevent concurrent access
+    #[allow(dead_code)]
+    lock_file: File,
 }
 
 impl LocalDiskEngine {
@@ -101,11 +127,46 @@ impl LocalDiskEngine {
         // Create base directory if it doesn't exist
         std::fs::create_dir_all(&base_path)?;
 
+        // SEC-007: Acquire exclusive lock on data directory
+        // This prevents multiple instances from corrupting the same data
+        let lock_path = base_path.join(LOCK_FILE_NAME);
+        let lock_file = File::create(&lock_path).map_err(|e| {
+            StorageError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to create lock file {}: {}", lock_path.display(), e),
+            ))
+        })?;
+
+        // Try to acquire exclusive lock (non-blocking)
+        lock_file.try_lock_exclusive().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "Data directory {} is locked by another process. \
+                         Only one TSDB instance can access a data directory at a time.",
+                        base_path.display()
+                    ),
+                ))
+            } else {
+                StorageError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to lock data directory {}: {}", base_path.display(), e),
+                ))
+            }
+        })?;
+
+        info!(
+            path = %base_path.display(),
+            "Acquired exclusive lock on data directory"
+        );
+
         Ok(Self {
             base_path,
             chunk_index: Arc::new(RwLock::new(HashMap::new())),
             series_metadata: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(StorageStats::default())),
+            lock_file,
         })
     }
 
