@@ -48,6 +48,11 @@ pub mod query;
 /// Provides service lifecycle management, graceful shutdown, and dependency ordering
 pub mod services;
 
+/// AHPAC (Adaptive Hierarchical Predictive Arithmetic Compression)
+/// Adaptive compression that selects the optimal codec per chunk based on data characteristics.
+/// Provides multiple codecs: Kuba, Chimp, ALP, and Delta+LZ4.
+pub mod ahpac;
+
 /// Multi-dimensional aggregation engine for space-time aggregation
 /// Provides string interning, series registry, and tag-based lookups
 pub mod aggregation;
