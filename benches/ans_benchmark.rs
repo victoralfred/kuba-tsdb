@@ -130,13 +130,9 @@ fn bench_ans_decompress(c: &mut Criterion) {
         let skewed = create_skewed_data(size);
         let compressed = ans_compress(&skewed);
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &compressed,
-            |b, data| {
-                b.iter(|| black_box(ans_decompress(data).unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &compressed, |b, data| {
+            b.iter(|| black_box(ans_decompress(data).unwrap()));
+        });
     }
 
     group.finish();
@@ -173,18 +169,14 @@ fn bench_ans_encoder_api(c: &mut Criterion) {
 
         let data = create_xor_residuals(size);
 
-        group.bench_with_input(
-            BenchmarkId::new("full_encode", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let mut encoder = AnsEncoder::new();
-                    encoder.build_frequencies(data);
-                    encoder.build_tables();
-                    black_box(encoder.encode(data))
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full_encode", size), &data, |b, data| {
+            b.iter(|| {
+                let mut encoder = AnsEncoder::new();
+                encoder.build_frequencies(data);
+                encoder.build_tables();
+                black_box(encoder.encode(data))
+            });
+        });
 
         // Benchmark just frequency counting
         group.bench_with_input(

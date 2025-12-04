@@ -434,12 +434,7 @@ mod tests {
         // predicted[i] = 2*values[i-1] - values[i-2]
         // For linear data, this predicts perfectly (residual = 0)
         for (i, residual) in residuals.iter().enumerate().skip(2) {
-            assert!(
-                residual.abs() < 1e-10,
-                "Residual at {} = {}",
-                i,
-                residual
-            );
+            assert!(residual.abs() < 1e-10, "Residual at {} = {}", i, residual);
         }
     }
 }

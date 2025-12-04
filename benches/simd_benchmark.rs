@@ -73,13 +73,9 @@ fn bench_xor_encode(c: &mut Criterion) {
         let monotonic = create_monotonic_values(size);
         let random = create_random_values(size);
 
-        group.bench_with_input(
-            BenchmarkId::new("regular", size),
-            &regular,
-            |b, values| {
-                b.iter(|| black_box(xor_encode_batch(values)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("regular", size), &regular, |b, values| {
+            b.iter(|| black_box(xor_encode_batch(values)));
+        });
 
         group.bench_with_input(
             BenchmarkId::new("constant", size),

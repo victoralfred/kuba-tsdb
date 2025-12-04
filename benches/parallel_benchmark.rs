@@ -28,11 +28,18 @@ fn create_series_points(series_id: SeriesId, count: usize, base_ts: i64) -> Vec<
 }
 
 /// Create multiple series with the same point count
-fn create_multi_series(series_count: usize, points_per_series: usize) -> Vec<(SeriesId, Vec<DataPoint>)> {
+fn create_multi_series(
+    series_count: usize,
+    points_per_series: usize,
+) -> Vec<(SeriesId, Vec<DataPoint>)> {
     (1..=series_count)
         .map(|series_id| {
             let series_id = series_id as SeriesId;
-            let points = create_series_points(series_id, points_per_series, 1000000 + series_id as i64 * 1000000);
+            let points = create_series_points(
+                series_id,
+                points_per_series,
+                1000000 + series_id as i64 * 1000000,
+            );
             (series_id, points)
         })
         .collect()
@@ -74,9 +81,7 @@ fn bench_parallel_vs_sequential(c: &mut Criterion) {
             &batches,
             |b, batches| {
                 b.iter(|| {
-                    rt.block_on(async {
-                        black_box(parallel.compress_batch(batches.clone()).await)
-                    })
+                    rt.block_on(async { black_box(parallel.compress_batch(batches.clone()).await) })
                 });
             },
         );
@@ -223,9 +228,7 @@ fn bench_config_presets(c: &mut Criterion) {
         &batches,
         |b, batches| {
             b.iter(|| {
-                rt.block_on(async {
-                    black_box(low_latency.compress_batch(batches.clone()).await)
-                })
+                rt.block_on(async { black_box(low_latency.compress_batch(batches.clone()).await) })
             });
         },
     );

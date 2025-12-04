@@ -376,15 +376,17 @@ mod compression_integration {
 
     /// Strategy for generating valid DataPoints
     fn data_point_sequence(len: usize) -> impl Strategy<Value = Vec<DataPoint>> {
-        (timestamp_sequence(len), prop::collection::vec(finite_f64(), len)).prop_map(
-            |(timestamps, values)| {
+        (
+            timestamp_sequence(len),
+            prop::collection::vec(finite_f64(), len),
+        )
+            .prop_map(|(timestamps, values)| {
                 timestamps
                     .into_iter()
                     .zip(values)
                     .map(|(ts, val)| DataPoint::new(1, ts, val))
                     .collect()
-            },
-        )
+            })
     }
 
     proptest! {
@@ -486,15 +488,7 @@ mod edge_cases {
     #[test]
     fn xor_special_float_values() {
         // Test with special float values
-        let values = vec![
-            0.0,
-            -0.0,
-            f64::MIN_POSITIVE,
-            f64::MAX,
-            f64::MIN,
-            1.0,
-            -1.0,
-        ];
+        let values = vec![0.0, -0.0, f64::MIN_POSITIVE, f64::MAX, f64::MIN, 1.0, -1.0];
 
         let encoded = xor_encode_batch(&values);
         let decoded = xor_decode_batch(&encoded);
@@ -537,7 +531,9 @@ mod edge_cases {
     #[test]
     fn ans_alternating_pattern() {
         // Alternating pattern
-        let data: Vec<u8> = (0..1000).map(|i| if i % 2 == 0 { 0 } else { 255 }).collect();
+        let data: Vec<u8> = (0..1000)
+            .map(|i| if i % 2 == 0 { 0 } else { 255 })
+            .collect();
         let compressed = ans_compress(&data);
         let decompressed = ans_decompress(&compressed).unwrap();
         assert_eq!(data, decompressed);
