@@ -45,6 +45,8 @@ pub mod adaptive_concurrency;
 pub mod background_sealer;
 /// Core chunk storage with lifecycle management
 pub mod chunk;
+/// Chunk coalescing for merging small chunks
+pub mod chunk_coalescing;
 /// Background compression service for sealed chunks
 pub mod compressor;
 /// Directory management utilities (metadata, locks, cleanup)
@@ -73,6 +75,10 @@ pub use background_sealer::{
     BackgroundSealingConfig, BackgroundSealingService, BackgroundSealingStatsSnapshot,
 };
 pub use chunk::*;
+pub use chunk_coalescing::{
+    ChunkCoalescer, CoalescingCandidate, CoalescingConfig, CoalescingResult,
+    CoalescingStatsSnapshot,
+};
 pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
 pub use integrity::{
