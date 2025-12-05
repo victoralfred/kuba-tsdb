@@ -2,7 +2,7 @@
 # cargo-vet configuration for supply chain security
 
 [cargo-vet]
-version = "1.0"
+version = "0.10.1"
 
 # Import audits from trusted organizations
 [imports.mozilla]
