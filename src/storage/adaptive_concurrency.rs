@@ -1069,6 +1069,7 @@ mod tests {
     fn test_controller_reset() {
         let config = AdaptiveConfig {
             initial_concurrency: 5,
+            max_concurrency: 10, // Explicit max to avoid dependency on CPU count
             ..Default::default()
         };
         let controller = ConcurrencyController::new(config);
