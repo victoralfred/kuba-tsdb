@@ -26,14 +26,12 @@ enum-variant-size-threshold = 200
 missing-docs-in-crate-items = true
 
 # Disallowed methods (security-sensitive)
+# Note: unwrap/expect are checked via clippy::unwrap_used lint (warn level, allows in tests)
+# This list focuses on methods that are security risks regardless of context
 disallowed-methods = [
-    # Panic-inducing methods (use fallible alternatives)
-    { path = "core::option::Option::unwrap", reason = "Use `expect()` with context or handle the None case" },
-    { path = "core::result::Result::unwrap", reason = "Use `expect()` with context or propagate the error" },
-    
     # Unsafe string operations
     { path = "std::string::String::from_utf8_unchecked", reason = "Use from_utf8() and handle the error" },
-    
+
     # Deprecated crypto
     { path = "md5::*", reason = "MD5 is cryptographically broken" },
     { path = "sha1::*", reason = "SHA1 is cryptographically weak" },

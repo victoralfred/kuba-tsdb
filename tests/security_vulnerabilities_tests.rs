@@ -326,10 +326,10 @@ async fn test_sv2_4_delta_of_delta_overflow() {
                     expected, actual, diff
                 );
             }
-        }
+        },
         Err(_) => {
             // Rejection is also acceptable for extreme timestamp values
-        }
+        },
     }
 }
 
@@ -635,7 +635,7 @@ async fn test_resource_exhaustion_prevention() {
                 block.data.len() < 1024 * 1024 * 1024,
                 "Compressed data should not exceed 1GB"
             );
-        }
+        },
         Err(e) => {
             // Rejection is also acceptable
             assert!(
@@ -645,6 +645,6 @@ async fn test_resource_exhaustion_prevention() {
                 "Error should mention size limit: {}",
                 e
             );
-        }
+        },
     }
 }

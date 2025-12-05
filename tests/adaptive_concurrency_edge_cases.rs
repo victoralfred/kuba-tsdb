@@ -595,7 +595,7 @@ async fn test_controller_concurrent_force_limit() {
 
     // Limit should be valid
     let limit = controller.current_limit();
-    assert!(limit >= 1 && limit <= 100);
+    assert!((1..=100).contains(&limit));
 }
 
 #[tokio::test]

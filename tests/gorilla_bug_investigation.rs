@@ -83,11 +83,11 @@ async fn test_large_delta_overflow() {
         Ok(compressed) => match compressor.decompress(&compressed).await {
             Ok(decompressed) => {
                 assert_eq!(decompressed, points, "Large delta should round-trip");
-            }
+            },
             Err(e) => {
                 println!("⚠️  BUG CONFIRMED: Decompression failed: {:?}", e);
                 panic!("Large delta causes corruption");
-            }
+            },
         },
         Err(e) => println!("Compression rejected large delta: {:?}", e),
     }

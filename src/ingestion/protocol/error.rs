@@ -214,26 +214,26 @@ impl fmt::Display for ParseErrorKind {
             ParseErrorKind::MissingFields => write!(f, "Missing field set"),
             ParseErrorKind::InvalidTimestamp { value } => {
                 write!(f, "Invalid timestamp: {}", value)
-            }
+            },
             ParseErrorKind::InvalidSyntax { message } => {
                 write!(f, "Invalid syntax: {}", message)
-            }
+            },
             ParseErrorKind::InvalidFieldValue { field, reason } => {
                 write!(f, "Invalid value for field '{}': {}", field, reason)
-            }
+            },
             ParseErrorKind::DuplicateTag { tag } => {
                 write!(f, "Duplicate tag key: {}", tag)
-            }
+            },
             ParseErrorKind::DuplicateField { field } => {
                 write!(f, "Duplicate field key: {}", field)
-            }
+            },
             ParseErrorKind::UnexpectedChar { char, expected } => {
                 write!(f, "Unexpected character '{}', expected {}", char, expected)
-            }
+            },
             ParseErrorKind::UnterminatedString => write!(f, "Unterminated string literal"),
             ParseErrorKind::InvalidEscape { sequence } => {
                 write!(f, "Invalid escape sequence: {}", sequence)
-            }
+            },
             ParseErrorKind::UnexpectedEof => write!(f, "Unexpected end of input"),
             ParseErrorKind::SyntaxError { message } => write!(f, "Syntax error: {}", message),
             ParseErrorKind::ProtocolMismatch { expected, detected } => {
@@ -242,7 +242,7 @@ impl fmt::Display for ParseErrorKind {
                     "Protocol mismatch: expected {}, got {}",
                     expected, detected
                 )
-            }
+            },
         }
     }
 }

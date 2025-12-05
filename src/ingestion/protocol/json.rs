@@ -133,7 +133,7 @@ impl JsonParser {
                 None => {
                     return Err(ParseError::new(ParseErrorKind::MissingMeasurement)
                         .with_context("JSON point missing 'measurement' field"))
-                }
+                },
             },
         };
 
@@ -158,7 +158,7 @@ impl JsonParser {
                 t.iter()
                     .map(|(k, v)| (Cow::Owned(k.clone()), Cow::Owned(v.clone())))
                     .collect()
-            }
+            },
             None => HashMap::new(),
         };
 
@@ -180,11 +180,11 @@ impl JsonParser {
                 f.iter()
                     .map(|(k, v)| (Cow::Owned(k.clone()), convert_json_value(v)))
                     .collect()
-            }
+            },
             _ => {
                 return Err(ParseError::new(ParseErrorKind::MissingFields)
                     .with_context("at least one field required"))
-            }
+            },
         };
 
         // Parse timestamp
@@ -309,7 +309,7 @@ fn convert_json_value(value: &serde_json::Value) -> FieldValue {
             } else {
                 FieldValue::Float(f64::NAN)
             }
-        }
+        },
         serde_json::Value::Bool(b) => FieldValue::Boolean(*b),
         serde_json::Value::String(s) => FieldValue::String(s.clone()),
         // For null/array/object, convert to string representation

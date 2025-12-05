@@ -157,7 +157,7 @@ impl CodecSelector {
                 Err(_) => {
                     let raw = Self::encode_raw(points);
                     (CodecId::Raw, raw)
-                }
+                },
             };
         }
 
@@ -173,14 +173,14 @@ impl CodecSelector {
                 } else {
                     (fallback_id, f_data)
                 }
-            }
+            },
             (Ok(p_data), Err(_)) => (primary_id, p_data),
             (Err(_), Ok(f_data)) => (fallback_id, f_data),
             (Err(_), Err(_)) => {
                 // Both failed, use raw encoding
                 let raw = Self::encode_raw(points);
                 (CodecId::Raw, raw)
-            }
+            },
         }
     }
 
@@ -221,10 +221,10 @@ impl CodecSelector {
                 Ok(data) => {
                     let bps = (data.len() * 8) as f64 / points.len() as f64;
                     results.push((codec.id(), Some(data.len()), bps));
-                }
+                },
                 Err(_) => {
                     results.push((codec.id(), None, f64::MAX));
-                }
+                },
             }
         }
 
@@ -247,7 +247,7 @@ mod tests {
             .map(|i| {
                 DataPoint::new(
                     0,
-                    1000000 + i as i64 * 1000,
+                    1_000_000 + i as i64 * 1000,
                     100.0 + (i as f64 * 0.1).sin() * 10.0,
                 )
             })
@@ -256,19 +256,19 @@ mod tests {
 
     fn create_integer_points(count: usize) -> Vec<DataPoint> {
         (0..count)
-            .map(|i| DataPoint::new(0, 1000000 + i as i64 * 1000, (100 + i) as f64))
+            .map(|i| DataPoint::new(0, 1_000_000 + i as i64 * 1000, (100 + i) as f64))
             .collect()
     }
 
     fn create_constant_points(count: usize) -> Vec<DataPoint> {
         (0..count)
-            .map(|i| DataPoint::new(0, 1000000 + i as i64 * 1000, 42.0))
+            .map(|i| DataPoint::new(0, 1_000_000 + i as i64 * 1000, 42.0))
             .collect()
     }
 
     fn create_monotonic_points(count: usize) -> Vec<DataPoint> {
         (0..count)
-            .map(|i| DataPoint::new(0, 1000000 + i as i64 * 1000, i as f64))
+            .map(|i| DataPoint::new(0, 1_000_000 + i as i64 * 1000, i as f64))
             .collect()
     }
 

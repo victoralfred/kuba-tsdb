@@ -393,14 +393,14 @@ impl UdpListener {
                                     data_points = data_point_count,
                                     "Ingested UDP points to pipeline"
                                 );
-                            }
+                            },
                             Err(e) => {
                                 warn!(
                                     src = %src_addr,
                                     error = %e,
                                     "Failed to ingest UDP points"
                                 );
-                            }
+                            },
                         }
                     }
                 } else {
@@ -416,7 +416,7 @@ impl UdpListener {
                         );
                     }
                 }
-            }
+            },
             Err(e) => {
                 self.stats.parse_errors.fetch_add(1, Ordering::Relaxed);
                 debug!(
@@ -424,7 +424,7 @@ impl UdpListener {
                     error = %e,
                     "Failed to parse UDP datagram"
                 );
-            }
+            },
         }
     }
 

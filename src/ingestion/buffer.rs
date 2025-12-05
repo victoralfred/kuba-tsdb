@@ -460,7 +460,7 @@ impl WriteBufferManager {
                 return Err(IngestionError::ConfigError(
                     "WriteBufferManager already running (double start)".to_string(),
                 ));
-            }
+            },
         };
 
         let mut flush_interval = tokio::time::interval(self.config.flush_interval);

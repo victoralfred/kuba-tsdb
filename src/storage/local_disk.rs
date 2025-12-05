@@ -305,7 +305,7 @@ impl LocalDiskEngine {
                         skipped_open += 1;
                         warn!("Failed to open chunk file {:?}: {}", path, e);
                         continue;
-                    }
+                    },
                 };
 
                 let mut header_bytes = [0u8; 64];
@@ -321,7 +321,7 @@ impl LocalDiskEngine {
                         skipped_parse += 1;
                         warn!("Failed to parse header from {:?}: {}", path, e);
                         continue;
-                    }
+                    },
                 };
 
                 // Validate header before adding to index
@@ -955,7 +955,7 @@ impl StorageEngine for LocalDiskEngine {
                                 "Chunk file not found: {}",
                                 location.path
                             )));
-                        }
+                        },
                         Err(e) => return Err(StorageError::Io(e)),
                     };
 
@@ -1113,10 +1113,10 @@ impl StorageEngine for LocalDiskEngine {
                         stats.total_chunks = stats.total_chunks.saturating_sub(1);
                         stats.total_bytes = stats.total_bytes.saturating_sub(size);
                     }
-                }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // File already deleted, just clean up index
-                }
+                },
                 Err(e) => {
                     // ERR-002: Use proper logging instead of eprintln
                     warn!(
@@ -1125,7 +1125,7 @@ impl StorageEngine for LocalDiskEngine {
                         "Failed to delete chunk during maintenance"
                     );
                     continue;
-                }
+                },
             }
 
             // Remove from index
@@ -1599,7 +1599,7 @@ mod tests {
                 assert_eq!(expected, checksum);
                 // Actual checksum should be different due to corruption
                 assert_ne!(expected, actual);
-            }
+            },
             other => panic!("Expected ChecksumMismatch error, got: {:?}", other),
         }
     }

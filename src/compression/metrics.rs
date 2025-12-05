@@ -575,7 +575,8 @@ pub const SEAL_DURATION_BUCKETS: [f64; 12] = [
 ];
 
 /// Histogram bucket boundaries for compression ratio
-pub const COMPRESSION_RATIO_BUCKETS: [f64; 10] = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 20.0, 50.0];
+pub const COMPRESSION_RATIO_BUCKETS: [f64; 10] =
+    [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 20.0, 50.0];
 
 /// Histogram for tracking value distributions
 #[derive(Debug)]
@@ -754,7 +755,8 @@ impl SealingMetrics {
         self.seals_total_success.fetch_add(1, Ordering::Relaxed);
         self.seal_duration.observe(duration_secs);
         self.points_sealed.fetch_add(point_count, Ordering::Relaxed);
-        self.original_bytes.fetch_add(original_size, Ordering::Relaxed);
+        self.original_bytes
+            .fetch_add(original_size, Ordering::Relaxed);
         self.compressed_bytes
             .fetch_add(compressed_size, Ordering::Relaxed);
 
@@ -839,7 +841,12 @@ impl SealingMetrics {
         output.push_str("# TYPE tsdb_seal_duration_seconds histogram\n");
         let mut cumulative = 0u64;
         for (i, &boundary) in snapshot.seal_duration.buckets.iter().enumerate() {
-            cumulative += snapshot.seal_duration.bucket_counts.get(i).copied().unwrap_or(0);
+            cumulative += snapshot
+                .seal_duration
+                .bucket_counts
+                .get(i)
+                .copied()
+                .unwrap_or(0);
             output.push_str(&format!(
                 "tsdb_seal_duration_seconds_bucket{{le=\"{}\"}} {}\n",
                 boundary, cumulative
@@ -923,7 +930,8 @@ impl SealingMetrics {
         ));
 
         // Bytes totals
-        output.push_str("# HELP tsdb_compression_bytes_total Total bytes before/after compression\n");
+        output
+            .push_str("# HELP tsdb_compression_bytes_total Total bytes before/after compression\n");
         output.push_str("# TYPE tsdb_compression_bytes_total counter\n");
         output.push_str(&format!(
             "tsdb_compression_bytes_total{{type=\"original\"}} {}\n",
@@ -1039,7 +1047,8 @@ impl SealingMetricsSnapshot {
 }
 
 /// Global sealing metrics instance
-static GLOBAL_SEALING_METRICS: std::sync::OnceLock<Arc<SealingMetrics>> = std::sync::OnceLock::new();
+static GLOBAL_SEALING_METRICS: std::sync::OnceLock<Arc<SealingMetrics>> =
+    std::sync::OnceLock::new();
 
 /// Get the global sealing metrics instance
 pub fn global_sealing_metrics() -> Arc<SealingMetrics> {
@@ -1193,7 +1202,7 @@ mod tests {
 
         // p50 should be around bucket <= 3.0 (50 values)
         let p50 = snapshot.percentile(50.0);
-        assert!(p50 >= 2.0 && p50 <= 3.0);
+        assert!((2.0..=3.0).contains(&p50));
 
         // p99 should be around bucket <= 5.0
         let p99 = snapshot.percentile(99.0);

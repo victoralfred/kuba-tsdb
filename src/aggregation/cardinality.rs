@@ -69,7 +69,7 @@ impl std::fmt::Display for CardinalityMergeError {
                     "Cannot merge estimators with different k values: {} vs {}",
                     self_k, other_k
                 )
-            }
+            },
         }
     }
 }
@@ -705,10 +705,10 @@ impl std::fmt::Display for CardinalityError {
         match self {
             CardinalityError::SeriesLimitExceeded { current, limit } => {
                 write!(f, "Series limit exceeded: {} >= {} (max)", current, limit)
-            }
+            },
             CardinalityError::RateLimitExceeded { rate_per_minute } => {
                 write!(f, "Rate limit exceeded: {} series/minute", rate_per_minute)
-            }
+            },
             CardinalityError::LabelCardinalityExceeded {
                 label,
                 current,
@@ -719,10 +719,10 @@ impl std::fmt::Display for CardinalityError {
                     "Label '{}' cardinality exceeded: {} > {}",
                     label, current, limit
                 )
-            }
+            },
             CardinalityError::TooManyLabels { count, limit } => {
                 write!(f, "Too many labels: {} > {}", count, limit)
-            }
+            },
         }
     }
 }
@@ -810,7 +810,7 @@ impl CardinalityEstimator {
         match self.min_values.binary_search(&hash) {
             Ok(_) => {
                 // Duplicate - already present, skip
-            }
+            },
             Err(pos) => {
                 // Not a duplicate - pos is the insertion point
                 if self.min_values.len() < self.k {
@@ -826,7 +826,7 @@ impl CardinalityEstimator {
                     // Hash is larger than all k smallest - just count it
                     self.count += 1;
                 }
-            }
+            },
         }
     }
 

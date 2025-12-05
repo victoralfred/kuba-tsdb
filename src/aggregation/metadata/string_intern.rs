@@ -50,7 +50,7 @@ impl std::fmt::Display for InternError {
         match self {
             InternError::StringTooLong { actual, max } => {
                 write!(f, "String too long: {} bytes (max: {} bytes)", actual, max)
-            }
+            },
         }
     }
 }

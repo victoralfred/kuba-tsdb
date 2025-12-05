@@ -224,31 +224,31 @@ impl fmt::Display for ValidationError {
         match self {
             ValidationError::MeasurementTooLong { length, max } => {
                 write!(f, "Measurement name too long: {} > {}", length, max)
-            }
+            },
             ValidationError::EmptyMeasurement => {
                 write!(f, "Empty measurement name")
-            }
+            },
             ValidationError::TagKeyTooLong { key, length, max } => {
                 write!(f, "Tag key '{}' too long: {} > {}", key, length, max)
-            }
+            },
             ValidationError::TagValueTooLong { key, length, max } => {
                 write!(f, "Tag value for '{}' too long: {} > {}", key, length, max)
-            }
+            },
             ValidationError::FieldKeyTooLong { key, length, max } => {
                 write!(f, "Field key '{}' too long: {} > {}", key, length, max)
-            }
+            },
             ValidationError::TooManyTags { count, max } => {
                 write!(f, "Too many tags: {} > {}", count, max)
-            }
+            },
             ValidationError::TooManyFields { count, max } => {
                 write!(f, "Too many fields: {} > {}", count, max)
-            }
+            },
             ValidationError::NoFields => {
                 write!(f, "No fields provided")
-            }
+            },
             ValidationError::ReservedName { name, location } => {
                 write!(f, "Reserved name '{}' used in {}", name, location)
-            }
+            },
             ValidationError::TypeMismatch {
                 field,
                 expected,
@@ -259,7 +259,7 @@ impl fmt::Display for ValidationError {
                     "Type mismatch for field '{}': expected {}, got {}",
                     field, expected, actual
                 )
-            }
+            },
             ValidationError::ValueOutOfRange {
                 field,
                 value,
@@ -271,14 +271,14 @@ impl fmt::Display for ValidationError {
                     "Value {} for field '{}' out of range [{:?}, {:?}]",
                     value, field, min, max
                 )
-            }
+            },
             ValidationError::StringTooLong { field, length, max } => {
                 write!(
                     f,
                     "String value for field '{}' too long: {} > {}",
                     field, length, max
                 )
-            }
+            },
             ValidationError::InvalidTagValue {
                 tag,
                 value,
@@ -289,32 +289,32 @@ impl fmt::Display for ValidationError {
                     "Invalid value '{}' for tag '{}', allowed: {:?}",
                     value, tag, allowed
                 )
-            }
+            },
             ValidationError::MissingRequiredTag { tag } => {
                 write!(f, "Missing required tag: {}", tag)
-            }
+            },
             ValidationError::MissingRequiredField { field } => {
                 write!(f, "Missing required field: {}", field)
-            }
+            },
             ValidationError::ExtraTagNotAllowed { tag } => {
                 write!(f, "Extra tag not allowed: {}", tag)
-            }
+            },
             ValidationError::ExtraFieldNotAllowed { field } => {
                 write!(f, "Extra field not allowed: {}", field)
-            }
+            },
             ValidationError::UnknownMeasurement { measurement } => {
                 write!(f, "Unknown measurement: {}", measurement)
-            }
+            },
             ValidationError::TimestampTooFuture { timestamp, max } => {
                 write!(
                     f,
                     "Timestamp {} too far in future (max: {})",
                     timestamp, max
                 )
-            }
+            },
             ValidationError::TimestampTooOld { timestamp, min } => {
                 write!(f, "Timestamp {} too far in past (min: {})", timestamp, min)
-            }
+            },
         }
     }
 }
@@ -556,7 +556,7 @@ impl Validator {
                     });
                 }
                 return;
-            }
+            },
         };
 
         // Validate against schema

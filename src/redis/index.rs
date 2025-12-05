@@ -328,7 +328,7 @@ impl RedisTimeIndex {
                 let metadata: RedisChunkMetadata = serde_json::from_str(&json)
                     .map_err(|e| IndexError::DeserializationError(e.to_string()))?;
                 Ok(Some(metadata))
-            }
+            },
             None => Ok(None),
         }
     }
@@ -834,7 +834,7 @@ impl TimeIndex for RedisTimeIndex {
                     .await?;
 
                 self.parse_series_ids(&series_ids)
-            }
+            },
 
             // Intersect metric index with all tag indexes - O(min set size)
             TagFilter::Exact(tags) => {
@@ -856,7 +856,7 @@ impl TimeIndex for RedisTimeIndex {
                     .await?;
 
                 self.parse_series_ids(&series_ids)
-            }
+            },
 
             // Get metric series, then filter client-side by pattern
             // Still much better than scanning ALL series
@@ -871,7 +871,7 @@ impl TimeIndex for RedisTimeIndex {
 
                 // Filter by pattern client-side (requires metadata lookup)
                 self.filter_by_pattern(&series_ids, pattern).await
-            }
+            },
         }
     }
 

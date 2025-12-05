@@ -418,7 +418,7 @@ impl BitmapIndex {
                 }
 
                 result.unwrap_or_default()
-            }
+            },
 
             TagFilter::Or(filters) => {
                 let mut result = TagBitmap::new();
@@ -429,12 +429,12 @@ impl BitmapIndex {
                 }
 
                 result
-            }
+            },
 
             TagFilter::Not(inner) => {
                 let inner_bitmap = self.query(inner);
                 self.all_series.read().and_not(&inner_bitmap)
-            }
+            },
 
             TagFilter::HasKey(key_id) => {
                 // PERF-003: Use pre-computed key bitmap for O(1) lookup
@@ -443,7 +443,7 @@ impl BitmapIndex {
                     .get(key_id)
                     .cloned()
                     .unwrap_or_default()
-            }
+            },
         }
     }
 
@@ -609,7 +609,7 @@ impl std::fmt::Display for TagFilter {
                     let parts: Vec<_> = filters.iter().map(|flt| flt.to_string()).collect();
                     write!(f, "({})", parts.join(" AND "))
                 }
-            }
+            },
             TagFilter::Or(filters) => {
                 if filters.is_empty() {
                     write!(f, "(empty OR)")
@@ -617,7 +617,7 @@ impl std::fmt::Display for TagFilter {
                     let parts: Vec<_> = filters.iter().map(|flt| flt.to_string()).collect();
                     write!(f, "({})", parts.join(" OR "))
                 }
-            }
+            },
             TagFilter::Not(inner) => write!(f, "NOT {}", inner),
             TagFilter::HasKey(k) => write!(f, "tag[{}]=*", k.0),
         }

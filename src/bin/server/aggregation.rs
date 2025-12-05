@@ -224,7 +224,7 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
                 sum = t;
             }
             sum
-        }
+        },
         QueryAggFunction::Min => values.iter().cloned().fold(f64::INFINITY, f64::min),
         QueryAggFunction::Max => values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
         QueryAggFunction::Avg => {
@@ -237,7 +237,7 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
                 mean += delta / count as f64;
             }
             mean
-        }
+        },
         QueryAggFunction::First => values.first().cloned().unwrap_or(f64::NAN),
         QueryAggFunction::Last => values.last().cloned().unwrap_or(f64::NAN),
         QueryAggFunction::StdDev => {
@@ -255,7 +255,7 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
                 m2 += delta * delta2;
             }
             (m2 / (count - 1) as f64).sqrt()
-        }
+        },
         QueryAggFunction::Variance => {
             if values.len() < 2 {
                 return 0.0;
@@ -271,7 +271,7 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
                 m2 += delta * delta2;
             }
             m2 / (count - 1) as f64
-        }
+        },
         QueryAggFunction::Median => {
             let mut sorted = values.to_vec();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -281,11 +281,11 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
             } else {
                 sorted[mid]
             }
-        }
+        },
         // For rate/increase, use counter-aware calculation with reset detection
         QueryAggFunction::Rate | QueryAggFunction::Increase => {
             compute_bucket_increase_with_resets(values)
-        }
+        },
         // Delta is simple difference (not counter-aware, allows negative)
         QueryAggFunction::Delta => {
             if values.len() < 2 {
@@ -293,18 +293,18 @@ pub fn aggregate_bucket_values(values: &[f64], func: &QueryAggFunction) -> f64 {
             } else {
                 values.last().unwrap() - values.first().unwrap()
             }
-        }
+        },
         QueryAggFunction::Percentile(p) => {
             // Use t-digest for streaming percentile estimation
             let digest = TDigest::new_with_size(100);
             let digest = digest.merge_unsorted(values.to_vec());
             digest.estimate_quantile(*p as f64 / 100.0)
-        }
+        },
         QueryAggFunction::CountDistinct => {
             use std::collections::HashSet;
             let distinct: HashSet<u64> = values.iter().map(|v| v.to_bits()).collect();
             distinct.len() as f64
-        }
+        },
     }
 }
 
@@ -338,7 +338,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
                 sum = t;
             }
             Some(sum)
-        }
+        },
         "min" => points
             .iter()
             .map(|p| p.value)
@@ -357,7 +357,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
                 mean += delta / count as f64;
             }
             Some(mean)
-        }
+        },
         "first" => points.first().map(|p| p.value),
         "last" => points.last().map(|p| p.value),
         "stddev" | "std" => {
@@ -376,7 +376,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
                 m2 += delta * delta2;
             }
             Some((m2 / (count - 1) as f64).sqrt())
-        }
+        },
         "variance" | "var" => {
             if points.len() < 2 {
                 return Some(0.0);
@@ -392,7 +392,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
                 m2 += delta * delta2;
             }
             Some(m2 / (count - 1) as f64)
-        }
+        },
         "median" | "p50" => {
             let mut values: Vec<f64> = points.iter().map(|p| p.value).collect();
             values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -402,7 +402,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
             } else {
                 Some(values[mid])
             }
-        }
+        },
         s if s.starts_with("p") || s.starts_with("percentile") => {
             // Parse percentile value: p95, p99, percentile95, percentile(95), etc.
             let num_str = s
@@ -418,7 +418,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
             } else {
                 None
             }
-        }
+        },
         s if s.starts_with("quantile") => {
             // Parse quantile value: quantile(0.95), quantile0.95
             let num_str = s
@@ -433,7 +433,7 @@ pub fn compute_aggregation(function: &str, points: &[DataPoint]) -> Option<f64> 
             } else {
                 None
             }
-        }
+        },
         _ => None,
     }
 }
@@ -469,7 +469,7 @@ pub fn compute_aggregation_from_ast(
                 sum = t;
             }
             sum
-        }
+        },
         QueryAggFunction::Min => points.iter().map(|p| p.value).fold(f64::INFINITY, f64::min),
         QueryAggFunction::Max => points
             .iter()
@@ -485,7 +485,7 @@ pub fn compute_aggregation_from_ast(
                 mean += delta / count as f64;
             }
             mean
-        }
+        },
         QueryAggFunction::First => points.first().map(|p| p.value).unwrap_or(f64::NAN),
         QueryAggFunction::Last => points.last().map(|p| p.value).unwrap_or(f64::NAN),
         QueryAggFunction::StdDev => {
@@ -503,7 +503,7 @@ pub fn compute_aggregation_from_ast(
                 m2 += delta * delta2;
             }
             (m2 / (count - 1) as f64).sqrt()
-        }
+        },
         QueryAggFunction::Variance => {
             if points.len() < 2 {
                 return (func_name, 0.0);
@@ -519,7 +519,7 @@ pub fn compute_aggregation_from_ast(
                 m2 += delta * delta2;
             }
             m2 / (count - 1) as f64
-        }
+        },
         QueryAggFunction::Median => {
             let mut values: Vec<f64> = points.iter().map(|p| p.value).collect();
             values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -529,14 +529,14 @@ pub fn compute_aggregation_from_ast(
             } else {
                 values[mid]
             }
-        }
+        },
         // Time-based calculations with counter reset detection
         QueryAggFunction::Rate => {
             return compute_rate_with_resets(points, func_name);
-        }
+        },
         QueryAggFunction::Increase => {
             return compute_increase_with_resets(points, func_name);
-        }
+        },
         QueryAggFunction::Delta => {
             // Delta is simple difference (not counter-aware, allows negative)
             if points.len() < 2 {
@@ -545,20 +545,20 @@ pub fn compute_aggregation_from_ast(
             let first = points.first().unwrap();
             let last = points.last().unwrap();
             last.value - first.value
-        }
+        },
         QueryAggFunction::Percentile(p) => {
             // Use t-digest for efficient streaming percentile estimation
             let values: Vec<f64> = points.iter().map(|p| p.value).collect();
             let digest = TDigest::new_with_size(100);
             let digest = digest.merge_unsorted(values);
             digest.estimate_quantile(*p as f64 / 100.0)
-        }
+        },
         QueryAggFunction::CountDistinct => {
             // Approximate distinct count using a simple hash set
             use std::collections::HashSet;
             let distinct: HashSet<u64> = points.iter().map(|p| p.value.to_bits()).collect();
             distinct.len() as f64
-        }
+        },
     };
 
     (func_name, value)

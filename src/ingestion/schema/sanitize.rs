@@ -203,7 +203,7 @@ impl Sanitizer {
                     ',' | ' ' | '\\' => {
                         result.push('\\');
                         result.push(c);
-                    }
+                    },
                     _ => result.push(c),
                 },
                 EscapeContext::TagKey | EscapeContext::TagValue | EscapeContext::FieldKey => {
@@ -211,15 +211,15 @@ impl Sanitizer {
                         ',' | '=' | ' ' | '\\' => {
                             result.push('\\');
                             result.push(c);
-                        }
+                        },
                         _ => result.push(c),
                     }
-                }
+                },
                 EscapeContext::FieldString => match c {
                     '"' | '\\' => {
                         result.push('\\');
                         result.push(c);
-                    }
+                    },
                     _ => result.push(c),
                 },
             }
@@ -239,15 +239,15 @@ impl Sanitizer {
                     let should_unescape = match context {
                         EscapeContext::Measurement => {
                             matches!(next, ',' | ' ' | '\\')
-                        }
+                        },
                         EscapeContext::TagKey
                         | EscapeContext::TagValue
                         | EscapeContext::FieldKey => {
                             matches!(next, ',' | '=' | ' ' | '\\')
-                        }
+                        },
                         EscapeContext::FieldString => {
                             matches!(next, '"' | '\\')
-                        }
+                        },
                     };
 
                     if should_unescape {
@@ -448,7 +448,7 @@ pub fn is_valid_identifier(value: &str) -> bool {
 
     // First character must be letter or underscore
     match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {},
         _ => return false,
     }
 

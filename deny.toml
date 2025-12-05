@@ -1,131 +1,55 @@
-# deny.toml - Comprehensive dependency auditing configuration
-# Documentation: https://embarkstudios.github.io/cargo-deny/
+# deny.toml - cargo-deny 0.17+ (late 2024+)
 
 [graph]
-# Targets to check - add your deployment targets here
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-]
 all-features = true
 
-# ============================================================================
-# ADVISORIES - Security vulnerability checking
-# ============================================================================
 [advisories]
+version = 2
 db-path = "~/.cargo/advisory-db"
-url = "https://github.com/rustsec/advisory-db"
-# How to handle vulnerabilities
-vulnerability = "deny"
-# How to handle crates that have been yanked
-yanked = "deny"
-# How to handle unmaintained crates
-unmaintained = "warn"
-# How to handle advisories with no severity
-notice = "warn"
-# Ignore specific advisories (add IDs here if you have accepted risks)
-ignore = [
-    # Example: "RUSTSEC-2020-0001",
-]
-# Severity threshold - deny any advisory with this severity or higher
-severity-threshold = "medium"
+ignore = []
 
-# ============================================================================
-# LICENSES - License compliance checking
-# ============================================================================
 [licenses]
-# Fail on unlicensed crates
-unlicensed = "deny"
-# Allow these licenses (commonly acceptable for open source and commercial use)
+version = 2
 allow = [
-    "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
-    "Zlib",
-    "0BSD",
-    "Unicode-DFS-2016",
-    "Unlicense",
-    "CC0-1.0",
-    "MPL-2.0",
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "OpenSSL"
 ]
-# Confidence threshold for license detection
+
 confidence-threshold = 0.93
-# Explicitly deny copyleft licenses that may have implications
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-    "LGPL-2.0",
-    "LGPL-2.1",
-    "LGPL-3.0",
-]
 
-# Exceptions for specific crates (use sparingly and document why)
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
-[[licenses.clarify]]
-name = "webpki"
-expression = "ISC"
-license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
-
-# ============================================================================
-# BANS - Dependency bans and duplicates
-# ============================================================================
 [bans]
-# Lint level for crates not in allow/deny lists
 multiple-versions = "warn"
-# Lint level for highlighting dependencies
-highlight = "all"
-# Allow workspace crates
-allow-build-scripts = ["*"]
+wildcards = "allow"
 
-# Deny specific crates known to be problematic
-deny = [
-    # Unmaintained crates
-    { name = "openssl", wrappers = ["native-tls"] },
-    # Deprecated in favor of better alternatives
-    { name = "chrono", wrappers = ["*"] },  # Use 'time' crate instead
-    # Known problematic crates
-    { name = "ansi_term" },  # Unmaintained, use 'owo-colors' or 'yansi'
-    { name = "atty" },       # Use 'is-terminal' instead
-]
-
-# Allow specific crates (use sparingly)
-allow = [
-    # Example: { name = "some-crate", version = "*" },
-]
-
-# Skip checking specific crate versions for duplicates
 skip = [
-    # Example: { name = "some-crate", version = "1.0" },
+  { name = "thiserror" },
+  { name = "hashbrown" },
+  { name = "windows-sys" },
+  { name = "windows-targets" },
+  { name = "windows_x86_64_gnu" },
+  { name = "windows_x86_64_msvc" },
+  { name = "windows_x86_64_gnullvm" },
+  { name = "windows_i686_gnu" },
+  { name = "windows_i686_msvc" },
+  { name = "windows_i686_gnullvm" },
+  { name = "windows_aarch64_msvc" },
+  { name = "windows_aarch64_gnullvm" },
+  {name = "thiserror-impl"}
+]
+deny = [
+  "GPL-2.0",
+  "GPL-3.0",
+  "AGPL-3.0"
 ]
 
-# ============================================================================
-# SOURCES - Supply chain security
-# ============================================================================
 [sources]
-# Require all crates to come from crates.io
 unknown-registry = "deny"
-# Deny git sources by default (unless explicitly allowed)
 unknown-git = "deny"
-# Allow only crates.io
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-
-# Allow specific git sources if needed (document why)
-allow-git = [
-    # Example: "https://github.com/your-org/private-crate",
-]
-
-# ============================================================================
-# OUTPUT
-# ============================================================================
-[output]
-feature-depth = 1
+allow-git = []

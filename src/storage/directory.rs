@@ -220,7 +220,7 @@ impl WriteLock {
                     self.lock_file = Some(file);
                     self.held = true;
                     Ok(())
-                }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Lock already held - record contention
                     crate::metrics::LOCK_WAIT_DURATION
@@ -231,7 +231,7 @@ impl WriteLock {
                         std::io::ErrorKind::WouldBlock,
                         "Write lock is already held by another process",
                     )))
-                }
+                },
                 Err(e) => Err(StorageError::Io(e)),
             }
         };
@@ -250,7 +250,7 @@ impl WriteLock {
                     file.sync_all().await?;
                     self.held = true;
                     Ok(())
-                }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Lock already held - record contention
                     crate::metrics::LOCK_WAIT_DURATION
@@ -261,7 +261,7 @@ impl WriteLock {
                         std::io::ErrorKind::WouldBlock,
                         "Write lock is already held by another process",
                     )))
-                }
+                },
                 Err(e) => Err(StorageError::Io(e)),
             }
         };

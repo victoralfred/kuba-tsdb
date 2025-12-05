@@ -742,25 +742,31 @@ mod tests {
 
     #[test]
     fn test_config_validation_weights() {
-        let mut config = PriorityConfig::default();
-        config.age_weight = 0.5;
-        config.point_count_weight = 0.5;
-        config.series_priority_weight = 0.5; // Sum > 1.0
+        let config = PriorityConfig {
+            age_weight: 0.5,
+            point_count_weight: 0.5,
+            series_priority_weight: 0.5, // Sum > 1.0
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_config_validation_pressure() {
-        let mut config = PriorityConfig::default();
-        config.memory_pressure_threshold = 1.5; // > 1.0
+        let config = PriorityConfig {
+            memory_pressure_threshold: 1.5, // > 1.0
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_config_validation_age_order() {
-        let mut config = PriorityConfig::default();
-        config.high_priority_age = Duration::from_secs(300);
-        config.critical_priority_age = Duration::from_secs(60);
+        let config = PriorityConfig {
+            high_priority_age: Duration::from_secs(300),
+            critical_priority_age: Duration::from_secs(60),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 

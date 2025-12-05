@@ -286,7 +286,7 @@ impl BackpressureController {
             BackpressureStrategy::Reject | BackpressureStrategy::DropNewest => {
                 self.rejections.fetch_add(1, Ordering::Relaxed);
                 true
-            }
+            },
             BackpressureStrategy::Block | BackpressureStrategy::DropOldest => false,
         }
     }

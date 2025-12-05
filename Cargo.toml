@@ -47,7 +47,7 @@ memmap2 = "0.9"
 snap = "1.0"
 
 # Index (optional, enabled via redis-index feature)
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -127,7 +127,7 @@ protobuf = "3.7.2"
 base64 = "0.22.1"
 
 [dev-dependencies]
-criterion = "0.7.0"
+criterion = "0.8.0"
 proptest = "1.0"
 tempfile = "3.0"
 

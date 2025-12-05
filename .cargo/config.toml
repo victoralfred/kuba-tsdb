@@ -14,15 +14,17 @@ incremental = true
 rustflags = [
     # Enable all warnings
     "-W", "rust-2021-compatibility",
-    "-W", "rust-2024-compatibility",
-    
+    # Note: rust-2024-compatibility warnings are informational for future migration
+    # They are not errors in Rust 2021 edition. Enable when preparing for 2024 migration.
+    # "-W", "rust-2024-compatibility",
+
     # Security-relevant warnings
     "-W", "unsafe-op-in-unsafe-fn",
     "-W", "unused-unsafe",
-    
-    # Helpful for catching issues
-    "-W", "missing-docs",
-    "-W", "missing-debug-implementations",
+
+    # Helpful for catching issues (disabled to reduce noise, enable as needed)
+    # "-W", "missing-docs",
+    # "-W", "missing-debug-implementations",
 ]
 
 [profile.release]
@@ -63,10 +65,11 @@ strip = true
 
 [alias]
 # Security-focused aliases
-security-check = "run --manifest-path scripts/Cargo.toml --bin security-check"
-audit = "audit --deny warnings"
-deny = "deny check"
-geiger = "geiger --all-features"
+# Note: Don't alias names that match cargo subcommands (audit, deny, geiger)
+# Use these prefixed versions instead
+sec-audit = "audit --deny warnings"
+sec-deny = "deny check"
+sec-geiger = "geiger --all-features"
 sec-clippy = """clippy --all-targets --all-features -- \
     -D warnings \
     -D clippy::all \

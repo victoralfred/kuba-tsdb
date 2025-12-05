@@ -1151,7 +1151,7 @@ mod tests {
                 assert_eq!(q.time_range.start, 0);
                 assert_eq!(q.time_range.end, 1000);
                 assert_eq!(q.limit, Some(100));
-            }
+            },
             _ => panic!("expected Select query"),
         }
     }
@@ -1176,7 +1176,7 @@ mod tests {
                 assert_eq!(q.selector.measurement, Some("cpu".to_string()));
                 assert!(q.aggregation.window.is_some());
                 assert_eq!(q.aggregation.function, AggregationFunction::Avg);
-            }
+            },
             _ => panic!("expected Aggregate query"),
         }
     }
@@ -1197,7 +1197,7 @@ mod tests {
             Query::Downsample(q) => {
                 assert_eq!(q.target_points, 100);
                 assert_eq!(q.method, DownsampleMethod::Lttb);
-            }
+            },
             _ => panic!("expected Downsample query"),
         }
     }
@@ -1213,7 +1213,7 @@ mod tests {
         match query {
             Query::Latest(q) => {
                 assert_eq!(q.count, 5);
-            }
+            },
             _ => panic!("expected Latest query"),
         }
     }
@@ -1242,7 +1242,7 @@ mod tests {
             TagFilter::Exact(tags) => {
                 assert_eq!(tags.get("host"), Some(&"server01".to_string()));
                 assert_eq!(tags.get("region"), Some(&"us-east".to_string()));
-            }
+            },
             _ => panic!("Expected Exact filter"),
         }
     }
@@ -1296,7 +1296,7 @@ mod tests {
                 assert_eq!(tags.get("dc"), Some(&"us-east".to_string()));
                 // NotEquals should not be in the filter
                 assert!(!tags.contains_key("env"));
-            }
+            },
             _ => panic!("Expected Exact filter"),
         }
 

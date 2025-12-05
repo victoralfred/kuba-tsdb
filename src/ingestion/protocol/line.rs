@@ -217,10 +217,10 @@ impl<'a> ProtocolParser<'a> for LineProtocolParser {
                 Err(e) if matches!(e.kind, ParseErrorKind::EmptyInput) => {
                     // Skip empty lines silently
                     continue;
-                }
+                },
                 Err(e) => {
                     return Err(e.at_line(line_num + 1));
-                }
+                },
             }
         }
 
@@ -317,7 +317,7 @@ impl<'a> LineParser<'a> {
                     if self.peek().is_some() {
                         self.advance();
                     }
-                }
+                },
                 ',' | ' ' => break,
                 _ => self.advance(),
             }
@@ -402,7 +402,7 @@ impl<'a> LineParser<'a> {
                         expected: "comma or space after tag".to_string(),
                     })
                     .at_column(self.position + 1));
-                }
+                },
             }
         }
 
@@ -468,7 +468,7 @@ impl<'a> LineParser<'a> {
                         expected: "comma or space after field".to_string(),
                     })
                     .at_column(self.position + 1));
-                }
+                },
             }
         }
 
@@ -522,7 +522,7 @@ impl<'a> LineParser<'a> {
             // Number (integer, unsigned, or float)
             Some(c) if c == '-' || c == '+' || c == '.' || c.is_ascii_digit() => {
                 self.parse_number_value()
-            }
+            },
             Some(c) => Err(ParseError::new(ParseErrorKind::UnexpectedChar {
                 char: c,
                 expected: "field value".to_string(),
@@ -544,48 +544,48 @@ impl<'a> LineParser<'a> {
                 Some('"') => {
                     self.advance(); // consume closing quote
                     break;
-                }
+                },
                 Some('\\') => {
                     self.advance(); // consume backslash
                     match self.peek() {
                         Some('"') => {
                             value.push('"');
                             self.advance();
-                        }
+                        },
                         Some('\\') => {
                             value.push('\\');
                             self.advance();
-                        }
+                        },
                         Some('n') => {
                             value.push('\n');
                             self.advance();
-                        }
+                        },
                         Some('r') => {
                             value.push('\r');
                             self.advance();
-                        }
+                        },
                         Some('t') => {
                             value.push('\t');
                             self.advance();
-                        }
+                        },
                         Some(c) => {
                             return Err(ParseError::new(ParseErrorKind::InvalidEscape {
                                 sequence: format!("\\{}", c),
                             })
                             .at_column(self.position));
-                        }
+                        },
                         None => {
                             return Err(ParseError::new(ParseErrorKind::UnterminatedString));
-                        }
+                        },
                     }
-                }
+                },
                 Some(c) => {
                     value.push(c);
                     self.advance();
-                }
+                },
                 None => {
                     return Err(ParseError::new(ParseErrorKind::UnterminatedString));
-                }
+                },
             }
         }
 
@@ -670,7 +670,7 @@ impl<'a> LineParser<'a> {
                         })
                         .at_column(start + 1)
                     })
-            }
+            },
             Some('u') => {
                 self.advance();
                 // Unsigned integer
@@ -684,7 +684,7 @@ impl<'a> LineParser<'a> {
                         })
                         .at_column(start + 1)
                     })
-            }
+            },
             _ => {
                 // Float (default)
                 num_str.parse::<f64>().map(FieldValue::Float).map_err(|_| {
@@ -694,7 +694,7 @@ impl<'a> LineParser<'a> {
                     })
                     .at_column(start + 1)
                 })
-            }
+            },
         }
     }
 
@@ -736,7 +736,7 @@ fn unescape_identifier(s: &str) -> String {
             match chars.peek() {
                 Some(&',') | Some(&'=') | Some(&' ') | Some(&'\\') => {
                     result.push(chars.next().unwrap());
-                }
+                },
                 _ => result.push(c),
             }
         } else {

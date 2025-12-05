@@ -407,7 +407,7 @@ impl TcpListener {
                 Ok(Ok(0)) => {
                     // EOF - client closed connection
                     return Err(NetworkError::ConnectionClosed { peer: peer_addr });
-                }
+                },
                 Ok(Ok(bytes_read)) => {
                     // Check rate limit before processing
                     // Use bytes read as "points" for rate limiting
@@ -454,7 +454,7 @@ impl TcpListener {
                                                 data_points = data_point_count,
                                                 "Ingested points to pipeline"
                                             );
-                                        }
+                                        },
                                         Err(e) => {
                                             warn!(
                                                 peer = %peer_addr,
@@ -463,7 +463,7 @@ impl TcpListener {
                                             );
                                             // Still acknowledge - data was parsed successfully
                                             // but pipeline had an issue (backpressure, etc.)
-                                        }
+                                        },
                                     }
                                 }
                             } else {
@@ -482,7 +482,7 @@ impl TcpListener {
                             // Send success acknowledgment with point count
                             let response = format!("OK {} points\n", point_count);
                             let _ = writer.write_all(response.as_bytes()).await;
-                        }
+                        },
                         Err(e) => {
                             warn!(
                                 peer = %peer_addr,
@@ -491,20 +491,20 @@ impl TcpListener {
                             );
                             let response = format!("ERR parse error: {}\n", e);
                             let _ = writer.write_all(response.as_bytes()).await;
-                        }
+                        },
                     }
-                }
+                },
                 Ok(Err(e)) => {
                     // Read error
                     return Err(NetworkError::Io(e));
-                }
+                },
                 Err(_) => {
                     // Timeout - idle connection
                     debug!(peer = %peer_addr, "Connection idle timeout");
                     return Err(NetworkError::Timeout {
                         duration_ms: idle_timeout.as_millis() as u64,
                     });
-                }
+                },
             }
         }
     }

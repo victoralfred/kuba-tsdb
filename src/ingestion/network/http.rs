@@ -344,7 +344,7 @@ impl HttpListener {
                 Err(e) => {
                     error!(error = %e, "Accept error");
                     continue;
-                }
+                },
             };
 
             let tls = tls_acceptor.clone();
@@ -373,10 +373,10 @@ impl HttpListener {
                         {
                             debug!(peer = %peer_addr, error = %e, "Connection error");
                         }
-                    }
+                    },
                     Err(e) => {
                         warn!(peer = %peer_addr, error = %e, "TLS handshake failed");
-                    }
+                    },
                 }
             });
         }
@@ -463,7 +463,7 @@ async fn handle_write(
                                 data_points = data_point_count,
                                 "Ingested points to pipeline"
                             );
-                        }
+                        },
                         Err(e) => {
                             warn!(
                                 protocol = %protocol,
@@ -476,17 +476,17 @@ async fn handle_write(
                                 format!("Ingestion failed: {}\n", e),
                             )
                                 .into_response();
-                        }
+                        },
                     }
                 }
             }
 
             (StatusCode::NO_CONTENT, "").into_response()
-        }
+        },
         Err(e) => {
             warn!(protocol = %protocol, error = %e, "Parse error");
             (StatusCode::BAD_REQUEST, format!("Parse error: {}\n", e)).into_response()
-        }
+        },
     }
 }
 

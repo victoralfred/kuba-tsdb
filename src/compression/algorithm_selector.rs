@@ -532,12 +532,8 @@ impl AlgorithmStats {
         self.ratio_sum.fetch_add(ratio, Ordering::Relaxed);
 
         // Update min/max atomically (may have races but acceptable for stats)
-        let _ = self
-            .min_ratio
-            .fetch_min(ratio, Ordering::Relaxed);
-        let _ = self
-            .max_ratio
-            .fetch_max(ratio, Ordering::Relaxed);
+        let _ = self.min_ratio.fetch_min(ratio, Ordering::Relaxed);
+        let _ = self.max_ratio.fetch_max(ratio, Ordering::Relaxed);
     }
 
     /// Get average compression ratio
@@ -632,7 +628,8 @@ struct CompressionSample {
     /// Achieved compression ratio
     ratio: f64,
 
-    /// Compression duration
+    /// Compression duration (kept for potential latency-based selection)
+    #[allow(dead_code)]
     duration: Duration,
 
     /// When this sample was recorded
@@ -738,15 +735,15 @@ impl AlgorithmSelector {
 
     /// Select by comparing suitability scores and historical performance
     fn select_by_score(&self, characteristics: &ChunkCharacteristics) -> CompressionType {
-        let ahpac_score =
-            characteristics.ahpac_suitability_score() * (1.0 - self.config.history_weight)
-                + self.historical_score(CompressionType::Ahpac, characteristics)
-                    * self.config.history_weight;
+        let ahpac_score = characteristics.ahpac_suitability_score()
+            * (1.0 - self.config.history_weight)
+            + self.historical_score(CompressionType::Ahpac, characteristics)
+                * self.config.history_weight;
 
-        let snappy_score =
-            characteristics.snappy_suitability_score() * (1.0 - self.config.history_weight)
-                + self.historical_score(CompressionType::Snappy, characteristics)
-                    * self.config.history_weight;
+        let snappy_score = characteristics.snappy_suitability_score()
+            * (1.0 - self.config.history_weight)
+            + self.historical_score(CompressionType::Snappy, characteristics)
+                * self.config.history_weight;
 
         let lz4_score = characteristics.lz4_suitability_score()
             * (1.0 - self.config.history_weight)
@@ -779,7 +776,8 @@ impl AlgorithmSelector {
         let similar: Vec<&CompressionSample> = samples
             .iter()
             .filter(|s| {
-                s.algorithm == algorithm && Self::characteristics_similar(&s.characteristics, characteristics)
+                s.algorithm == algorithm
+                    && Self::characteristics_similar(&s.characteristics, characteristics)
             })
             .collect();
 
@@ -951,9 +949,8 @@ impl CompressionBenchmark {
     }
 
     /// Benchmark no compression (baseline)
-    fn benchmark_none(points: &[DataPoint]) -> BenchmarkResult {
-        let size = points.len() * 16;
-
+    fn benchmark_none(_points: &[DataPoint]) -> BenchmarkResult {
+        // No compression: ratio is 1.0, no time spent compressing
         BenchmarkResult {
             ratio: 1.0,
             compress_time: Duration::ZERO,
@@ -986,7 +983,9 @@ impl CompressionBenchmark {
 
         // Compress
         let start = Instant::now();
-        let compressed = snap::raw::Encoder::new().compress_vec(&input).unwrap_or_default();
+        let compressed = snap::raw::Encoder::new()
+            .compress_vec(&input)
+            .unwrap_or_default();
         let compress_time = start.elapsed();
 
         // Decompress
@@ -1110,18 +1109,25 @@ mod tests {
 
     #[test]
     fn test_config_validation_entropy_threshold() {
-        let mut config = SelectionConfig::default();
-        config.high_entropy_threshold = 1.5;
+        let config = SelectionConfig {
+            high_entropy_threshold: 1.5,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.high_entropy_threshold = -0.1;
+        let config = SelectionConfig {
+            high_entropy_threshold: -0.1,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_config_validation_history_weight() {
-        let mut config = SelectionConfig::default();
-        config.history_weight = 1.5;
+        let config = SelectionConfig {
+            history_weight: 1.5,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
@@ -1196,10 +1202,14 @@ mod tests {
         let irregular_chars = ChunkCharacteristics::analyze(&create_high_entropy_points(100));
 
         // Regular data should suit AHPAC better
-        assert!(regular_chars.ahpac_suitability_score() > irregular_chars.ahpac_suitability_score());
+        assert!(
+            regular_chars.ahpac_suitability_score() > irregular_chars.ahpac_suitability_score()
+        );
 
         // High entropy data should suit Snappy better
-        assert!(irregular_chars.snappy_suitability_score() > regular_chars.snappy_suitability_score());
+        assert!(
+            irregular_chars.snappy_suitability_score() > regular_chars.snappy_suitability_score()
+        );
     }
 
     // Selector tests

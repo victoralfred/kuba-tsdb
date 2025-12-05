@@ -54,11 +54,11 @@ pub fn sanitize_url(url: &str) -> String {
                 let _ = parsed.set_username("***");
             }
             parsed.to_string()
-        }
+        },
         Err(_) => {
             // If not a valid URL, return a safe placeholder
             "[invalid-url]".to_string()
-        }
+        },
     }
 }
 

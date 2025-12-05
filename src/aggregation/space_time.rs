@@ -426,7 +426,7 @@ impl AggregateState {
                 } else {
                     return None;
                 }
-            }
+            },
             AggregateFunction::Increase => {
                 // Increase = last - first (for counters)
                 if let (Some((_, first_val)), Some((_, last_val))) = (self.first, self.last) {
@@ -439,19 +439,19 @@ impl AggregateState {
                 } else {
                     return None;
                 }
-            }
+            },
             AggregateFunction::StdDev => {
                 if self.count < 2 {
                     return Some(0.0);
                 }
                 (self.m2 / (self.count - 1) as f64).sqrt()
-            }
+            },
             AggregateFunction::Variance => {
                 if self.count < 2 {
                     return Some(0.0);
                 }
                 self.m2 / (self.count - 1) as f64
-            }
+            },
             AggregateFunction::Quantile(percentile) => {
                 let values = self.values.as_ref()?;
                 if values.is_empty() {
@@ -463,7 +463,7 @@ impl AggregateState {
 
                 let idx = (percentile as f64 / 100.0 * (sorted.len() - 1) as f64) as usize;
                 sorted.get(idx).copied()?
-            }
+            },
         })
     }
 }
@@ -591,20 +591,20 @@ impl std::fmt::Display for WindowIteratorError {
                     "Start timestamp {} is outside valid range (2000-2100)",
                     ts
                 )
-            }
+            },
             WindowIteratorError::InvalidEndTimestamp(ts) => {
                 write!(f, "End timestamp {} is outside valid range (2000-2100)", ts)
-            }
+            },
             WindowIteratorError::StartAfterEnd { start, end } => {
                 write!(
                     f,
                     "Start timestamp {} is after end timestamp {}",
                     start, end
                 )
-            }
+            },
             WindowIteratorError::InvalidWindowSize => {
                 write!(f, "Window size must be positive")
-            }
+            },
         }
     }
 }

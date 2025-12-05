@@ -253,7 +253,7 @@ impl Compressor for AhpacCompressor {
                 } else {
                     1.0
                 }
-            }
+            },
             Err(_) => 1.0, // Fallback to no compression estimate
         }
     }
@@ -284,7 +284,7 @@ fn convert_ahpac_error(err: AhpacError) -> CompressionError {
         )),
         AhpacError::UnsupportedCodec(id) => {
             CompressionError::UnsupportedAlgorithm(format!("Unsupported codec ID: {}", id))
-        }
+        },
     }
 }
 

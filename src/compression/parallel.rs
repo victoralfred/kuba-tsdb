@@ -284,7 +284,7 @@ impl ParallelCompressor {
                 Ok(compression_result) => results.push(compression_result),
                 Err(e) => {
                     warn!(error = %e, "Compression task panicked");
-                }
+                },
             }
         }
 

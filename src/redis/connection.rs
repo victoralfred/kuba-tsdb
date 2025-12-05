@@ -500,7 +500,7 @@ impl RedisPool {
                 guard.clone().ok_or_else(|| {
                     IndexError::ConnectionError("No connection available".to_string())
                 })?
-            }
+            },
         };
 
         Ok(PooledConnection {
@@ -538,7 +538,7 @@ impl RedisPool {
                 Ok(Ok(value)) => {
                     self.metrics.record_command(start.elapsed());
                     return Ok(value);
-                }
+                },
                 Ok(Err(e)) => {
                     self.metrics.record_command_failure();
 
@@ -568,7 +568,7 @@ impl RedisPool {
                         &self.config.url,
                         &e,
                     )));
-                }
+                },
                 Err(_) => {
                     self.metrics.record_command_failure();
 
@@ -586,7 +586,7 @@ impl RedisPool {
                     }
 
                     return Err(IndexError::ConnectionError("Command timeout".to_string()));
-                }
+                },
             }
         }
     }
@@ -612,7 +612,7 @@ impl RedisPool {
                 } else {
                     HealthStatus::Healthy
                 }
-            }
+            },
             Err(_) => HealthStatus::Unhealthy,
         };
 

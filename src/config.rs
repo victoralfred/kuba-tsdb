@@ -146,7 +146,7 @@ impl ApplicationConfig {
                     e
                 );
                 Self::default()
-            }
+            },
         }
     }
 

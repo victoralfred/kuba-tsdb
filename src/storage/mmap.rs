@@ -520,14 +520,14 @@ impl MmapChunk {
                     .decompress(&block)
                     .await
                     .map_err(|e| format!("AHPAC decompression failed: {}", e))
-            }
+            },
             _ => {
                 let compressor = KubaCompressor::new();
                 compressor
                     .decompress(&block)
                     .await
                     .map_err(|e| format!("Kuba decompression failed: {}", e))
-            }
+            },
         }
     }
 

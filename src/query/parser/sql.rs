@@ -58,7 +58,7 @@ pub fn parse_sql(input: &str) -> QueryResult<Query> {
                     remaining.trim()
                 )))
             }
-        }
+        },
         Err(e) => Err(QueryError::parse(format!("Parse error: {:?}", e))),
     }
 }
@@ -689,7 +689,7 @@ mod tests {
         match query {
             Query::Select(q) => {
                 assert!(q.selector.measurement.as_ref().unwrap() == "cpu");
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -707,12 +707,12 @@ mod tests {
                     TagMatcher::Equals { key, value } => {
                         assert_eq!(key, "host");
                         assert_eq!(value, "server01");
-                    }
+                    },
                     _ => panic!("Expected Equals matcher"),
                 }
                 // Value predicates should be empty (no value > X conditions)
                 assert!(q.predicates.is_empty());
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -724,7 +724,7 @@ mod tests {
         match result.unwrap() {
             Query::Select(q) => {
                 assert_eq!(q.selector.tag_filters.len(), 2);
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -741,7 +741,7 @@ mod tests {
                 // Value predicate in predicates
                 assert_eq!(q.predicates.len(), 1);
                 assert!(matches!(q.predicates[0].op, PredicateOp::Gt));
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -758,10 +758,10 @@ mod tests {
                     TagMatcher::Equals { key, value } => {
                         assert_eq!(key, "host");
                         assert_eq!(value, "server01");
-                    }
+                    },
                     _ => panic!("Expected Equals matcher"),
                 }
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -779,7 +779,7 @@ mod tests {
         match result.unwrap() {
             Query::Aggregate(q) => {
                 assert!(matches!(q.aggregation.function, AggregationFunction::Avg));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -793,7 +793,7 @@ mod tests {
                 assert!(q.aggregation.window.is_some());
                 let window = q.aggregation.window.unwrap();
                 assert_eq!(window.duration, Duration::from_secs(300));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -806,7 +806,7 @@ mod tests {
             Query::Downsample(q) => {
                 assert_eq!(q.target_points, 1000);
                 assert!(matches!(q.method, DownsampleMethod::Lttb));
-            }
+            },
             _ => panic!("Expected Downsample query"),
         }
     }
@@ -819,7 +819,7 @@ mod tests {
             Query::Select(q) => {
                 assert_eq!(q.limit, Some(100));
                 assert_eq!(q.offset, Some(50));
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -829,7 +829,7 @@ mod tests {
         let result = parse_sql("EXPLAIN SELECT * FROM cpu");
         assert!(result.is_ok());
         match result.unwrap() {
-            Query::Explain(_) => {}
+            Query::Explain(_) => {},
             _ => panic!("Expected Explain query"),
         }
     }
@@ -843,7 +843,7 @@ mod tests {
                 assert!(!q.predicates.is_empty());
                 let pred = &q.predicates[0];
                 assert!(matches!(pred.op, PredicateOp::Gt));
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -859,7 +859,7 @@ mod tests {
                     q.order_by.unwrap().direction,
                     OrderDirection::Desc
                 ));
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }

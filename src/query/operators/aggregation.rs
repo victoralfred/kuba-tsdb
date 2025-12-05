@@ -117,7 +117,7 @@ impl AggregationState {
             },
             AggregationFunction::CountDistinct => {
                 AggregationState::Distinct(std::collections::HashSet::new())
-            }
+            },
         }
     }
 
@@ -126,34 +126,34 @@ impl AggregationState {
         match self {
             AggregationState::Count(count) => {
                 *count += values.len() as u64;
-            }
+            },
             AggregationState::Sum(kahan) => {
                 kahan.add_batch(values);
-            }
+            },
             AggregationState::Min(min) => {
                 if let Some(batch_min) = simd::min_f64(values) {
                     *min = Some(min.map(|m| m.min(batch_min)).unwrap_or(batch_min));
                 }
-            }
+            },
             AggregationState::Max(max) => {
                 if let Some(batch_max) = simd::max_f64(values) {
                     *max = Some(max.map(|m| m.max(batch_max)).unwrap_or(batch_max));
                 }
-            }
+            },
             AggregationState::Stats(welford) => {
                 welford.add_batch(values);
-            }
+            },
             AggregationState::First(first) => {
                 if first.is_none() && !values.is_empty() {
                     *first = Some((timestamps[0], values[0]));
                 }
-            }
+            },
             AggregationState::Last(last) => {
                 if !values.is_empty() {
                     let idx = values.len() - 1;
                     *last = Some((timestamps[idx], values[idx]));
                 }
-            }
+            },
             AggregationState::Rate { first, last } => {
                 if first.is_none() && !values.is_empty() {
                     *first = Some((timestamps[0], values[0]));
@@ -162,13 +162,13 @@ impl AggregationState {
                     let idx = values.len() - 1;
                     *last = Some((timestamps[idx], values[idx]));
                 }
-            }
+            },
             AggregationState::Distinct(set) => {
                 // Hash values for distinct counting
                 for &v in values {
                     set.insert(v.to_bits());
                 }
-            }
+            },
             AggregationState::PercentileTDigest { digest, .. } => {
                 // Use t-digest for streaming percentile estimation
                 // Filter NaN values before adding to digest
@@ -178,12 +178,12 @@ impl AggregationState {
                     // Merge new values into the digest
                     *digest = digest.merge_unsorted(valid_values);
                 }
-            }
+            },
             AggregationState::PercentileExact { values: vals, .. } => {
                 // Collect all values (will be sorted when finalizing)
                 // Filter NaN values
                 vals.extend(values.iter().filter(|v| !v.is_nan()).copied());
-            }
+            },
         }
     }
 
@@ -197,10 +197,10 @@ impl AggregationState {
             (AggregationState::Stats(welford), AggregationFunction::Avg) => welford.mean(),
             (AggregationState::Stats(welford), AggregationFunction::StdDev) => {
                 welford.stddev_sample()
-            }
+            },
             (AggregationState::Stats(welford), AggregationFunction::Variance) => {
                 welford.variance_sample()
-            }
+            },
             (AggregationState::First(first), _) => first.map(|(_, v)| v).unwrap_or(f64::NAN),
             (AggregationState::Last(last), _) => last.map(|(_, v)| v).unwrap_or(f64::NAN),
             (AggregationState::Rate { first, last }, AggregationFunction::Rate) => {
@@ -214,24 +214,24 @@ impl AggregationState {
                         }
                         let time_delta_secs = time_delta_nanos as f64 / 1_000_000_000.0;
                         (v2 - v1) / time_delta_secs
-                    }
+                    },
                     _ => f64::NAN,
                 }
-            }
+            },
             (AggregationState::Rate { first, last }, AggregationFunction::Increase) => {
                 // Increase = last_value - first_value (for counters)
                 match (first, last) {
                     (Some((_, v1)), Some((_, v2))) => v2 - v1,
                     _ => f64::NAN,
                 }
-            }
+            },
             (AggregationState::Rate { first, last }, AggregationFunction::Delta) => {
                 // Delta = last_value - first_value (for gauges, can be negative)
                 match (first, last) {
                     (Some((_, v1)), Some((_, v2))) => v2 - v1,
                     _ => f64::NAN,
                 }
-            }
+            },
             (AggregationState::Distinct(set), _) => set.len() as f64,
             (AggregationState::PercentileTDigest { target, digest }, _) => {
                 // Use t-digest for streaming percentile estimation
@@ -240,7 +240,7 @@ impl AggregationState {
                     return f64::NAN;
                 }
                 digest.estimate_quantile(*target as f64 / 100.0)
-            }
+            },
             (AggregationState::PercentileExact { target, values }, _) => {
                 // Exact percentile calculation for small datasets
                 // Filter out NaN values before calculation (EDGE-004)
@@ -267,7 +267,7 @@ impl AggregationState {
                     a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 *percentile_value
-            }
+            },
             _ => f64::NAN,
         }
     }
@@ -277,27 +277,27 @@ impl AggregationState {
         match (self, other) {
             (AggregationState::Count(a), AggregationState::Count(b)) => {
                 *a += b;
-            }
+            },
             (AggregationState::Sum(a), AggregationState::Sum(b)) => {
                 a.merge(b);
-            }
+            },
             (AggregationState::Min(a), AggregationState::Min(b)) => {
                 *a = match (*a, *b) {
                     (Some(va), Some(vb)) => Some(va.min(vb)),
                     (Some(v), None) | (None, Some(v)) => Some(v),
                     (None, None) => None,
                 };
-            }
+            },
             (AggregationState::Max(a), AggregationState::Max(b)) => {
                 *a = match (*a, *b) {
                     (Some(va), Some(vb)) => Some(va.max(vb)),
                     (Some(v), None) | (None, Some(v)) => Some(v),
                     (None, None) => None,
                 };
-            }
+            },
             (AggregationState::Stats(a), AggregationState::Stats(b)) => {
                 a.merge(b);
-            }
+            },
             (AggregationState::First(a), AggregationState::First(b)) => {
                 // Keep the earlier timestamp
                 *a = match (*a, *b) {
@@ -307,11 +307,11 @@ impl AggregationState {
                         } else {
                             Some((t2, v2))
                         }
-                    }
+                    },
                     (Some(v), None) | (None, Some(v)) => Some(v),
                     (None, None) => None,
                 };
-            }
+            },
             (AggregationState::Last(a), AggregationState::Last(b)) => {
                 // Keep the later timestamp
                 *a = match (*a, *b) {
@@ -321,29 +321,29 @@ impl AggregationState {
                         } else {
                             Some((t2, v2))
                         }
-                    }
+                    },
                     (Some(v), None) | (None, Some(v)) => Some(v),
                     (None, None) => None,
                 };
-            }
+            },
             (AggregationState::Distinct(a), AggregationState::Distinct(b)) => {
                 a.extend(b.iter());
-            }
+            },
             (
                 AggregationState::PercentileTDigest { digest: a, .. },
                 AggregationState::PercentileTDigest { digest: b, .. },
             ) => {
                 // T-digest supports efficient merging for parallel aggregation
                 *a = TDigest::merge_digests(vec![a.clone(), b.clone()]);
-            }
+            },
             (
                 AggregationState::PercentileExact { values: a, .. },
                 AggregationState::PercentileExact { values: b, .. },
             ) => {
                 // For exact percentile, concatenate the values
                 a.extend_from_slice(b);
-            }
-            _ => {} // Incompatible states - no-op
+            },
+            _ => {}, // Incompatible states - no-op
         }
     }
 }

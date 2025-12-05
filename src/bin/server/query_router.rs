@@ -101,11 +101,11 @@ pub async fn execute_query_with_cache(
         "sql" => {
             let q = parse_sql(query_str).map_err(|e| format!("SQL parse error: {}", e))?;
             (q, QueryLanguage::Sql)
-        }
+        },
         "promql" => {
             let q = parse_promql(query_str).map_err(|e| format!("PromQL parse error: {}", e))?;
             (q, QueryLanguage::PromQL)
-        }
+        },
         _ => {
             // Auto-detect based on query content
             let trimmed = query_str.trim().to_uppercase();
@@ -117,7 +117,7 @@ pub async fn execute_query_with_cache(
                     parse_promql(query_str).map_err(|e| format!("PromQL parse error: {}", e))?;
                 (q, QueryLanguage::PromQL)
             }
-        }
+        },
     };
 
     // Check cache for SELECT queries
@@ -141,7 +141,7 @@ pub async fn execute_query_with_cache(
             }
 
             Ok((lang, qtype, points, None, series_data, None))
-        }
+        },
         ParsedQuery::Aggregate(q) => {
             let (lang, qtype, points, agg_result) = execute_aggregate(db, q.clone(), lang).await?;
 
@@ -154,7 +154,7 @@ pub async fn execute_query_with_cache(
             }
 
             Ok((lang, qtype, points, Some(agg_result), None, None))
-        }
+        },
         ParsedQuery::Downsample(q) => {
             let (lang, qtype, points) = execute_downsample(db, q.clone(), lang).await?;
 
@@ -166,7 +166,7 @@ pub async fn execute_query_with_cache(
             }
 
             Ok((lang, qtype, points, None, None, None))
-        }
+        },
         ParsedQuery::Latest(q) => {
             let (lang, qtype, points) = execute_latest(db, q.clone(), lang).await?;
 
@@ -178,7 +178,7 @@ pub async fn execute_query_with_cache(
             }
 
             Ok((lang, qtype, points, None, None, None))
-        }
+        },
         ParsedQuery::Explain(inner) => {
             let explain_result = generate_explain_plan(inner);
             Ok((
@@ -189,7 +189,7 @@ pub async fn execute_query_with_cache(
                 None,
                 Some(explain_result),
             ))
-        }
+        },
         ParsedQuery::Stream(_) => Err(
             "Stream queries are not supported via HTTP. Use WebSocket for streaming.".to_string(),
         ),
@@ -295,7 +295,7 @@ fn convert_cached_result(
                 Some(series_data),
                 None,
             ))
-        }
+        },
         ResultData::Scalar(val) => Ok((
             lang,
             "scalar".to_string(),
@@ -334,7 +334,7 @@ async fn execute_select(
             } else {
                 return Err("No series_id or measurement specified in query".to_string());
             }
-        }
+        },
     };
 
     if series_ids.is_empty() {
@@ -383,10 +383,10 @@ async fn execute_select(
                 });
 
                 all_points.extend(points);
-            }
+            },
             Err(e) => {
                 tracing::warn!("Error querying series {}: {}", series_id, e);
-            }
+            },
         }
     }
 
@@ -433,7 +433,7 @@ async fn execute_aggregate(
             } else {
                 return Err("No series_id or measurement specified".to_string());
             }
-        }
+        },
     };
 
     if series_ids.is_empty() {
@@ -549,7 +549,7 @@ async fn execute_aggregate(
             match q.aggregation.function {
                 QueryAggFunction::Sum | QueryAggFunction::Count => {
                     grouped_results.iter().map(|g| g.value).sum()
-                }
+                },
                 _ => {
                     let mut all_points: Vec<DataPoint> = Vec::new();
                     for series_id in &series_ids {
@@ -561,7 +561,7 @@ async fn execute_aggregate(
                     let (_, val) =
                         compute_aggregation_from_ast(&q.aggregation.function, &all_points);
                     val
-                }
+                },
             }
         };
 
@@ -672,7 +672,7 @@ async fn execute_downsample(
             } else {
                 return Err("No series_id or measurement specified".to_string());
             }
-        }
+        },
     };
 
     if series_ids.is_empty() {
@@ -993,7 +993,7 @@ async fn execute_latest(
             } else {
                 return Err("No series_id or measurement specified".to_string());
             }
-        }
+        },
     };
 
     if series_ids.is_empty() {
@@ -1116,7 +1116,7 @@ fn generate_query_description(query: &ParsedQuery) -> String {
                  Points are sorted by timestamp in ascending order.",
                 metric, tag_info, limit_info
             )
-        }
+        },
         ParsedQuery::Aggregate(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("unknown");
             let func_name = format!("{:?}", q.aggregation.function).to_lowercase();
@@ -1148,7 +1148,7 @@ fn generate_query_description(query: &ParsedQuery) -> String {
                     ""
                 }
             )
-        }
+        },
         ParsedQuery::Downsample(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("unknown");
             let method = format!("{:?}", q.method);
@@ -1161,7 +1161,7 @@ fn generate_query_description(query: &ParsedQuery) -> String {
                  Useful for rendering charts with limited pixel resolution.",
                 metric, q.target_points, method
             )
-        }
+        },
         ParsedQuery::Latest(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("unknown");
 
@@ -1171,18 +1171,18 @@ fn generate_query_description(query: &ParsedQuery) -> String {
                  avoiding full time range scan.",
                 q.count, metric
             )
-        }
+        },
         ParsedQuery::Stream(_) => {
             "STREAM query that creates a continuous subscription to new data. \
              Not executable via HTTP - requires WebSocket connection."
                 .to_string()
-        }
+        },
         ParsedQuery::Explain(inner) => {
             format!(
                 "EXPLAIN query that shows execution plan for: {}",
                 generate_query_description(inner)
             )
-        }
+        },
     }
 }
 
@@ -1246,7 +1246,7 @@ fn generate_execution_steps(query: &ParsedQuery) -> Vec<ExecutionStep> {
             }
 
             steps
-        }
+        },
         ParsedQuery::Aggregate(q) => {
             let mut steps = vec![];
             let metric = q.selector.measurement.as_deref().unwrap_or("metric");
@@ -1330,7 +1330,7 @@ fn generate_execution_steps(query: &ParsedQuery) -> Vec<ExecutionStep> {
             });
 
             steps
-        }
+        },
         ParsedQuery::Downsample(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("metric");
             let method = format!("{:?}", q.method);
@@ -1370,7 +1370,7 @@ fn generate_execution_steps(query: &ParsedQuery) -> Vec<ExecutionStep> {
                     output: format!("Vec<DataPoint> (max {} points)", q.target_points),
                 },
             ]
-        }
+        },
         ParsedQuery::Latest(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("metric");
 
@@ -1394,7 +1394,7 @@ fn generate_execution_steps(query: &ParsedQuery) -> Vec<ExecutionStep> {
                     output: format!("Vec<DataPoint> (max {} points)", q.count),
                 },
             ]
-        }
+        },
         ParsedQuery::Explain(inner) => generate_execution_steps(inner),
         ParsedQuery::Stream(_) => vec![ExecutionStep {
             step: 1,
@@ -1428,7 +1428,7 @@ fn generate_logical_plan_string(query: &ParsedQuery) -> String {
             }
 
             plan
-        }
+        },
         ParsedQuery::Aggregate(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("*");
             let func = format!("{:?}", q.aggregation.function);
@@ -1453,7 +1453,7 @@ fn generate_logical_plan_string(query: &ParsedQuery) -> String {
                 "Aggregate(function={}{}{})\n  {}",
                 func, window_info, group_info, scan
             )
-        }
+        },
         ParsedQuery::Downsample(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("*");
             let method = format!("{:?}", q.method);
@@ -1463,7 +1463,7 @@ fn generate_logical_plan_string(query: &ParsedQuery) -> String {
                 "Downsample(method={}, target={})\n  Sort(timestamp ASC)\n    Scan(selector={}, time_range={})",
                 method, q.target_points, metric, time_range
             )
-        }
+        },
         ParsedQuery::Latest(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("*");
 
@@ -1471,12 +1471,12 @@ fn generate_logical_plan_string(query: &ParsedQuery) -> String {
                 "Latest(count={})\n  ReverseScan(selector={}, from=NOW)",
                 q.count, metric
             )
-        }
+        },
         ParsedQuery::Explain(inner) => generate_logical_plan_string(inner),
         ParsedQuery::Stream(q) => {
             let metric = q.selector.measurement.as_deref().unwrap_or("*");
             format!("Stream(selector={})", metric)
-        }
+        },
     }
 }
 
@@ -1492,7 +1492,7 @@ fn estimate_query_cost(query: &ParsedQuery) -> CostEstimateInfo {
             // Chunks are typically 2 hours each
             let chunks = ((time_span_ms as f64) / 7_200_000.0).ceil() as u64;
             (estimated_points.min(10000), estimated_bytes, chunks.max(1))
-        }
+        },
         ParsedQuery::Aggregate(q) => {
             let time_span_ms = q.time_range.end - q.time_range.start;
             let estimated_points = (time_span_ms / 1000).max(1) as u64;
@@ -1503,7 +1503,7 @@ fn estimate_query_cost(query: &ParsedQuery) -> CostEstimateInfo {
                 estimated_points * 16,
                 chunks.max(1),
             )
-        }
+        },
         ParsedQuery::Downsample(q) => {
             let time_span_ms = q.time_range.end - q.time_range.start;
             let estimated_points = (time_span_ms / 1000).max(1) as u64;
@@ -1514,11 +1514,11 @@ fn estimate_query_cost(query: &ParsedQuery) -> CostEstimateInfo {
                 estimated_points * 16,
                 chunks.max(1),
             )
-        }
+        },
         ParsedQuery::Latest(_) => {
             // Latest is optimized - scans from most recent chunk
             (10, 160, 1)
-        }
+        },
         ParsedQuery::Explain(inner) => return estimate_query_cost(inner),
         ParsedQuery::Stream(_) => (0, 0, 0),
     };

@@ -239,7 +239,7 @@ fn compute_aggregation(function: &str, points: &[kuba_tsdb::types::DataPoint]) -
                 sum = t;
             }
             Some(sum)
-        }
+        },
         "min" => points
             .iter()
             .map(|p| p.value)
@@ -257,7 +257,7 @@ fn compute_aggregation(function: &str, points: &[kuba_tsdb::types::DataPoint]) -
                 mean += delta / count as f64;
             }
             Some(mean)
-        }
+        },
         "first" => Some(points[0].value),
         "last" => Some(points[points.len() - 1].value),
         "stddev" => {
@@ -275,7 +275,7 @@ fn compute_aggregation(function: &str, points: &[kuba_tsdb::types::DataPoint]) -
                 m2 += delta * delta2;
             }
             Some((m2 / (count - 1) as f64).sqrt())
-        }
+        },
         "variance" => {
             if points.len() < 2 {
                 return Some(0.0);
@@ -291,7 +291,7 @@ fn compute_aggregation(function: &str, points: &[kuba_tsdb::types::DataPoint]) -
                 m2 += delta * delta2;
             }
             Some(m2 / (count - 1) as f64)
-        }
+        },
         _ => None,
     }
 }
@@ -392,7 +392,7 @@ async fn write_points(
                     eprintln!("Series index registration: {}", e);
                 }
                 id
-            }
+            },
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -404,7 +404,7 @@ async fn write_points(
                         error: Some("Must provide either 'series_id' or 'metric' name".to_string()),
                     }),
                 );
-            }
+            },
         },
     };
 
@@ -499,7 +499,7 @@ async fn query_points(
                         error: Some(format!("Invalid series_id: {}", id_str)),
                     }),
                 );
-            }
+            },
         },
         None => match &params.metric {
             Some(metric) => {
@@ -508,7 +508,7 @@ async fn query_points(
                     None => HashMap::new(),
                 };
                 generate_series_id(metric, &tags)
-            }
+            },
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -520,7 +520,7 @@ async fn query_points(
                         error: Some("Must provide either 'series_id' or 'metric' name".to_string()),
                     }),
                 );
-            }
+            },
         },
     };
 
@@ -577,7 +577,7 @@ async fn query_points(
                     }),
                 )
             }
-        }
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(QueryResponse {
@@ -792,7 +792,7 @@ async fn json_request(
         Some(json) => {
             builder = builder.header("Content-Type", "application/json");
             Body::from(serde_json::to_vec(&json).unwrap())
-        }
+        },
         None => Body::empty(),
     };
 

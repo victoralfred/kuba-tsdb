@@ -54,11 +54,11 @@ impl WalRecovery {
                 Ok(points) => {
                     debug!("Recovered {} points from segment {:?}", points.len(), path);
                     all_points.extend(points);
-                }
+                },
                 Err(e) => {
                     warn!("Error recovering segment {:?}: {}", path, e);
                     // Continue with other segments
-                }
+                },
             }
         }
 
@@ -100,16 +100,16 @@ impl WalRecovery {
                         Ok(pts) => points.extend(pts),
                         Err(e) => {
                             warn!("Failed to decode record: {}", e);
-                        }
+                        },
                     }
-                }
+                },
                 RecordType::First => {
                     // Start of multi-part
                     if multi_part_buffer.is_some() {
                         warn!("Incomplete multi-part record discarded");
                     }
                     multi_part_buffer = Some(record.payload.clone());
-                }
+                },
                 RecordType::Middle => {
                     // Continue multi-part
                     if let Some(ref mut buffer) = multi_part_buffer {
@@ -117,7 +117,7 @@ impl WalRecovery {
                     } else {
                         warn!("Orphaned middle record");
                     }
-                }
+                },
                 RecordType::Last => {
                     // End of multi-part
                     if let Some(mut buffer) = multi_part_buffer.take() {
@@ -126,12 +126,12 @@ impl WalRecovery {
                             Ok(pts) => points.extend(pts),
                             Err(e) => {
                                 warn!("Failed to decode multi-part record: {}", e);
-                            }
+                            },
                         }
                     } else {
                         warn!("Orphaned last record");
                     }
-                }
+                },
             }
         }
 
@@ -175,10 +175,10 @@ impl WalRecovery {
                     match recovery.recover_segment(&path).await {
                         Ok(points) => {
                             results_clone.lock().push(points);
-                        }
+                        },
                         Err(e) => {
                             errors_clone.lock().push(e);
-                        }
+                        },
                     }
                 }
             });
@@ -270,7 +270,7 @@ impl WalRecovery {
                 report.is_valid = false;
                 report.errors.push(format!("Failed to open: {}", e));
                 return report;
-            }
+            },
         };
 
         let records = match segment.read_all_records() {
@@ -279,7 +279,7 @@ impl WalRecovery {
                 report.is_valid = false;
                 report.errors.push(format!("Failed to read: {}", e));
                 return report;
-            }
+            },
         };
 
         report.total_records = records.len();

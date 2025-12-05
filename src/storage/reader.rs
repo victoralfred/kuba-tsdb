@@ -210,7 +210,7 @@ impl ChunkReader {
                     if !points.is_empty() {
                         chunk_results.push(points);
                     }
-                }
+                },
                 Ok(Err(e)) => return Err(format!("Chunk read failed: {}", e)),
                 Err(e) => return Err(format!("Task join failed: {}", e)),
             }

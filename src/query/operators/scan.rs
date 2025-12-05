@@ -153,7 +153,7 @@ impl ScanOperator {
                     // No selector criteria - cannot scan all series
                     return Ok(());
                 }
-            }
+            },
         };
 
         if series_ids.is_empty() {
@@ -178,7 +178,7 @@ impl ScanOperator {
                 Ok(points) => all_points.extend(points),
                 Err(e) => {
                     tracing::warn!(series_id = series_id, error = %e, "Error querying series");
-                }
+                },
             }
         }
 
@@ -337,7 +337,7 @@ impl Operator for ScanOperator {
                 // Rough estimate: 1 point per second
                 let duration_secs = (range.end - range.start) / 1_000_000_000;
                 duration_secs as usize
-            }
+            },
             None => 10000, // Unknown
         }
     }

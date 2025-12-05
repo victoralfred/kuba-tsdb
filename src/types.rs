@@ -278,10 +278,10 @@ impl fmt::Display for ChunkIdError {
         match self {
             ChunkIdError::PathTraversalAttempt => {
                 write!(f, "Invalid chunk ID: contains path traversal characters")
-            }
+            },
             ChunkIdError::InvalidFormat(s) => {
                 write!(f, "Invalid chunk ID: '{}' is not a valid UUID format", s)
-            }
+            },
         }
     }
 }
@@ -713,7 +713,7 @@ impl TagFilter {
             // Check if all filter tags exist in the target with matching values
             TagFilter::Exact(filter_tags) => {
                 filter_tags.iter().all(|(k, v)| tags.get(k) == Some(v))
-            }
+            },
 
             // Pattern matching with glob wildcards or regex
             TagFilter::Pattern(pattern) => {
@@ -745,7 +745,7 @@ impl TagFilter {
                     }
                 }
                 true
-            }
+            },
         }
     }
 

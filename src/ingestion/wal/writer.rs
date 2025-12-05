@@ -220,7 +220,7 @@ impl WalWriter {
                 } else {
                     target - elapsed
                 }
-            }
+            },
             _ => Duration::from_secs(1), // Default timeout
         }
     }
@@ -377,11 +377,11 @@ impl WriteCoalescer {
                 Ok(()) => {
                     // Callback succeeded - clear the buffer
                     self.buffer.clear();
-                }
+                },
                 Err(panic_payload) => {
                     // Buffer is automatically preserved since we only passed a reference
                     std::panic::resume_unwind(panic_payload);
-                }
+                },
             }
         }
     }

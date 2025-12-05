@@ -700,7 +700,7 @@ pub fn is_valid_label_name(name: &str) -> bool {
     let mut chars = name.chars();
     // First character must be letter or underscore
     match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {},
         _ => return false,
     }
     // Remaining characters must be alphanumeric or underscore
@@ -722,7 +722,7 @@ impl std::fmt::Display for LabelError {
             LabelError::RegexError(msg) => write!(f, "Regex error: {}", msg),
             LabelError::InvalidLabelName(name) => {
                 write!(f, "Invalid label name '{}': must start with letter or underscore and contain only alphanumeric or underscore", name)
-            }
+            },
         }
     }
 }
@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn test_hour() {
         // 2024-01-01 12:30:00 UTC = 1704112200000 ms
-        let ts = 1704112200000;
+        let ts = 1_704_112_200_000;
         assert_eq!(hour(ts), Some(12));
 
         // EDGE-008: Negative timestamps return None
