@@ -1,6 +1,9 @@
 # .github/workflows/security.yml
 # Comprehensive Static Application Security Testing (SAST) for Rust
 name: Security Audit
+permissions:
+  contents: read
+  actions: write
 
 on:
   push:
