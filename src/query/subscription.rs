@@ -196,7 +196,7 @@ impl SubscriptionUpdate {
         let rows = match &self.data {
             UpdateData::Point(p) => {
                 vec![ResultRow::new(p.timestamp, p.value).with_series(p.series_id)]
-            }
+            },
             UpdateData::Points(pts) => pts
                 .iter()
                 .map(|p| ResultRow::new(p.timestamp, p.value).with_series(p.series_id))
@@ -390,10 +390,10 @@ impl SubscriptionManager {
                     self.stats
                         .updates_sent
                         .fetch_add(count as u64, Ordering::Relaxed);
-                }
+                },
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
-                }
+                },
             }
         }
     }
@@ -412,10 +412,10 @@ impl SubscriptionManager {
                     self.stats
                         .updates_sent
                         .fetch_add(count as u64, Ordering::Relaxed);
-                }
+                },
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
-                }
+                },
             }
         }
     }
@@ -441,10 +441,10 @@ impl SubscriptionManager {
                     self.stats
                         .updates_sent
                         .fetch_add(count as u64, Ordering::Relaxed);
-                }
+                },
                 Err(_) => {
                     self.stats.updates_dropped.fetch_add(1, Ordering::Relaxed);
-                }
+                },
             }
         }
     }
@@ -667,7 +667,7 @@ mod tests {
         match update.data {
             UpdateData::Point(p) => {
                 assert_eq!(p.value, 42.0);
-            }
+            },
             _ => panic!("Expected point update"),
         }
     }

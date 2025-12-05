@@ -124,14 +124,14 @@ fn build_router(state: Arc<AppState>) -> Router {
 async fn shutdown_signal() {
     let ctrl_c = async {
         match signal::ctrl_c().await {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(e) => {
                 warn!(
                     error = %e,
                     "Ctrl+C handler installation failed - graceful shutdown unavailable"
                 );
                 std::future::pending::<()>().await;
-            }
+            },
         }
     };
 
@@ -140,14 +140,14 @@ async fn shutdown_signal() {
         match signal::unix::signal(signal::unix::SignalKind::terminate()) {
             Ok(mut stream) => {
                 stream.recv().await;
-            }
+            },
             Err(e) => {
                 warn!(
                     error = %e,
                     "SIGTERM handler installation failed - SIGTERM shutdown unavailable"
                 );
                 std::future::pending::<()>().await;
-            }
+            },
         }
     };
 
@@ -179,13 +179,13 @@ async fn flush_database_on_shutdown(state: &Arc<AppState>) {
                 elapsed_ms = elapsed.as_millis(),
                 "Successfully flushed all active buffers"
             );
-        }
+        },
         Err(e) => {
             warn!(
                 error = %e,
                 "Failed to flush some buffers during shutdown - data may be lost"
             );
-        }
+        },
     }
 }
 
@@ -358,14 +358,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match setup_cache_invalidation(&app_config.redis.url, query_cache.clone()).await {
             Ok(_subscriber) => {
                 debug!("Redis Pub/Sub cache invalidation subscriber enabled");
-            }
+            },
             Err(e) => {
                 // Non-fatal: local invalidation still works, just no cross-node sync
                 tracing::warn!(
                     error = %e,
                     "Failed to set up Redis Pub/Sub subscriber, continuing with local-only invalidation"
                 );
-            }
+            },
         }
 
         // Set up the publisher (publishes invalidation events on writes)
@@ -373,14 +373,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(publisher) => {
                 debug!("Redis Pub/Sub cache invalidation publisher enabled");
                 Some(publisher)
-            }
+            },
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "Failed to create Redis Pub/Sub publisher, writes will not notify other nodes"
                 );
                 None
-            }
+            },
         }
     } else {
         None

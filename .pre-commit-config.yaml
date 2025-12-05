@@ -1,0 +1,87 @@
+# .pre-commit-config.yaml
+# Pre-commit hooks for Rust security checks
+# Install: pip install pre-commit && pre-commit install
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+  # Secrets detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: package-lock.json|Cargo.lock
+
+  # Gitleaks for secret scanning
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.1
+    hooks:
+      - id: gitleaks
+
+  # Local Rust hooks
+  - repo: local
+    hooks:
+      # Format check
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        args: ['--all', '--', '--check']
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Quick clippy check
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy
+        args: ['--all-targets', '--', '-D', 'warnings', '-D', 'clippy::unwrap_used']
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Security audit (fast check)
+      - id: cargo-audit
+        name: cargo audit
+        entry: cargo audit
+        args: ['--deny', 'warnings']
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Deny check
+      - id: cargo-deny
+        name: cargo deny
+        entry: cargo deny
+        args: ['check', 'advisories']
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Check for TODO/FIXME in commits
+      - id: no-todos
+        name: check for TODOs
+        entry: 'TODO|FIXME|XXX|HACK'
+        language: pygrep
+        types: [rust]
+        args: ['-i']
+        stages: [manual]
+
+      # Prevent debug prints
+      - id: no-debug-prints
+        name: check for debug prints
+        entry: 'dbg!\(|println!\(|eprintln!\('
+        language: pygrep
+        types: [rust]
+        exclude: 'tests/|examples/'

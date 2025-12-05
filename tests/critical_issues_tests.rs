@@ -604,7 +604,7 @@ fn test_ec3_zero_duration_chunks() {
                 "Error should mention duplicate timestamp: {}",
                 e
             );
-        }
+        },
         Ok(_) => {
             // If allowed, verify time_range handles it
             let (min, max) = chunk.time_range();
@@ -612,7 +612,7 @@ fn test_ec3_zero_duration_chunks() {
 
             // should_seal should not seal based on duration alone
             assert!(!chunk.should_seal(), "Should not seal zero-duration chunk");
-        }
+        },
     }
 }
 
@@ -831,10 +831,10 @@ async fn test_concurrent_seal_and_write() {
             // Write went to new chunk - verify it's there
             let stats = writer.stats().await;
             assert_eq!(stats.active_chunk_points, 1);
-        }
+        },
         Err(e) => {
             // Failed gracefully - should have clear error message
             assert!(!e.is_empty(), "Error should have message");
-        }
+        },
     }
 }

@@ -39,10 +39,14 @@
 
 /// Thread-safe active chunk implementation with concurrent write support
 pub mod active_chunk;
+/// Adaptive concurrency control for dynamic resource management
+pub mod adaptive_concurrency;
 /// Background sealing service for automatic chunk sealing
 pub mod background_sealer;
 /// Core chunk storage with lifecycle management
 pub mod chunk;
+/// Chunk coalescing for merging small chunks
+pub mod chunk_coalescing;
 /// Background compression service for sealed chunks
 pub mod compressor;
 /// Directory management utilities (metadata, locks, cleanup)
@@ -55,16 +59,30 @@ pub mod local_disk;
 pub mod mmap;
 /// Parallel chunk sealing for concurrent compression
 pub mod parallel_sealing;
+/// Priority-based sealing for chunk compression
+pub mod priority_sealing;
 /// High-level chunk reader with query capabilities
 pub mod reader;
+/// Tiered storage for automatic data migration
+pub mod tiered;
+/// Write-ahead logging for crash recovery
+pub mod wal;
 /// High-level chunk writer with batching and auto-rotation
 pub mod writer;
 
 pub use active_chunk::ActiveChunk;
+pub use adaptive_concurrency::{
+    AdaptiveConfig, AdjustmentDirection, AdjustmentResult, ConcurrencyController,
+    ControllerStatsSnapshot, LoadSampler, SystemMetrics,
+};
 pub use background_sealer::{
     BackgroundSealingConfig, BackgroundSealingService, BackgroundSealingStatsSnapshot,
 };
 pub use chunk::*;
+pub use chunk_coalescing::{
+    ChunkCoalescer, CoalescingCandidate, CoalescingConfig, CoalescingResult,
+    CoalescingStatsSnapshot,
+};
 pub use compressor::{CompressionConfig, CompressionService, CompressionStats};
 pub use directory::{DirectoryMaintenance, SeriesMetadata, WriteLock, WriteLockConfig};
 pub use integrity::{
@@ -78,7 +96,21 @@ pub use parallel_sealing::{
     ParallelSealingConfig, ParallelSealingService, SealError, SealHandle, SealResult,
     SealingStatsSnapshot,
 };
+pub use priority_sealing::{
+    PriorityCalculator, PriorityConfig, PriorityQueueStatsSnapshot, PrioritySealQueue,
+    PrioritySealTask, QueueFullError, SealPriority,
+};
 pub use reader::{ChunkReader, QueryOptions};
+pub use tiered::{
+    CacheStats, ChunkTierInfo, ColdTierCache, LocalSimulatedStorage, MigrationCycleResult,
+    MigrationHandle, RemoteBackend, RemoteStorage, RemoteStorageConfig, StorageTier, TierConfig,
+    TierManager, TierManagerStatsSnapshot, TierMigrator, TierMigratorStatsSnapshot, TierPolicy,
+    TieredStorageError,
+};
+pub use wal::{
+    EntryType, SyncMode, WalConfig, WalEntry, WalError, WalReader, WalRecovery, WalSegment,
+    WalStatsSnapshot, WalWriter,
+};
 pub use writer::{ChunkWriter, ChunkWriterConfig, WriteStats};
 
 /// Security utilities for path validation
@@ -170,11 +202,11 @@ pub mod security {
                 match component {
                     Component::ParentDir => {
                         return Err("Path contains '..' component".to_string());
-                    }
+                    },
                     Component::RootDir if !canonical_base.starts_with("/") => {
                         return Err("Absolute path on non-Unix system".to_string());
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
 

@@ -202,7 +202,7 @@ impl QueryEngine {
                         series_ids.len()
                     )))
                 }
-            }
+            },
 
             // Scan with predicate pushdown
             LogicalPlan::ScanWithPredicate {
@@ -230,13 +230,13 @@ impl QueryEngine {
                             .with_batch_size(self.config.batch_size),
                     ))
                 }
-            }
+            },
 
             // Filter operator
             LogicalPlan::Filter { input, predicate } => {
                 let input_op = self.build_operator_tree(input).await?;
                 Ok(Box::new(FilterOperator::new(input_op, predicate.clone())))
-            }
+            },
 
             // Aggregation operator
             LogicalPlan::Aggregate {
@@ -267,7 +267,7 @@ impl QueryEngine {
                 }
 
                 Ok(Box::new(agg_op))
-            }
+            },
 
             // Downsample operator
             LogicalPlan::Downsample {
@@ -281,13 +281,13 @@ impl QueryEngine {
                     *method,
                     *target_points,
                 )))
-            }
+            },
 
             // Sort - wrap upstream operator with SortOperator
             LogicalPlan::Sort { input, order_by } => {
                 let upstream = self.build_operator_tree(input).await?;
                 Ok(Box::new(SortOperator::new(upstream, order_by.clone())))
-            }
+            },
 
             // Limit - wrap upstream operator with LimitOperator
             LogicalPlan::Limit {
@@ -299,7 +299,7 @@ impl QueryEngine {
                 // Use usize::MAX if no limit specified (effectively unlimited)
                 let limit_val = limit.unwrap_or(usize::MAX);
                 Ok(Box::new(LimitOperator::new(upstream, limit_val, *offset)))
-            }
+            },
 
             // Latest - special handling
             LogicalPlan::Latest { selector, count } => {
@@ -320,7 +320,7 @@ impl QueryEngine {
                             .with_batch_size(*count),
                     ))
                 }
-            }
+            },
 
             // Explain - doesn't execute, returns plan description
             LogicalPlan::Explain(_inner) => {
@@ -330,7 +330,7 @@ impl QueryEngine {
                     SeriesSelector::by_measurement("_explain")?,
                     None,
                 )))
-            }
+            },
         }
     }
 

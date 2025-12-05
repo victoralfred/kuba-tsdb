@@ -135,7 +135,7 @@ impl Operator for FilterOperator {
                         return Ok(Some(filtered));
                     }
                     // Empty after filtering, try next batch
-                }
+                },
                 None => return Ok(None),
             }
         }
@@ -204,7 +204,7 @@ impl Operator for AndFilter {
                         ctx.record_rows(result.len());
                         return Ok(Some(result));
                     }
-                }
+                },
                 None => return Ok(None),
             }
         }
@@ -264,7 +264,7 @@ impl Operator for OrFilter {
                         ctx.record_rows(result.len());
                         return Ok(Some(result));
                     }
-                }
+                },
                 None => return Ok(None),
             }
         }

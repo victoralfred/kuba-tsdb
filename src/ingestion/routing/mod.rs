@@ -263,7 +263,7 @@ impl Router {
                     .clone()
                     .unwrap_or_else(|| "host".to_string());
                 Box::new(TagAffinityRouter::new(config.num_shards, tag))
-            }
+            },
         }
     }
 

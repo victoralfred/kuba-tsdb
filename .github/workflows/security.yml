@@ -1,0 +1,351 @@
+# .github/workflows/security.yml
+# Comprehensive Static Application Security Testing (SAST) for Rust
+name: Security Audit
+permissions:
+  contents: read
+  actions: write
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Run daily at 2 AM UTC to catch new vulnerabilities
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings -D unsafe_code"
+  RUST_BACKTRACE: 1
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # DEPENDENCY VULNERABILITY SCANNING
+  # ============================================================================
+  audit:
+    name: Security Audit (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run security audit
+        run: cargo audit --deny warnings --deny unmaintained --deny yanked
+
+      - name: Generate audit report
+        if: always()
+        run: |
+          cargo audit --json > audit-report.json || true
+          echo "## Security Audit Report" >> $GITHUB_STEP_SUMMARY
+          cargo audit 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: audit-report.json
+          retention-days: 30
+
+  # ============================================================================
+  # COMPREHENSIVE DEPENDENCY CHECKING (cargo-deny)
+  # ============================================================================
+  deny:
+    name: Dependency Check (cargo-deny)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        checks:
+          - advisories
+          - bans
+          - licenses
+          - sources
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+          arguments: --all-features
+
+  # ============================================================================
+  # UNSAFE CODE DETECTION (cargo-geiger)
+  # ============================================================================
+  geiger:
+    name: Unsafe Code Analysis (cargo-geiger)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger --locked
+
+      - name: Run unsafe code analysis
+        run: |
+          echo "## Unsafe Code Report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo geiger --all-features --all-targets 2>&1 | tee geiger-report.txt | head -200 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for forbidden unsafe patterns
+        run: |
+          # Fail if unsafe code exceeds threshold (customize as needed)
+          UNSAFE_COUNT=$(cargo geiger --output-format Json 2>/dev/null | jq '[.packages[].unsafety.used.functions.unsafe] | add // 0' || echo "0")
+          echo "Unsafe function count: $UNSAFE_COUNT"
+          if [ "$UNSAFE_COUNT" -gt 10 ]; then
+            echo "::warning::High number of unsafe functions detected: $UNSAFE_COUNT"
+          fi
+
+      - name: Upload geiger report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-report
+          path: geiger-report.txt
+          retention-days: 30
+
+  # ============================================================================
+  # SECURITY-FOCUSED LINTING (Clippy)
+  # ============================================================================
+  clippy:
+    name: Security Lints (Clippy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Run Clippy with security lints
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::all \
+            -D clippy::pedantic \
+            -D clippy::nursery \
+            -D clippy::cargo \
+            -W clippy::unwrap_used \
+            -W clippy::expect_used \
+            -D clippy::panic \
+            -D clippy::unwrap_in_result \
+            -D clippy::indexing_slicing \
+            -D clippy::arithmetic_side_effects \
+            -D clippy::integer_division \
+            -D clippy::modulo_arithmetic \
+            -D clippy::float_arithmetic \
+            -D clippy::as_conversions \
+            -D clippy::cast_possible_truncation \
+            -D clippy::cast_sign_loss \
+            -D clippy::cast_possible_wrap \
+            -D clippy::cast_lossless \
+            -D clippy::invalid_upcast_comparisons \
+            -D clippy::string_slice \
+            -D clippy::mem_forget \
+            -D clippy::multiple_unsafe_ops_per_block \
+            -D clippy::undocumented_unsafe_blocks \
+            -D clippy::unnecessary_safety_comment \
+            -D clippy::unnecessary_safety_doc \
+            -D clippy::missing_safety_doc \
+            -D clippy::todo \
+            -D clippy::unimplemented \
+            -D clippy::unreachable \
+            -D clippy::dbg_macro \
+            -D clippy::print_stdout \
+            -D clippy::print_stderr \
+            -D clippy::exit \
+            -A clippy::module_name_repetitions \
+            -A clippy::must_use_candidate \
+            2>&1 | tee clippy-report.txt
+
+      - name: Upload clippy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-report
+          path: clippy-report.txt
+          retention-days: 30
+
+  # ============================================================================
+  # SEMVER COMPATIBILITY CHECK
+  # ============================================================================
+  semver:
+    name: SemVer Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # Allow failure for unpublished crates - semver-checks requires a baseline
+    # from crates.io or a git tag. Once the crate is published, remove this.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+
+      - name: Check SemVer compatibility
+        # For unpublished crates, use git baseline if available, otherwise skip
+        # Once published to crates.io, change back to: cargo semver-checks check-release
+        run: |
+          if git describe --tags --abbrev=0 2>/dev/null; then
+            BASELINE_TAG=$(git describe --tags --abbrev=0)
+            echo "Using git tag $BASELINE_TAG as baseline"
+            cargo semver-checks check-release --baseline-rev "$BASELINE_TAG"
+          else
+            echo "No git tags found and crate not published - skipping semver check"
+            echo "Once the crate is published to crates.io, semver checks will run automatically"
+          fi
+
+
+  # ============================================================================
+  # MEMORY SAFETY ANALYSIS (Miri - Optional)
+  # ============================================================================
+  miri:
+    name: Memory Safety (Miri)
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Miri may not support all code
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Setup Miri
+        run: cargo miri setup
+
+      - name: Run Miri tests
+        run: |
+          cargo miri test --lib 2>&1 | tee miri-report.txt || true
+          echo "## Miri Report" >> $GITHUB_STEP_SUMMARY
+          head -100 miri-report.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload miri report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: miri-report
+          path: miri-report.txt
+          retention-days: 30
+
+  # ============================================================================
+  # OUTDATED DEPENDENCIES CHECK
+  # ============================================================================
+  outdated:
+    name: Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
+
+      - name: Check outdated dependencies
+        run: |
+          echo "## Outdated Dependencies" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo outdated --root-deps-only 2>&1 | tee outdated-report.txt | head -50 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload outdated report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outdated-report
+          path: outdated-report.txt
+          retention-days: 30
+
+  # ============================================================================
+  # FUZZ TESTING COMPILATION CHECK
+  # ============================================================================
+  fuzz-check:
+    name: Fuzz Targets Compile
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Check fuzz targets compile
+        run: |
+          if [ -d "fuzz" ]; then
+            cargo +nightly fuzz check
+          else
+            echo "::notice::No fuzz directory found. Consider adding fuzz testing."
+          fi
+
+  # ============================================================================
+  # FINAL SECURITY SUMMARY
+  # ============================================================================
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [audit, deny, geiger, clippy, outdated]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
+
+      - name: Generate summary
+        run: |
+          echo "# 🔐 Security Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Vulnerability Audit | ${{ needs.audit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependency Check | ${{ needs.deny.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unsafe Code Analysis | ${{ needs.geiger.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Lints | ${{ needs.clippy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Outdated Deps | ${{ needs.outdated.result }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for failures
+        if: |
+          needs.audit.result == 'failure' ||
+          needs.deny.result == 'failure' ||
+          needs.clippy.result == 'failure'
+        run: |
+          echo "::error::Security checks failed. Review the reports above."
+          exit 1

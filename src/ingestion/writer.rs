@@ -236,14 +236,14 @@ impl WriteWorker {
                     );
 
                     return Ok(());
-                }
+                },
                 Err(e) => {
                     last_error = Some(e);
                     if attempt < self.config.max_retries {
                         self.retries.fetch_add(1, Ordering::Relaxed);
                         self.metrics.record_retry();
                     }
-                }
+                },
             }
         }
 
@@ -285,7 +285,7 @@ impl WriteWorker {
                         (points.len() * 24) as u64
                     };
                     Ok(compressed_size)
-                }
+                },
                 Err(e) => {
                     warn!(
                         worker = self.id,
@@ -294,7 +294,7 @@ impl WriteWorker {
                         "Storage write failed"
                     );
                     Err(IngestionError::WriteError(format!("Storage error: {}", e)))
-                }
+                },
             }
         } else {
             // Stub mode: simulate write with compression size estimation
@@ -424,7 +424,7 @@ impl ParallelWriter {
                 return Err(crate::error::IngestionError::ConfigError(
                     "ParallelWriter already running (double start)".to_string(),
                 ));
-            }
+            },
         };
 
         debug!(

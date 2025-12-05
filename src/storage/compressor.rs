@@ -306,7 +306,7 @@ impl CompressionService {
                                 compressed_size,
                                 compressed_size as f64 / task.original_size as f64
                             );
-                        }
+                        },
                         Err(e) => {
                             let mut stats = stats.write().await;
                             stats.chunks_failed += 1;
@@ -322,14 +322,14 @@ impl CompressionService {
                                 task.chunk_path.display(),
                                 e
                             );
-                        }
+                        },
                     }
-                }
+                },
                 None => {
                     // Channel closed, exit worker
                     println!("Worker {}: Shutting down", worker_id);
                     break;
-                }
+                },
             }
         }
     }

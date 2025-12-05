@@ -65,28 +65,28 @@ impl fmt::Display for SpillError {
         match self {
             SpillError::Io { source, context } => {
                 write!(f, "Spill I/O error ({}): {}", context, source)
-            }
+            },
             SpillError::Compression { message } => {
                 write!(f, "Spill compression error: {}", message)
-            }
+            },
             SpillError::Decompression { message } => {
                 write!(f, "Spill decompression error: {}", message)
-            }
+            },
             SpillError::Corruption { path, message } => {
                 write!(f, "Spill file corruption at {:?}: {}", path, message)
-            }
+            },
             SpillError::Config { message } => {
                 write!(f, "Spill configuration error: {}", message)
-            }
+            },
             SpillError::MaxFilesReached { count, max } => {
                 write!(f, "Maximum spill files reached ({}/{})", count, max)
-            }
+            },
             SpillError::RecoveryFailed { message } => {
                 write!(f, "Spill recovery failed: {}", message)
-            }
+            },
             SpillError::FileNotFound { path } => {
                 write!(f, "Spill file not found: {:?}", path)
-            }
+            },
         }
     }
 }

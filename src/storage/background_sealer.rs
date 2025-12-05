@@ -581,8 +581,8 @@ mod tests {
         assert!(low.min_points_for_seal < high.min_points_for_seal);
     }
 
-    #[test]
-    fn test_service_creation() {
+    #[tokio::test]
+    async fn test_service_creation() {
         let service = BackgroundSealingService::new(BackgroundSealingConfig::default());
         assert!(!service.is_running());
 
@@ -599,8 +599,8 @@ mod tests {
         assert!(!service.is_running());
     }
 
-    #[test]
-    fn test_should_seal_with_min_points() {
+    #[tokio::test]
+    async fn test_should_seal_with_min_points() {
         let config = BackgroundSealingConfig {
             min_points_for_seal: 100,
             ..Default::default()
@@ -625,8 +625,8 @@ mod tests {
         assert!(service.should_seal(&chunk));
     }
 
-    #[test]
-    fn test_should_not_seal_sealed_chunk() {
+    #[tokio::test]
+    async fn test_should_not_seal_sealed_chunk() {
         let config = BackgroundSealingConfig::default();
         let service = BackgroundSealingService::new(config);
 
@@ -648,8 +648,8 @@ mod tests {
         assert!(!service.should_seal(&chunk));
     }
 
-    #[test]
-    fn test_stats_snapshot() {
+    #[tokio::test]
+    async fn test_stats_snapshot() {
         let service = BackgroundSealingService::new(BackgroundSealingConfig::default());
 
         let stats = service.stats();
@@ -661,8 +661,8 @@ mod tests {
         assert_eq!(stats.seals_failed, 0);
     }
 
-    #[test]
-    fn test_sealing_service_access() {
+    #[tokio::test]
+    async fn test_sealing_service_access() {
         let config = BackgroundSealingConfig::default();
         let service = BackgroundSealingService::new(config);
 
@@ -686,8 +686,8 @@ mod tests {
         assert!(config.enable_streaming);
     }
 
-    #[test]
-    fn test_default_impl() {
+    #[tokio::test]
+    async fn test_default_impl() {
         let service = BackgroundSealingService::default();
         assert!(!service.is_running());
     }

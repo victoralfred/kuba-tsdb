@@ -85,7 +85,7 @@ impl InternedTagSet {
     /// Add a tag to the set (maintains sorted order)
     pub fn insert(&mut self, tag: InternedTag) {
         match self.tags.binary_search(&tag) {
-            Ok(_) => {} // Already exists
+            Ok(_) => {}, // Already exists
             Err(pos) => self.tags.insert(pos, tag),
         }
     }

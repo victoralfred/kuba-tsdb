@@ -356,7 +356,7 @@ impl WriteBuffer {
                 Ok(batch) => batches.push(batch),
                 Err(e) => {
                     warn!("Failed to deserialize buffer batch: {}", e);
-                }
+                },
             }
         }
 

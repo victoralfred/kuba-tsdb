@@ -923,7 +923,7 @@ impl TimeIndex for InMemoryTimeIndex {
             TagFilter::All => {
                 // No tag filtering - return all series for metric
                 Ok(metric_series.into_iter().collect())
-            }
+            },
             TagFilter::Exact(tags) if !tags.is_empty() => {
                 // Use tag_index for set intersection (efficient O(min(n,m)) lookup)
                 let tag_idx = self.tag_index.read();
@@ -944,11 +944,11 @@ impl TimeIndex for InMemoryTimeIndex {
                 }
 
                 Ok(result.into_iter().collect())
-            }
+            },
             TagFilter::Exact(_) => {
                 // Empty exact filter - same as All
                 Ok(metric_series.into_iter().collect())
-            }
+            },
             TagFilter::Pattern(pattern) => {
                 // Pattern matching scans series metadata for matching tag values
                 // Format: "key=pattern*" or just "pattern" to match any value
@@ -966,7 +966,7 @@ impl TimeIndex for InMemoryTimeIndex {
                     .collect();
 
                 Ok(filtered)
-            }
+            },
         }
     }
 

@@ -14,6 +14,13 @@
 //! ts:tag:{key}:{value}:series           → SET of series_ids with this tag (secondary index)
 //! ```
 //!
+//! # Architecture
+//!
+//! This module is split into submodules for maintainability:
+//!
+//! - `cache` - Local TTL-based cache for series metadata
+//! - `metadata` - Redis chunk metadata structures
+//!
 //! # Example
 //!
 //! ```rust,no_run
@@ -30,6 +37,12 @@
 //! # }
 //! ```
 
+mod cache;
+mod metadata;
+
+pub use cache::{CachedSeriesMeta, LocalCache};
+pub use metadata::RedisChunkMetadata;
+
 use crate::engine::traits::{
     ChunkLocation, ChunkReference, ChunkStatus, IndexConfig, IndexStats, SeriesMetadata, TimeIndex,
 };
@@ -42,7 +55,6 @@ use super::scripts::LuaScripts;
 use async_trait::async_trait;
 use chrono::Utc;
 use redis::AsyncCommands;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -60,6 +72,14 @@ const KEY_CHUNKS_PREFIX: &str = "ts:chunks:";
 ///
 /// Uses Redis Sorted Sets for O(log N) time-based queries and provides
 /// atomic operations via Lua scripts.
+///
+/// # Features
+///
+/// - O(log N) time-range queries using ZRANGEBYSCORE
+/// - Atomic operations via Lua scripts
+/// - Local caching to reduce Redis round trips
+/// - Pipeline batching to avoid N+1 queries
+/// - Secondary indexes for metric/tag filtering
 pub struct RedisTimeIndex {
     /// Redis connection pool
     pool: Arc<RedisPool>,
@@ -82,113 +102,6 @@ pub struct RedisTimeIndex {
 
     /// Cache misses counter
     cache_misses: AtomicU64,
-}
-
-/// Local cache for frequently accessed data
-#[derive(Default)]
-struct LocalCache {
-    /// Series metadata cache: series_id -> metadata
-    series_meta: HashMap<SeriesId, CachedSeriesMeta>,
-
-    /// Maximum cache entries
-    max_entries: usize,
-}
-
-/// Cached series metadata with TTL
-struct CachedSeriesMeta {
-    /// The cached series metadata
-    metadata: SeriesMetadata,
-    /// Timestamp when cached (in milliseconds)
-    cached_at: i64,
-    /// Time-to-live in milliseconds
-    ttl_ms: i64,
-}
-
-impl CachedSeriesMeta {
-    fn is_expired(&self) -> bool {
-        let now = Utc::now().timestamp_millis();
-        now - self.cached_at > self.ttl_ms
-    }
-}
-
-impl LocalCache {
-    fn new(max_entries: usize) -> Self {
-        Self {
-            series_meta: HashMap::new(),
-            max_entries,
-        }
-    }
-
-    /// Get cached series metadata if not expired
-    ///
-    /// Returns cached metadata if available and not expired, enabling
-    /// cache-first lookup optimization to reduce Redis round trips.
-    pub fn get_series_meta(&self, series_id: SeriesId) -> Option<&SeriesMetadata> {
-        self.series_meta.get(&series_id).and_then(|cached| {
-            if cached.is_expired() {
-                None
-            } else {
-                Some(&cached.metadata)
-            }
-        })
-    }
-
-    fn set_series_meta(&mut self, series_id: SeriesId, metadata: SeriesMetadata, ttl_ms: i64) {
-        // Evict if at capacity
-        if self.series_meta.len() >= self.max_entries {
-            // Simple eviction: remove first expired or oldest
-            let mut to_remove = None;
-            for (id, cached) in &self.series_meta {
-                if cached.is_expired() || to_remove.is_none() {
-                    to_remove = Some(*id);
-                    if cached.is_expired() {
-                        break;
-                    }
-                }
-            }
-            if let Some(id) = to_remove {
-                self.series_meta.remove(&id);
-            }
-        }
-
-        self.series_meta.insert(
-            series_id,
-            CachedSeriesMeta {
-                metadata,
-                cached_at: Utc::now().timestamp_millis(),
-                ttl_ms,
-            },
-        );
-    }
-
-    fn invalidate_series(&mut self, series_id: SeriesId) {
-        self.series_meta.remove(&series_id);
-    }
-}
-
-/// Chunk metadata stored in Redis
-///
-/// Contains all metadata about a chunk needed for index operations
-/// including location, time range, and compression details.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RedisChunkMetadata {
-    series_id: String,
-    path: String,
-    start_time: i64,
-    end_time: i64,
-    point_count: usize,
-    size_bytes: usize,
-    compression: String,
-    status: String,
-    created_at: i64,
-
-    // ENH-003: Statistics for cost estimation and zone map pruning
-    /// Minimum value in the chunk (optional, for zone map pruning)
-    #[serde(default)]
-    min_value: Option<f64>,
-    /// Maximum value in the chunk (optional, for zone map pruning)
-    #[serde(default)]
-    max_value: Option<f64>,
 }
 
 impl RedisTimeIndex {
@@ -255,6 +168,17 @@ impl RedisTimeIndex {
     }
 
     /// Add multiple chunks in a batch
+    ///
+    /// More efficient than adding chunks one at a time by using Redis pipelines.
+    ///
+    /// # Arguments
+    ///
+    /// * `series_id` - The series to add chunks to
+    /// * `chunks` - Vector of (chunk_id, time_range, location) tuples
+    ///
+    /// # Returns
+    ///
+    /// Number of chunks successfully added
     pub async fn add_chunks_batch(
         &self,
         series_id: SeriesId,
@@ -286,7 +210,6 @@ impl RedisTimeIndex {
                 compression: "Kuba".to_string(),
                 status: "sealed".to_string(),
                 created_at: current_time,
-                // ENH-003: Statistics will be populated during compaction or on first scan
                 min_value: None,
                 max_value: None,
             };
@@ -309,6 +232,14 @@ impl RedisTimeIndex {
     ///
     /// Retrieves metadata for a single chunk. For batch operations,
     /// prefer using pipelines in query_chunks to avoid N+1 query pattern.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk_id` - The chunk identifier
+    ///
+    /// # Returns
+    ///
+    /// Chunk metadata if found, None otherwise
     pub async fn get_chunk_metadata(
         &self,
         chunk_id: &ChunkId,
@@ -328,7 +259,7 @@ impl RedisTimeIndex {
                 let metadata: RedisChunkMetadata = serde_json::from_str(&json)
                     .map_err(|e| IndexError::DeserializationError(e.to_string()))?;
                 Ok(Some(metadata))
-            }
+            },
             None => Ok(None),
         }
     }
@@ -364,13 +295,6 @@ impl RedisTimeIndex {
     ///
     /// Uses Redis pipelines with batching (100 per batch) to minimize
     /// round trips while avoiding overwhelming Redis with large requests.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let tags = index.get_series_tags_batch(&[1, 2, 3]).await?;
-    /// // tags = {1: {host: "h1", region: "us"}, 2: {host: "h2", region: "eu"}, ...}
-    /// ```
     pub async fn get_series_tags_batch(
         &self,
         series_ids: &[SeriesId],
@@ -627,7 +551,6 @@ impl TimeIndex for RedisTimeIndex {
             compression: "Kuba".to_string(),
             status: "sealed".to_string(),
             created_at: current_time,
-            // ENH-003: Statistics will be populated during compaction or on first scan
             min_value: None,
             max_value: None,
         };
@@ -834,7 +757,7 @@ impl TimeIndex for RedisTimeIndex {
                     .await?;
 
                 self.parse_series_ids(&series_ids)
-            }
+            },
 
             // Intersect metric index with all tag indexes - O(min set size)
             TagFilter::Exact(tags) => {
@@ -856,7 +779,7 @@ impl TimeIndex for RedisTimeIndex {
                     .await?;
 
                 self.parse_series_ids(&series_ids)
-            }
+            },
 
             // Get metric series, then filter client-side by pattern
             // Still much better than scanning ALL series
@@ -871,7 +794,7 @@ impl TimeIndex for RedisTimeIndex {
 
                 // Filter by pattern client-side (requires metadata lookup)
                 self.filter_by_pattern(&series_ids, pattern).await
-            }
+            },
         }
     }
 
@@ -1058,269 +981,6 @@ mod tests {
     }
 
     // =========================================================================
-    // LocalCache Tests
-    // =========================================================================
-
-    #[test]
-    fn test_local_cache() {
-        let mut cache = LocalCache::new(2);
-
-        let meta1 = SeriesMetadata {
-            metric_name: "cpu.usage".to_string(),
-            tags: HashMap::new(),
-            created_at: 1000,
-            retention_days: None,
-        };
-
-        let meta2 = SeriesMetadata {
-            metric_name: "mem.usage".to_string(),
-            tags: HashMap::new(),
-            created_at: 2000,
-            retention_days: None,
-        };
-
-        // Add two entries
-        cache.set_series_meta(1, meta1.clone(), 60_000);
-        cache.set_series_meta(2, meta2.clone(), 60_000);
-
-        assert!(cache.get_series_meta(1).is_some());
-        assert!(cache.get_series_meta(2).is_some());
-
-        // Add third entry - should evict one
-        let meta3 = SeriesMetadata {
-            metric_name: "disk.usage".to_string(),
-            tags: HashMap::new(),
-            created_at: 3000,
-            retention_days: None,
-        };
-
-        cache.set_series_meta(3, meta3.clone(), 60_000);
-
-        // One of the first two should be evicted
-        let count = [1, 2, 3]
-            .iter()
-            .filter(|id| cache.get_series_meta(**id).is_some())
-            .count();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn test_cache_invalidation() {
-        let mut cache = LocalCache::new(10);
-
-        let meta = SeriesMetadata {
-            metric_name: "test".to_string(),
-            tags: HashMap::new(),
-            created_at: 1000,
-            retention_days: None,
-        };
-
-        cache.set_series_meta(1, meta, 60_000);
-        assert!(cache.get_series_meta(1).is_some());
-
-        cache.invalidate_series(1);
-        assert!(cache.get_series_meta(1).is_none());
-    }
-
-    #[test]
-    fn test_local_cache_new() {
-        let cache = LocalCache::new(100);
-        assert_eq!(cache.max_entries, 100);
-        assert!(cache.series_meta.is_empty());
-    }
-
-    #[test]
-    fn test_local_cache_default() {
-        let cache = LocalCache::default();
-        assert_eq!(cache.max_entries, 0);
-        assert!(cache.series_meta.is_empty());
-    }
-
-    #[test]
-    fn test_cache_get_nonexistent() {
-        let cache = LocalCache::new(10);
-        assert!(cache.get_series_meta(12345).is_none());
-    }
-
-    #[test]
-    fn test_cache_metadata_content() {
-        let mut cache = LocalCache::new(10);
-
-        let mut tags = HashMap::new();
-        tags.insert("host".to_string(), "server1".to_string());
-        tags.insert("region".to_string(), "us-east".to_string());
-
-        let meta = SeriesMetadata {
-            metric_name: "cpu.usage".to_string(),
-            tags: tags.clone(),
-            created_at: 1000,
-            retention_days: Some(30),
-        };
-
-        cache.set_series_meta(42, meta.clone(), 60_000);
-
-        let cached = cache.get_series_meta(42).unwrap();
-        assert_eq!(cached.metric_name, "cpu.usage");
-        assert_eq!(cached.tags.get("host"), Some(&"server1".to_string()));
-        assert_eq!(cached.tags.get("region"), Some(&"us-east".to_string()));
-        assert_eq!(cached.created_at, 1000);
-        assert_eq!(cached.retention_days, Some(30));
-    }
-
-    #[test]
-    fn test_cache_overwrite_same_key() {
-        let mut cache = LocalCache::new(10);
-
-        let meta1 = SeriesMetadata {
-            metric_name: "metric1".to_string(),
-            tags: HashMap::new(),
-            created_at: 1000,
-            retention_days: None,
-        };
-
-        let meta2 = SeriesMetadata {
-            metric_name: "metric2".to_string(),
-            tags: HashMap::new(),
-            created_at: 2000,
-            retention_days: None,
-        };
-
-        cache.set_series_meta(1, meta1, 60_000);
-        cache.set_series_meta(1, meta2, 60_000);
-
-        let cached = cache.get_series_meta(1).unwrap();
-        assert_eq!(cached.metric_name, "metric2");
-        assert_eq!(cached.created_at, 2000);
-    }
-
-    #[test]
-    fn test_cache_invalidate_nonexistent() {
-        let mut cache = LocalCache::new(10);
-        // Should not panic when invalidating non-existent entry
-        cache.invalidate_series(99999);
-        assert!(cache.get_series_meta(99999).is_none());
-    }
-
-    // =========================================================================
-    // CachedSeriesMeta Tests
-    // =========================================================================
-
-    #[test]
-    fn test_cached_series_meta_not_expired() {
-        let cached = CachedSeriesMeta {
-            metadata: SeriesMetadata {
-                metric_name: "test".to_string(),
-                tags: HashMap::new(),
-                created_at: 0,
-                retention_days: None,
-            },
-            cached_at: Utc::now().timestamp_millis(),
-            ttl_ms: 60_000, // 60 seconds
-        };
-
-        assert!(!cached.is_expired());
-    }
-
-    #[test]
-    fn test_cached_series_meta_expired() {
-        let cached = CachedSeriesMeta {
-            metadata: SeriesMetadata {
-                metric_name: "test".to_string(),
-                tags: HashMap::new(),
-                created_at: 0,
-                retention_days: None,
-            },
-            cached_at: Utc::now().timestamp_millis() - 120_000, // 2 minutes ago
-            ttl_ms: 60_000,                                     // 60 seconds TTL
-        };
-
-        assert!(cached.is_expired());
-    }
-
-    #[test]
-    fn test_cached_series_meta_zero_ttl() {
-        let cached = CachedSeriesMeta {
-            metadata: SeriesMetadata {
-                metric_name: "test".to_string(),
-                tags: HashMap::new(),
-                created_at: 0,
-                retention_days: None,
-            },
-            cached_at: Utc::now().timestamp_millis(),
-            ttl_ms: 0, // Immediate expiry
-        };
-
-        // Zero TTL means immediate expiry (or very short-lived)
-        // Since cached_at is "now", we might get false if we're within same millisecond
-        // Adding 1ms to cached_at would make it expired
-        let cached_old = CachedSeriesMeta {
-            cached_at: Utc::now().timestamp_millis() - 1,
-            ..cached
-        };
-        assert!(cached_old.is_expired());
-    }
-
-    // =========================================================================
-    // RedisChunkMetadata Tests
-    // =========================================================================
-
-    #[test]
-    fn test_redis_chunk_metadata_serialization() {
-        let metadata = RedisChunkMetadata {
-            series_id: "12345".to_string(),
-            path: "/data/chunks/chunk1.bin".to_string(),
-            start_time: 1000,
-            end_time: 2000,
-            point_count: 100,
-            size_bytes: 4096,
-            compression: "Kuba".to_string(),
-            status: "sealed".to_string(),
-            created_at: 1700000000000,
-            min_value: Some(10.0),
-            max_value: Some(100.0),
-        };
-
-        // Serialize
-        let json = serde_json::to_string(&metadata).unwrap();
-        assert!(json.contains("12345"));
-        assert!(json.contains("/data/chunks/chunk1.bin"));
-        assert!(json.contains("Kuba"));
-
-        // Deserialize
-        let deserialized: RedisChunkMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.series_id, "12345");
-        assert_eq!(deserialized.path, "/data/chunks/chunk1.bin");
-        assert_eq!(deserialized.start_time, 1000);
-        assert_eq!(deserialized.end_time, 2000);
-        assert_eq!(deserialized.point_count, 100);
-        assert_eq!(deserialized.size_bytes, 4096);
-        assert_eq!(deserialized.compression, "Kuba");
-        assert_eq!(deserialized.status, "sealed");
-    }
-
-    #[test]
-    fn test_redis_chunk_metadata_clone() {
-        let metadata = RedisChunkMetadata {
-            series_id: "999".to_string(),
-            path: "/path/to/chunk".to_string(),
-            start_time: 0,
-            end_time: 1000,
-            point_count: 50,
-            size_bytes: 2048,
-            compression: "Kuba".to_string(),
-            status: "active".to_string(),
-            created_at: 0,
-            min_value: None,
-            max_value: None,
-        };
-
-        let cloned = metadata.clone();
-        assert_eq!(cloned.series_id, metadata.series_id);
-        assert_eq!(cloned.path, metadata.path);
-        assert_eq!(cloned.size_bytes, metadata.size_bytes);
-    }
-
-    // =========================================================================
     // Key Constant Tests
     // =========================================================================
 
@@ -1331,72 +991,5 @@ mod tests {
         assert_eq!(KEY_SERIES_INDEX_SUFFIX, ":index");
         assert_eq!(KEY_SERIES_META_SUFFIX, ":meta");
         assert_eq!(KEY_CHUNKS_PREFIX, "ts:chunks:");
-    }
-
-    // =========================================================================
-    // Edge Case Tests
-    // =========================================================================
-
-    #[test]
-    fn test_cache_zero_capacity() {
-        let mut cache = LocalCache::new(0);
-
-        let meta = SeriesMetadata {
-            metric_name: "test".to_string(),
-            tags: HashMap::new(),
-            created_at: 0,
-            retention_days: None,
-        };
-
-        // With zero capacity, set should still work but evict immediately
-        cache.set_series_meta(1, meta, 60_000);
-
-        // The entry count should be at most 1 (or 0 if immediately evicted)
-        assert!(cache.series_meta.len() <= 1);
-    }
-
-    #[test]
-    fn test_cache_large_series_id() {
-        let mut cache = LocalCache::new(10);
-
-        let meta = SeriesMetadata {
-            metric_name: "test".to_string(),
-            tags: HashMap::new(),
-            created_at: 0,
-            retention_days: None,
-        };
-
-        let large_id = u64::MAX as SeriesId;
-        cache.set_series_meta(large_id, meta.clone(), 60_000);
-
-        assert!(cache.get_series_meta(large_id).is_some());
-        assert_eq!(cache.get_series_meta(large_id).unwrap().metric_name, "test");
-    }
-
-    #[test]
-    fn test_metadata_with_special_characters() {
-        let mut cache = LocalCache::new(10);
-
-        let mut tags = HashMap::new();
-        tags.insert(
-            "special".to_string(),
-            "value with spaces and !@#$%^&*()".to_string(),
-        );
-
-        let meta = SeriesMetadata {
-            metric_name: "metric.with.dots.and-dashes".to_string(),
-            tags,
-            created_at: 0,
-            retention_days: None,
-        };
-
-        cache.set_series_meta(1, meta.clone(), 60_000);
-
-        let cached = cache.get_series_meta(1).unwrap();
-        assert_eq!(cached.metric_name, "metric.with.dots.and-dashes");
-        assert_eq!(
-            cached.tags.get("special"),
-            Some(&"value with spaces and !@#$%^&*()".to_string())
-        );
     }
 }

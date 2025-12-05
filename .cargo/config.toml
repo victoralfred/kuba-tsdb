@@ -1,0 +1,96 @@
+# .cargo/config.toml
+# Security-focused Cargo configuration
+
+[build]
+# Enable incremental compilation for faster rebuilds
+incremental = true
+
+# Deny all warnings in CI
+# Uncomment for strict mode in development:
+# rustflags = ["-D", "warnings"]
+
+[target.'cfg(all())']
+# Security hardening flags for release builds
+rustflags = [
+    # Enable all warnings
+    "-W", "rust-2021-compatibility",
+    # Note: rust-2024-compatibility warnings are informational for future migration
+    # They are not errors in Rust 2021 edition. Enable when preparing for 2024 migration.
+    # "-W", "rust-2024-compatibility",
+
+    # Security-relevant warnings
+    "-W", "unsafe-op-in-unsafe-fn",
+    "-W", "unused-unsafe",
+
+    # Helpful for catching issues (disabled to reduce noise, enable as needed)
+    # "-W", "missing-docs",
+    # "-W", "missing-debug-implementations",
+]
+
+[profile.release]
+# Security hardening for release builds
+lto = true                    # Link-Time Optimization
+codegen-units = 1             # Better optimization
+panic = "abort"               # Smaller binary, no unwinding
+strip = true                  # Strip symbols
+opt-level = 3                 # Maximum optimization
+
+# Overflow checks in release (security critical)
+overflow-checks = true
+
+[profile.release.build-override]
+opt-level = 3
+
+[profile.dev]
+# Enable debug assertions
+debug-assertions = true
+overflow-checks = true
+
+[profile.test]
+# Keep debug info for tests
+debug = true
+overflow-checks = true
+
+# Hardened profile for security-critical deployments
+[profile.hardened]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+debug = false
+strip = true
+# Enable additional sanitizers during testing
+# rustflags = ["-Z", "sanitizer=address"]  # Nightly only
+
+[alias]
+# Security-focused aliases
+# Note: Don't alias names that match cargo subcommands (audit, deny, geiger)
+# Use these prefixed versions instead
+sec-audit = "audit --deny warnings"
+sec-deny = "deny check"
+sec-geiger = "geiger --all-features"
+sec-clippy = """clippy --all-targets --all-features -- \
+    -D warnings \
+    -D clippy::all \
+    -D clippy::pedantic \
+    -W clippy::unwrap_used \
+    -W clippy::expect_used \
+    -D clippy::panic \
+    -D clippy::indexing_slicing \
+    -D clippy::arithmetic_side_effects"""
+
+[net]
+# Retry downloads
+retry = 3
+# Git fetch with libgit2
+git-fetch-with-cli = true
+
+[term]
+# Colored output
+color = "auto"
+# Progress bar
+verbose = false
+
+[registries.crates-io]
+protocol = "sparse"

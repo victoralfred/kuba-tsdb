@@ -178,7 +178,7 @@ impl AhpacCompressor {
                 let codec = self.selector.get_codec(id);
                 let data = codec.compress(points)?;
                 (id, data)
-            }
+            },
             SelectionStrategy::Exhaustive => self.selector.select_exhaustive(points, &profile),
             SelectionStrategy::Verified => self.selector.select_verified(points, &profile),
         };
@@ -248,7 +248,7 @@ mod tests {
             .map(|i| {
                 DataPoint::new(
                     0,
-                    1000000 + i as i64 * 1000,
+                    1_000_000 + i as i64 * 1000,
                     100.0 + (i as f64 * 0.1).sin() * 10.0,
                 )
             })

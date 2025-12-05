@@ -124,7 +124,7 @@ impl DataBatch {
                     .get(byte_idx)
                     .map(|b| (b >> bit_idx) & 1 == 1)
                     .unwrap_or(false)
-            }
+            },
         }
     }
 

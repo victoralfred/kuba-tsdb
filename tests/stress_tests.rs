@@ -139,7 +139,7 @@ async fn test_concurrent_write_stress() {
                     Ok(_) => success_count += 1,
                     Err(_) => {
                         errors.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                 }
 
                 if chunk.should_seal() {

@@ -574,19 +574,19 @@ impl AggQueryPlanner {
             match filter.mode {
                 TagMatchMode::Exact => {
                     matcher = matcher.with(&filter.key, &filter.value);
-                }
+                },
                 TagMatchMode::Regex => {
                     matcher = matcher.with_regex(&filter.key, &filter.value);
-                }
+                },
                 TagMatchMode::Prefix => {
                     matcher = matcher.with_prefix(&filter.key, &filter.value);
-                }
+                },
                 TagMatchMode::NotEqual => {
                     matcher = matcher.without(&filter.key, &filter.value);
-                }
+                },
                 TagMatchMode::Exists => {
                     matcher = matcher.has_key(&filter.key);
-                }
+                },
             }
         }
 
@@ -719,17 +719,17 @@ impl std::fmt::Display for QueryPlanError {
                     "Invalid time range: start ({}) must be less than end ({})",
                     start, end
                 )
-            }
+            },
             QueryPlanError::TooManySeries { count, limit } => {
                 write!(
                     f,
                     "Query matched too many series: {} (limit: {})",
                     count, limit
                 )
-            }
+            },
             QueryPlanError::CardinalityExceeded(e) => {
                 write!(f, "Cardinality limit exceeded: {}", e)
-            }
+            },
             QueryPlanError::ResolutionError(msg) => write!(f, "Series resolution failed: {}", msg),
             QueryPlanError::ExecutionError(msg) => write!(f, "Query execution failed: {}", msg),
             QueryPlanError::Internal(msg) => write!(f, "Internal error: {}", msg),
@@ -948,7 +948,7 @@ mod tests {
             .with_tag_regex("host", "web-.*")
             .has_tag("tier")
             .without_tag("deprecated", "true")
-            .time_range(0, 3600000)
+            .time_range(0, 3_600_000)
             .aggregate(AggregateFunction::Max)
             .window_size(Duration::from_secs(60))
             .group_by(&["host"])

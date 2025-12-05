@@ -140,7 +140,7 @@ impl NetworkError {
                         | io::ErrorKind::Interrupted
                         | io::ErrorKind::WouldBlock
                 )
-            }
+            },
             NetworkError::Timeout { .. } => true,
             NetworkError::RateLimited { .. } => true,
             NetworkError::ConnectionClosed { .. } => true,

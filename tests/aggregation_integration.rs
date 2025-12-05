@@ -748,7 +748,7 @@ fn test_kmv_estimator_merge_error() {
         Err(CardinalityMergeError::MismatchedK { self_k, other_k }) => {
             assert_eq!(self_k, 64);
             assert_eq!(other_k, 128);
-        }
+        },
         Ok(_) => panic!("Expected merge to fail with mismatched k"),
     }
 }

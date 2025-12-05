@@ -1,0 +1,58 @@
+# clippy.toml - Security-focused Clippy configuration
+# Documentation: https://rust-lang.github.io/rust-clippy/
+
+# Maximum allowed cognitive complexity
+cognitive-complexity-threshold = 25
+
+# Maximum allowed lines in a function
+too-many-lines-threshold = 100
+
+# Maximum allowed arguments in a function
+too-many-arguments-threshold = 7
+
+# Maximum allowed struct fields
+max-struct-bools = 3
+
+# Prevent overly large types on the stack
+trivial-copy-size-limit = 16
+
+# Large error types threshold
+large-error-threshold = 128
+
+# Enum variant size difference threshold
+enum-variant-size-threshold = 200
+
+# Documentation requirements
+missing-docs-in-crate-items = true
+
+# Disallowed methods (security-sensitive)
+# Note: unwrap/expect are checked via clippy::unwrap_used lint (warn level, allows in tests)
+# This list focuses on methods that are security risks regardless of context
+disallowed-methods = [
+    # Unsafe string operations
+    { path = "std::string::String::from_utf8_unchecked", reason = "Use from_utf8() and handle the error" },
+
+    # Deprecated crypto
+    { path = "md5::*", reason = "MD5 is cryptographically broken" },
+    { path = "sha1::*", reason = "SHA1 is cryptographically weak" },
+]
+
+# Disallowed types (security-sensitive)
+disallowed-types = [
+    # Weak random number generators
+    { path = "rand::rngs::SmallRng", reason = "Use StdRng or OsRng for security-sensitive operations" },
+    
+    # Note: HashMap is allowed - deterministic behavior not always required
+    # { path = "std::collections::HashMap", reason = "Consider using hashbrown::HashMap or indexmap for deterministic behavior" },
+]
+
+# Allowed wildcard imports (restrict to known safe modules)
+allowed-wildcard-imports = [
+    "super::*",
+]
+
+# Avoid indexing into arrays/slices
+avoid-breaking-exported-api = true
+
+# Arithmetic side effects configuration
+arithmetic-side-effects-allowed = []

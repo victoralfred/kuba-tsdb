@@ -194,7 +194,7 @@ impl HealthCheck {
         let storage_health = match self.time_since_last_write() {
             Some(duration) if duration > Duration::from_secs(60) => {
                 SubsystemHealth::degraded("storage", "No writes in the last 60 seconds")
-            }
+            },
             _ => SubsystemHealth::healthy("storage"),
         };
         subsystems.push(storage_health);

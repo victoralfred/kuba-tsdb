@@ -498,12 +498,12 @@ impl TagResolver {
                     Some(value_id) => Ok(Some(TagFilter::exact(key_id, value_id))),
                     None => Ok(None), // Value doesn't exist, no match
                 }
-            }
+            },
 
             MatchMode::Any => {
                 // Any value for this key
                 Ok(Some(TagFilter::has_key(key_id)))
-            }
+            },
 
             MatchMode::Not(inner) => {
                 // Build inner filter and negate
@@ -513,7 +513,7 @@ impl TagResolver {
                     // Inner doesn't match anything, so NOT matches everything
                     Ok(Some(TagFilter::All))
                 }
-            }
+            },
 
             MatchMode::OneOf(values) => {
                 // Multiple values with OR semantics
@@ -530,7 +530,7 @@ impl TagResolver {
                 } else {
                     Ok(Some(TagFilter::or(value_filters)))
                 }
-            }
+            },
 
             MatchMode::Regex(pattern) => {
                 if !self.config.enable_regex {
@@ -541,12 +541,12 @@ impl TagResolver {
 
                 // Regex matching requires scanning all values for this key
                 self.build_regex_filter(key_id, key, pattern, tag_dict)
-            }
+            },
 
             MatchMode::Prefix(prefix) => {
                 // Prefix matching: find all values that start with prefix
                 self.build_prefix_filter(key_id, key, prefix, tag_dict)
-            }
+            },
         }
     }
 
@@ -591,7 +591,7 @@ impl TagResolver {
                     "Invalid regex '{}': {}",
                     truncated, e
                 ))));
-            }
+            },
         };
 
         // Cache the compiled regex (write lock)

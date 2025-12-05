@@ -251,6 +251,9 @@ impl MmapChunk {
         }
 
         // Memory-map the file (read-only)
+        // SAFETY: The file handle is valid and open. We map it read-only with a length
+        // validated to be at least MIN_CHUNK_SIZE bytes. The file will remain open for
+        // the lifetime of the mmap. No mutable aliases exist since we only create one mmap.
         let mmap = unsafe {
             memmap2::MmapOptions::new()
                 .len(file_size as usize)
@@ -520,14 +523,14 @@ impl MmapChunk {
                     .decompress(&block)
                     .await
                     .map_err(|e| format!("AHPAC decompression failed: {}", e))
-            }
+            },
             _ => {
                 let compressor = KubaCompressor::new();
                 compressor
                     .decompress(&block)
                     .await
                     .map_err(|e| format!("Kuba decompression failed: {}", e))
-            }
+            },
         }
     }
 
@@ -581,6 +584,10 @@ impl MmapChunk {
             #[cfg(not(target_os = "linux"))]
             const MADV_DONTNEED: libc::c_int = 4;
 
+            // SAFETY: The mmap pointer is valid for the duration of this call since we hold
+            // &self. The mmap.len() correctly represents the mapped region size. MADV_DONTNEED
+            // is a hint to the kernel and doesn't invalidate the mapping - it may discard
+            // pages but they will be re-read from the file on next access.
             unsafe {
                 let result = libc::madvise(
                     self.mmap.as_ptr() as *mut libc::c_void,
@@ -625,11 +632,17 @@ impl MmapChunk {
 // - No mutable references to mmap data are ever created
 // - All mutations go through atomic operations (last_accessed)
 //
-// THREAD SAFETY:
-// - Concurrent reads: Safe (read-only mmap, immutable header)
-// - Concurrent last_accessed updates: Safe (atomic operations)
-// - No concurrent writes: Guaranteed by read-only mmap
+// SAFETY: MmapChunk can be sent to another thread because:
+// - The mmap is read-only and backed by a file, so no data races on the mapped memory
+// - All fields are either Send (File, Mmap, PathBuf, ChunkHeader) or atomic (AtomicU64)
+// - No raw pointers or non-Send types are stored
 unsafe impl Send for MmapChunk {}
+
+// SAFETY: MmapChunk can be shared between threads because:
+// - The mmap is read-only, so concurrent reads are safe (no mutation)
+// - last_accessed uses atomic operations (AtomicU64) for thread-safe updates
+// - All other fields are immutable after construction
+// - The underlying file and mmap remain valid for the struct's lifetime
 unsafe impl Sync for MmapChunk {}
 
 #[cfg(test)]

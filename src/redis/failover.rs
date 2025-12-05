@@ -451,16 +451,16 @@ impl FailoverManager {
             HealthStatus::Healthy => {
                 self.on_primary_healthy().await;
                 HealthStatus::Healthy
-            }
+            },
             HealthStatus::Degraded => {
                 // Degraded is still usable, just slower
                 debug!("Primary Redis is degraded");
                 HealthStatus::Degraded
-            }
+            },
             HealthStatus::Unhealthy | HealthStatus::Unknown => {
                 self.on_primary_failure().await;
                 primary_health
-            }
+            },
         }
     }
 
@@ -593,7 +593,7 @@ impl FailoverManager {
             FailoverState::Replica => {
                 let replicas = self.replicas.read().await;
                 replicas.first().map(Arc::clone)
-            }
+            },
             _ => None,
         }
     }

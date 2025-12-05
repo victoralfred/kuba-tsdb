@@ -351,13 +351,13 @@ impl ServiceManager {
                                 dep
                             )));
                         }
-                    }
+                    },
                     None => {
                         return Err(ServiceError::DependencyError(format!(
                             "Dependency '{}' not found",
                             dep
                         )));
-                    }
+                    },
                 }
             }
 
@@ -417,16 +417,16 @@ impl ServiceManager {
             match tokio::time::timeout(remaining, task).await {
                 Ok(Ok(Ok(()))) => {
                     tracing::debug!(service = name, "Service stopped gracefully");
-                }
+                },
                 Ok(Ok(Err(e))) => {
                     tracing::warn!(service = name, error = %e, "Service stopped with error");
-                }
+                },
                 Ok(Err(e)) => {
                     tracing::error!(service = name, error = %e, "Service task panicked");
-                }
+                },
                 Err(_) => {
                     tracing::warn!(service = name, "Service shutdown timed out, aborting");
-                }
+                },
             }
         }
 
@@ -514,7 +514,7 @@ impl ServiceManager {
                     // Wait for backoff before restarting
                     tokio::time::sleep(*backoff).await;
                     true
-                }
+                },
                 RestartPolicy::OnFailure {
                     max_retries,
                     backoff,
@@ -533,7 +533,7 @@ impl ServiceManager {
                         );
                         false
                     }
-                }
+                },
             };
 
             if should_restart {
@@ -550,10 +550,10 @@ impl ServiceManager {
                     Ok(()) => {
                         tracing::debug!(service = name, "Service restarted successfully");
                         restarted.push(name);
-                    }
+                    },
                     Err(e) => {
                         tracing::error!(service = name, error = %e, "Failed to restart service");
-                    }
+                    },
                 }
             }
         }

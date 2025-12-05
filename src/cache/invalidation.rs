@@ -253,7 +253,7 @@ impl InvalidationPublisher {
                     redis::ErrorKind::IoError,
                     "Serialization failed",
                 )));
-            }
+            },
         };
 
         let mut conn = self.client.get_multiplexed_async_connection().await?;
@@ -267,12 +267,12 @@ impl InvalidationPublisher {
                     "Published invalidation event"
                 );
                 Ok(())
-            }
+            },
             Err(e) => {
                 self.stats.failures.fetch_add(1, Ordering::Relaxed);
                 warn!(error = %e, channel = channel, "Failed to publish invalidation event");
                 Err(e)
-            }
+            },
         }
     }
 
@@ -415,24 +415,21 @@ impl InvalidationSubscriber {
                     // Normal shutdown
                     debug!("Invalidation subscriber shutting down");
                     break Ok(());
-                }
+                },
                 Err(e) => {
                     self.stats.reconnects.fetch_add(1, Ordering::Relaxed);
                     warn!(error = %e, "Pub/Sub connection lost, reconnecting in 1s...");
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                }
+                },
             }
         }
     }
 
     /// Internal method to connect and listen
-    #[allow(deprecated)] // get_async_connection is required for PubSub
     async fn connect_and_listen(&self) -> Result<(), RedisError> {
         let client = Client::open(self.config.redis_url.as_str())?;
-        // Note: We must use get_async_connection (not multiplexed) for PubSub
-        // because PubSub requires a dedicated connection
-        let conn = client.get_async_connection().await?;
-        let mut pubsub = conn.into_pubsub();
+        // Use get_async_pubsub() for dedicated PubSub connection
+        let mut pubsub = client.get_async_pubsub().await?;
 
         // Subscribe to configured channels
         if self.config.subscribe_series {
@@ -468,7 +465,7 @@ impl InvalidationSubscriber {
                     // Broadcast to all local receivers
                     // Ignore errors (no receivers is OK)
                     let _ = self.tx.send(event);
-                }
+                },
                 Err(e) => {
                     self.stats.parse_errors.fetch_add(1, Ordering::Relaxed);
                     warn!(
@@ -477,7 +474,7 @@ impl InvalidationSubscriber {
                         payload = payload,
                         "Failed to parse invalidation event"
                     );
-                }
+                },
             }
         }
 
@@ -534,14 +531,14 @@ pub async fn setup_cache_invalidation(
                         series_id = series_id,
                         "Invalidated cache for series (via Pub/Sub)"
                     );
-                }
+                },
                 InvalidationEvent::ChunkSealed { series_id, .. } => {
                     // Could also invalidate chunk cache here if needed
                     cache.invalidate_series(series_id);
-                }
+                },
                 InvalidationEvent::MetadataUpdate { series_id, .. } => {
                     cache.invalidate_series(series_id);
-                }
+                },
             }
         }
     });

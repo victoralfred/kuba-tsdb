@@ -89,7 +89,7 @@ impl fmt::Display for WalError {
         match self {
             WalError::Io { source, context } => {
                 write!(f, "WAL I/O error ({}): {}", context, source)
-            }
+            },
             WalError::Corruption {
                 segment_id,
                 offset,
@@ -100,7 +100,7 @@ impl fmt::Display for WalError {
                     "WAL corruption in segment {} at offset {}: {}",
                     segment_id, offset, message
                 )
-            }
+            },
             WalError::ChecksumMismatch {
                 expected,
                 actual,
@@ -112,7 +112,7 @@ impl fmt::Display for WalError {
                     "WAL checksum mismatch in segment {} at offset {}: expected {:08x}, got {:08x}",
                     segment_id, offset, expected, actual
                 )
-            }
+            },
             WalError::InvalidRecord {
                 message,
                 segment_id,
@@ -123,16 +123,16 @@ impl fmt::Display for WalError {
                     "Invalid WAL record in segment {} at offset {}: {}",
                     segment_id, offset, message
                 )
-            }
+            },
             WalError::SegmentNotFound { path } => {
                 write!(f, "WAL segment not found: {:?}", path)
-            }
+            },
             WalError::Config { message } => {
                 write!(f, "WAL configuration error: {}", message)
-            }
+            },
             WalError::ChannelClosed => {
                 write!(f, "WAL writer channel closed")
-            }
+            },
             WalError::SegmentFull {
                 segment_id,
                 current_size,
@@ -143,13 +143,13 @@ impl fmt::Display for WalError {
                     "WAL segment {} is full ({}/{} bytes)",
                     segment_id, current_size, max_size
                 )
-            }
+            },
             WalError::MaxSegmentsReached { count, max } => {
                 write!(f, "Maximum WAL segments reached ({}/{})", count, max)
-            }
+            },
             WalError::RecoveryFailed { message } => {
                 write!(f, "WAL recovery failed: {}", message)
-            }
+            },
         }
     }
 }

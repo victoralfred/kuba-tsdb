@@ -140,18 +140,18 @@ impl CacheEntry {
         match &result.data {
             ResultData::Rows(rows) => {
                 size += rows.len() * 48;
-            }
+            },
             ResultData::Series(series) => {
                 for s in series {
                     size += s.values.len() * 16;
                 }
-            }
+            },
             ResultData::Scalar(_) => {
                 size += 8;
-            }
+            },
             ResultData::Explain(s) => {
                 size += s.len();
-            }
+            },
         }
 
         size

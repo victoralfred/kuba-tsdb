@@ -5,7 +5,7 @@
 # ============================================================
 # Stage 1: BUILDER
 # ============================================================
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.91.1-slim-bookworm AS builder
 
 # Define app name for clarity and re-use
 ARG APP_NAME=tsdb-server
@@ -32,7 +32,11 @@ RUN mkdir -p src benches src/bin/server \
     && echo "pub fn dummy() {}" > src/lib.rs \
     && echo "fn main() {}" > benches/compression.rs \
     && echo "fn main() {}" > benches/ingestion.rs \
-    && echo "fn main() {}" > benches/mmap_performance.rs
+    && echo "fn main() {}" > benches/mmap_performance.rs \
+    && echo "fn main() {}" > benches/ahpac_benchmark.rs \
+    && echo "fn main() {}" > benches/simd_benchmark.rs \
+    && echo "fn main() {}" > benches/ans_benchmark.rs \
+    && echo "fn main() {}" > benches/parallel_benchmark.rs
 
 # Build dependencies (fills target/release with cached dependency artifacts)
 RUN cargo build --release --lib

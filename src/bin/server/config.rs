@@ -82,13 +82,13 @@ pub fn load_config_with_app() -> (ServerConfig, ApplicationConfig) {
                 eprintln!("[config] Loaded configuration from: {}", path);
                 let server_config = ServerConfig::from(config.clone());
                 return (server_config, config);
-            }
+            },
             Err(e) => {
                 eprintln!(
                     "[config] Failed to load config from {}: {}. Trying defaults.",
                     path, e
                 );
-            }
+            },
         }
     }
 
@@ -100,13 +100,13 @@ pub fn load_config_with_app() -> (ServerConfig, ApplicationConfig) {
                 eprintln!("[config] Loaded configuration from application.toml");
                 let server_config = ServerConfig::from(config.clone());
                 return (server_config, config);
-            }
+            },
             Err(e) => {
                 eprintln!(
                     "[config] Failed to parse application.toml: {}. Trying tsdb.toml.",
                     e
                 );
-            }
+            },
         }
     } else {
         eprintln!(
@@ -125,10 +125,10 @@ pub fn load_config_with_app() -> (ServerConfig, ApplicationConfig) {
                 eprintln!("[config] Loaded configuration from tsdb.toml (legacy)");
                 let server_config = ServerConfig::from(config.clone());
                 return (server_config, config);
-            }
+            },
             Err(e) => {
                 eprintln!("[config] Failed to parse tsdb.toml: {}. Using defaults.", e);
-            }
+            },
         }
     }
 

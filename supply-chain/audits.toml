@@ -1,0 +1,16 @@
+# supply-chain/audits.toml
+# Audit records for dependencies
+# Run 'cargo vet certify <crate>' to add new audits
+
+# This file contains first-party audit records for the project.
+# Add entries here as you audit dependencies.
+#
+# Example:
+# [[audits.serde]]
+# who = "Your Name <your.email@example.com>"
+# criteria = "safe-to-deploy"
+# version = "1.0.193"
+# notes = "Widely used serialization library, reviewed for memory safety"
+
+# Placeholder for future audits
+# Add your audits below this line

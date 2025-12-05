@@ -144,7 +144,7 @@ impl StorageScanOperator {
                 self.initialized = true;
                 self.exhausted = true;
                 return Ok(());
-            }
+            },
         };
 
         // Get chunks from storage index
@@ -180,7 +180,7 @@ impl StorageScanOperator {
                 // query: [start, end]
                 // overlaps if: chunk_end >= query_start AND chunk_start <= query_end
                 chunk.end_timestamp >= range.start && chunk.start_timestamp <= range.end
-            }
+            },
             None => true, // No time filter, include all chunks
         }
     }

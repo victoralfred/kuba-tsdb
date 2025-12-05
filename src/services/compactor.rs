@@ -298,15 +298,15 @@ impl CompactionService {
             CompactionStrategy::SizeBased => {
                 // Find small chunks that can be merged
                 // Real implementation would query storage for chunk sizes
-            }
+            },
             CompactionStrategy::TimeBased => {
                 // Find chunks within the same time window
                 // Real implementation would group chunks by time
-            }
+            },
             CompactionStrategy::LeveledCompaction => {
                 // Find chunks at each level that exceed size ratio
                 // Real implementation would track levels and ratios
-            }
+            },
         }
 
         Ok(jobs)

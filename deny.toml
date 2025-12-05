@@ -1,8 +1,55 @@
-[licenses]
-unlicensed = "deny"
-default = "deny"
+# deny.toml - cargo-deny 0.17+ (late 2024+)
 
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+ignore = []
+
+[licenses]
+version = 2
 allow = [
-    "MIT",
-    "Apache-2.0"
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "OpenSSL"
 ]
+
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+skip = [
+  { name = "thiserror" },
+  { name = "hashbrown" },
+  { name = "windows-sys" },
+  { name = "windows-targets" },
+  { name = "windows_x86_64_gnu" },
+  { name = "windows_x86_64_msvc" },
+  { name = "windows_x86_64_gnullvm" },
+  { name = "windows_i686_gnu" },
+  { name = "windows_i686_msvc" },
+  { name = "windows_i686_gnullvm" },
+  { name = "windows_aarch64_msvc" },
+  { name = "windows_aarch64_gnullvm" },
+  {name = "thiserror-impl"}
+]
+deny = [
+  "GPL-2.0",
+  "GPL-3.0",
+  "AGPL-3.0"
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

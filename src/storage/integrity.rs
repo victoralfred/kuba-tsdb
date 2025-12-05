@@ -128,17 +128,17 @@ impl std::fmt::Display for IntegrityError {
                     "Checksum mismatch: expected 0x{:016X}, got 0x{:016X} ({} bytes)",
                     expected, actual, data_size
                 )
-            }
+            },
             IntegrityError::InvalidMagic { expected, actual } => {
                 write!(
                     f,
                     "Invalid magic: expected {:?}, got {:?}",
                     expected, actual
                 )
-            }
+            },
             IntegrityError::InvalidHeader { reason } => {
                 write!(f, "Invalid header: {}", reason)
-            }
+            },
             IntegrityError::TruncatedFile {
                 expected_size,
                 actual_size,
@@ -148,13 +148,13 @@ impl std::fmt::Display for IntegrityError {
                     "Truncated file: expected {} bytes, got {}",
                     expected_size, actual_size
                 )
-            }
+            },
             IntegrityError::IoError { path, reason } => {
                 write!(f, "IO error reading {:?}: {}", path, reason)
-            }
+            },
             IntegrityError::DecompressionFailed { codec, reason } => {
                 write!(f, "Decompression failed ({}): {}", codec, reason)
-            }
+            },
         }
     }
 }
@@ -478,7 +478,7 @@ impl IntegrityChecker {
             Err(e) => {
                 error!(path = ?data_dir, error = %e, "Failed to read data directory");
                 return report;
-            }
+            },
         };
 
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -503,11 +503,11 @@ impl IntegrityChecker {
                                 match self.verify_chunk_file(&chunk_path).await {
                                     Ok(()) => {
                                         report.valid_chunks += 1;
-                                    }
+                                    },
                                     Err(corruption) => {
                                         report.corrupted_chunks += 1;
                                         report.corruptions.push(corruption);
-                                    }
+                                    },
                                 }
                             }
                         }
@@ -585,7 +585,7 @@ pub async fn attempt_chunk_repair(
                 points_recovered: 0,
                 backup_path: None,
             });
-        }
+        },
     };
 
     // Try to extract header info for recovery context
@@ -749,10 +749,10 @@ impl RecoveryManager {
                 Ok(Ok(repair_result)) => results.push(repair_result),
                 Ok(Err(e)) => {
                     results.push(RepairResult::failure(format!("Repair error: {}", e)));
-                }
+                },
                 Err(e) => {
                     results.push(RepairResult::failure(format!("Task panicked: {}", e)));
-                }
+                },
             }
         }
 

@@ -76,7 +76,7 @@ pub fn parse_promql(input: &str) -> QueryResult<Query> {
                     remaining.trim()
                 )))
             }
-        }
+        },
         Err(e) => Err(QueryError::parse(format!("PromQL parse error: {:?}", e))),
     }
 }
@@ -517,7 +517,7 @@ mod tests {
         match result.unwrap() {
             Query::Select(q) => {
                 assert_eq!(q.selector.measurement.as_ref().unwrap(), "cpu_usage");
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -534,10 +534,10 @@ mod tests {
                     TagMatcher::Equals { key, value } => {
                         assert_eq!(key, "host");
                         assert_eq!(value, "server01");
-                    }
+                    },
                     _ => panic!("Expected Equals matcher"),
                 }
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -550,7 +550,7 @@ mod tests {
             Query::Select(q) => {
                 // **NEW TEST**: Verify multiple labels are added to selector
                 assert_eq!(q.selector.tag_filters.len(), 2);
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -587,7 +587,7 @@ mod tests {
                 TagMatcher::Regex { key, pattern } => {
                     assert_eq!(key, "host");
                     assert_eq!(pattern, "server.*");
-                }
+                },
                 _ => panic!("Expected Regex matcher"),
             }
         }
@@ -616,10 +616,10 @@ mod tests {
                     TagMatcher::Equals { key, value } => {
                         assert_eq!(key, "status");
                         assert_eq!(value, "200");
-                    }
+                    },
                     _ => panic!("Expected Equals matcher"),
                 }
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -633,7 +633,7 @@ mod tests {
                 // TimeRange uses milliseconds, 5 minutes = 300,000 ms
                 let duration = q.time_range.end - q.time_range.start;
                 assert!((299_000..=301_000).contains(&duration));
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -651,7 +651,7 @@ mod tests {
         match result.unwrap() {
             Query::Aggregate(q) => {
                 assert!(matches!(q.aggregation.function, AggregationFunction::Avg));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -663,7 +663,7 @@ mod tests {
         match result.unwrap() {
             Query::Aggregate(q) => {
                 assert!(matches!(q.aggregation.function, AggregationFunction::Sum));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -677,7 +677,7 @@ mod tests {
                 assert_eq!(q.aggregation.group_by.len(), 2);
                 assert!(q.aggregation.group_by.contains(&"host".to_string()));
                 assert!(q.aggregation.group_by.contains(&"method".to_string()));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -690,7 +690,7 @@ mod tests {
             Query::Aggregate(q) => {
                 assert!(matches!(q.aggregation.function, AggregationFunction::Rate));
                 assert!(q.aggregation.window.is_some());
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -705,7 +705,7 @@ mod tests {
                     q.aggregation.function,
                     AggregationFunction::Increase
                 ));
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -729,7 +729,7 @@ mod tests {
                     (q.time_range.end - expected_end).abs() < 1000,
                     "Time range end should be shifted by offset"
                 );
-            }
+            },
             _ => panic!("Expected Select query"),
         }
     }
@@ -757,7 +757,7 @@ mod tests {
                     (duration_ms - 3_600_000).abs() < 1000,
                     "Duration should be 1 hour"
                 );
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }
@@ -785,7 +785,7 @@ mod tests {
                     (duration_ms - 300_000).abs() < 1000,
                     "Duration should be 5 minutes"
                 );
-            }
+            },
             _ => panic!("Expected Aggregate query"),
         }
     }

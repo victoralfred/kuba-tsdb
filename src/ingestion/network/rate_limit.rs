@@ -150,7 +150,7 @@ impl TokenBucket {
             Err(poisoned) => {
                 // Recover from poisoned mutex
                 poisoned.into_inner()
-            }
+            },
         };
 
         let now = Instant::now();
@@ -212,7 +212,7 @@ impl From<IpAddr> for IpKey {
                     | ((segments[2] as u64) << 16)
                     | (segments[3] as u64);
                 IpKey::V6Prefix(prefix)
-            }
+            },
         }
     }
 }

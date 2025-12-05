@@ -262,7 +262,7 @@ impl ChunkHeader {
 }
 
 /// Compression type for chunk data
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum CompressionType {
     /// No compression
@@ -800,12 +800,12 @@ impl Chunk {
                 if duration >= config.max_duration_ms {
                     return true;
                 }
-            }
+            },
             None => {
                 // Overflow means extreme time range spanning i64 limits
                 // Definitely should seal in this case
                 return true;
-            }
+            },
         }
 
         // Check memory size threshold
@@ -944,17 +944,17 @@ impl Chunk {
                     // Use AHPAC adaptive compression
                     let compressor = AhpacCompressor::new();
                     futures::executor::block_on(compressor.compress(&points))
-                }
+                },
                 CompressionType::Kuba | CompressionType::KubaSnappy | CompressionType::None => {
                     // Use Kuba (Gorilla-based) compression
                     let compressor = KubaCompressor::new();
                     futures::executor::block_on(compressor.compress(&points))
-                }
+                },
                 CompressionType::Snappy => {
                     // Snappy-only not supported for time-series, fall back to Kuba
                     let compressor = KubaCompressor::new();
                     futures::executor::block_on(compressor.compress(&points))
-                }
+                },
             }
         })
         .await
@@ -1250,7 +1250,7 @@ impl Chunk {
                     .decompress(&compressed_block)
                     .await
                     .map_err(|e| format!("AHPAC decompression failed: {}", e))
-            }
+            },
             _ => {
                 // Kuba, KubaSnappy, Snappy, None - all use Kuba decompressor
                 let compressor = KubaCompressor::new();
@@ -1258,7 +1258,7 @@ impl Chunk {
                     .decompress(&compressed_block)
                     .await
                     .map_err(|e| format!("Kuba decompression failed: {}", e))
-            }
+            },
         }
     }
 

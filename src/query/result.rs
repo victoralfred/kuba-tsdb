@@ -162,7 +162,7 @@ impl QueryResult {
                         row.value
                     ));
                 }
-            }
+            },
             ResultData::Series(series) => {
                 // Header
                 output.push_str("series_id,timestamp,value\n");
@@ -173,15 +173,15 @@ impl QueryResult {
                         output.push_str(&format!("{},{},{}\n", s.series_id, ts, val));
                     }
                 }
-            }
+            },
             ResultData::Scalar(value) => {
                 output.push_str("value\n");
                 output.push_str(&format!("{}\n", value));
-            }
+            },
             ResultData::Explain(plan) => {
                 // For CSV, just output the plan as-is
                 output.push_str(plan);
-            }
+            },
         }
 
         output
@@ -217,7 +217,7 @@ impl QueryResult {
                 if rows.len() > 100 {
                     output.push_str(&format!("... and {} more rows\n", rows.len() - 100));
                 }
-            }
+            },
             ResultData::Series(series) => {
                 for s in series {
                     output.push_str(&format!("\nSeries: {}\n", s.series_id));
@@ -231,15 +231,15 @@ impl QueryResult {
 
                     output.push_str("+----------------------+------------------+\n");
                 }
-            }
+            },
             ResultData::Scalar(value) => {
                 output.push_str(&format!("Result: {}\n", value));
-            }
+            },
             ResultData::Explain(plan) => {
                 // For table format, just output the plan
                 output.push_str(plan);
                 return output; // Skip metadata footer for explain
-            }
+            },
         }
 
         // Metadata footer

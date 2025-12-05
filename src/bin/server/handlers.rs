@@ -359,7 +359,7 @@ pub async fn write_points(
                     }
 
                     id
-                }
+                },
                 None => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -374,9 +374,9 @@ pub async fn write_points(
                         }),
                     )
                         .into_response();
-                }
+                },
             }
-        }
+        },
     };
 
     let points: Vec<DataPoint> = req
@@ -423,7 +423,7 @@ pub async fn write_points(
                 }),
             )
                 .into_response()
-        }
+        },
         Err(e) => {
             error!(error = %e, series_id = series_id, "Write failed");
             (
@@ -437,7 +437,7 @@ pub async fn write_points(
                 }),
             )
                 .into_response()
-        }
+        },
     }
 }
 
@@ -470,7 +470,7 @@ pub async fn query_points(
                         error: Some(format!("Invalid series_id format: {}", id_str)),
                     }),
                 );
-            }
+            },
         },
         None => match &params.metric {
             Some(metric) => {
@@ -499,7 +499,7 @@ pub async fn query_points(
                                 error: Some(format!("Series not found for metric: {}", metric)),
                             }),
                         );
-                    }
+                    },
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -511,9 +511,9 @@ pub async fn query_points(
                                 error: Some(format!("Series lookup error: {}", e)),
                             }),
                         );
-                    }
+                    },
                 }
-            }
+            },
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -525,7 +525,7 @@ pub async fn query_points(
                         error: Some("Must provide either 'series_id' or 'metric' name".to_string()),
                     }),
                 );
-            }
+            },
         },
     };
 
@@ -642,7 +642,7 @@ pub async fn query_points(
                     error: None,
                 }),
             )
-        }
+        },
         Err(e) => {
             error!(error = %e, series_id = series_id, "Query failed");
             (
@@ -655,7 +655,7 @@ pub async fn query_points(
                     error: Some(e.to_string()),
                 }),
             )
-        }
+        },
     }
 }
 
@@ -740,7 +740,7 @@ pub async fn execute_sql_promql_query(
                     error: None,
                 }),
             )
-        }
+        },
         Err(e) => {
             error!(error = %e, "Query execution failed");
             (
@@ -757,7 +757,7 @@ pub async fn execute_sql_promql_query(
                     error: Some(e),
                 }),
             )
-        }
+        },
     }
 }
 
@@ -808,7 +808,7 @@ pub async fn register_series(
                     "series_id": series_id
                 })),
             )
-        }
+        },
         Err(e) => {
             error!(error = %e, "Failed to register series");
             (
@@ -818,7 +818,7 @@ pub async fn register_series(
                     "error": e.to_string()
                 })),
             )
-        }
+        },
     }
 }
 
@@ -840,7 +840,7 @@ pub async fn find_series(
                     error: None,
                 }),
             )
-        }
+        },
         Err(e) => {
             error!(error = %e, "Failed to find series");
             (
@@ -851,7 +851,7 @@ pub async fn find_series(
                     error: Some(e.to_string()),
                 }),
             )
-        }
+        },
     }
 }
 

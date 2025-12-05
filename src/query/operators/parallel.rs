@@ -705,7 +705,7 @@ impl ParallelAggregator {
             AggregationState::Rate { first, last } => match (first, last) {
                 (Some((t1, v1)), Some((t2, v2))) if t2 > t1 => {
                     (v2 - v1) / ((t2 - t1) as f64 / 1_000_000_000.0)
-                }
+                },
                 _ => f64::NAN,
             },
             AggregationState::Distinct(set) => set.len() as f64,
@@ -721,14 +721,14 @@ impl ParallelAggregator {
                     a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 sorted[idx]
-            }
+            },
             AggregationState::PercentileTDigest { target, digest } => {
                 if digest.is_empty() {
                     f64::NAN
                 } else {
                     digest.estimate_quantile(*target as f64 / 100.0)
                 }
-            }
+            },
         }
     }
 
@@ -740,23 +740,23 @@ impl ParallelAggregator {
             (AggregationState::Min(a), AggregationState::Min(b)) => match (*a, *b) {
                 (Some(av), Some(bv)) => *a = Some(av.min(bv)),
                 (None, Some(bv)) => *a = Some(bv),
-                _ => {}
+                _ => {},
             },
             (AggregationState::Max(a), AggregationState::Max(b)) => match (*a, *b) {
                 (Some(av), Some(bv)) => *a = Some(av.max(bv)),
                 (None, Some(bv)) => *a = Some(bv),
-                _ => {}
+                _ => {},
             },
             (AggregationState::Count(a), AggregationState::Count(b)) => *a += b,
             (AggregationState::First(a), AggregationState::First(b)) => match (*a, *b) {
                 (Some((at, _)), Some((bt, bv))) if bt < at => *a = Some((bt, bv)),
                 (None, Some(bv)) => *a = Some(bv),
-                _ => {}
+                _ => {},
             },
             (AggregationState::Last(a), AggregationState::Last(b)) => match (*a, *b) {
                 (Some((at, _)), Some((bt, bv))) if bt > at => *a = Some((bt, bv)),
                 (None, Some(bv)) => *a = Some(bv),
-                _ => {}
+                _ => {},
             },
             (
                 AggregationState::Rate {
@@ -771,30 +771,30 @@ impl ParallelAggregator {
                 match (*af, *bf) {
                     (Some((at, _)), Some((bt, bv))) if bt < at => *af = Some((bt, bv)),
                     (None, Some(bv)) => *af = Some(bv),
-                    _ => {}
+                    _ => {},
                 }
                 match (*al, *bl) {
                     (Some((at, _)), Some((bt, bv))) if bt > at => *al = Some((bt, bv)),
                     (None, Some(bv)) => *al = Some(bv),
-                    _ => {}
+                    _ => {},
                 }
-            }
+            },
             (AggregationState::Distinct(a), AggregationState::Distinct(b)) => {
                 a.extend(b.iter());
-            }
+            },
             (
                 AggregationState::PercentileExact { values: a, .. },
                 AggregationState::PercentileExact { values: b, .. },
             ) => {
                 a.extend(b.iter());
-            }
+            },
             (
                 AggregationState::PercentileTDigest { digest: a, .. },
                 AggregationState::PercentileTDigest { digest: b, .. },
             ) => {
                 *a = tdigest::TDigest::merge_digests(vec![a.clone(), b.clone()]);
-            }
-            _ => {} // Mismatched types - shouldn't happen
+            },
+            _ => {}, // Mismatched types - shouldn't happen
         }
     }
 }

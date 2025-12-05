@@ -174,10 +174,10 @@ impl ChunkWriter {
                     Ok(chunk) => {
                         let _ = req.response_tx.send(Ok(()));
                         let _ = sealed_tx.send(chunk);
-                    }
+                    },
                     Err(e) => {
                         let _ = req.response_tx.send(Err(e));
-                    }
+                    },
                 }
             }
         });
@@ -418,9 +418,9 @@ impl ChunkWriter {
                                 "Cannot seal: chunk has {} active references (concurrent access)",
                                 Arc::strong_count(&arc)
                             ));
-                        }
+                        },
                     }
-                }
+                },
             };
 
             // Now seal the old chunk (new chunk is already active)
@@ -470,7 +470,7 @@ impl ChunkWriter {
                         "Cannot seal: chunk has {} active references (concurrent access detected)",
                         ref_count
                     ));
-                }
+                },
             };
 
             let path = self.generate_chunk_path();

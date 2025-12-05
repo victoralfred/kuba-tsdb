@@ -187,7 +187,7 @@ impl QueryPlanner {
                 // For EXPLAIN, plan the inner query and wrap it
                 let inner_plan = self.create_logical_plan(inner)?;
                 Ok(LogicalPlan::Explain(Box::new(inner_plan)))
-            }
+            },
         }
     }
 
@@ -345,7 +345,7 @@ impl QueryPlanner {
                     FoldedPredicate::AlwaysTrue => {
                         // Predicate is always true - remove the filter entirely
                         folded_input
-                    }
+                    },
                     FoldedPredicate::AlwaysFalse => {
                         // Predicate is always false - keep filter for early termination
                         // The executor can detect this and return empty results immediately
@@ -358,23 +358,23 @@ impl QueryPlanner {
                                 PredicateValue::Range(1.0, 0.0),
                             ),
                         }
-                    }
+                    },
                     FoldedPredicate::Simplified(new_predicate) => {
                         // Use the simplified predicate
                         LogicalPlan::Filter {
                             input: Box::new(folded_input),
                             predicate: new_predicate,
                         }
-                    }
+                    },
                     FoldedPredicate::Unchanged => {
                         // No simplification possible
                         LogicalPlan::Filter {
                             input: Box::new(folded_input),
                             predicate,
                         }
-                    }
+                    },
                 }
-            }
+            },
 
             // Process ScanWithPredicate - similar to Filter
             LogicalPlan::ScanWithPredicate {
@@ -391,7 +391,7 @@ impl QueryPlanner {
                             time_range,
                             columns,
                         }
-                    }
+                    },
                     FoldedPredicate::AlwaysFalse => {
                         // Keep the always-false predicate for early termination
                         LogicalPlan::ScanWithPredicate {
@@ -404,7 +404,7 @@ impl QueryPlanner {
                                 PredicateValue::Range(1.0, 0.0),
                             ),
                         }
-                    }
+                    },
                     FoldedPredicate::Simplified(new_predicate) => LogicalPlan::ScanWithPredicate {
                         selector,
                         time_range,
@@ -418,7 +418,7 @@ impl QueryPlanner {
                         predicate,
                     },
                 }
-            }
+            },
 
             // Recursively process other plan nodes
             LogicalPlan::Aggregate {
@@ -456,7 +456,7 @@ impl QueryPlanner {
             },
             LogicalPlan::Explain(inner) => {
                 LogicalPlan::Explain(Box::new(self.fold_constants(*inner)))
-            }
+            },
             // Leaf nodes pass through unchanged
             other => other,
         }
@@ -486,7 +486,7 @@ impl QueryPlanner {
                 } else {
                     FoldedPredicate::Unchanged
                 }
-            }
+            },
 
             // Check for empty IN sets
             (PredicateOp::In, PredicateValue::Set(values)) => {
@@ -503,7 +503,7 @@ impl QueryPlanner {
                 } else {
                     FoldedPredicate::Unchanged
                 }
-            }
+            },
 
             // Check for NaN comparisons that are always false
             (op, PredicateValue::Float(v)) if v.is_nan() => {
@@ -512,7 +512,7 @@ impl QueryPlanner {
                     PredicateOp::IsNull | PredicateOp::IsNotNull => FoldedPredicate::Unchanged,
                     _ => FoldedPredicate::AlwaysFalse,
                 }
-            }
+            },
 
             // Normalize integer values to float for consistent zone map pruning
             (op, PredicateValue::Int(i)) => FoldedPredicate::Simplified(Predicate::new(
@@ -525,19 +525,19 @@ impl QueryPlanner {
             // value > -Infinity is always true (for non-NaN values)
             (PredicateOp::Gt, PredicateValue::Float(v)) if *v == f64::NEG_INFINITY => {
                 FoldedPredicate::AlwaysTrue
-            }
+            },
             // value >= -Infinity is always true
             (PredicateOp::Gte, PredicateValue::Float(v)) if *v == f64::NEG_INFINITY => {
                 FoldedPredicate::AlwaysTrue
-            }
+            },
             // value < +Infinity is always true (for non-NaN values)
             (PredicateOp::Lt, PredicateValue::Float(v)) if *v == f64::INFINITY => {
                 FoldedPredicate::AlwaysTrue
-            }
+            },
             // value <= +Infinity is always true
             (PredicateOp::Lte, PredicateValue::Float(v)) if *v == f64::INFINITY => {
                 FoldedPredicate::AlwaysTrue
-            }
+            },
 
             // No simplification for other predicates
             _ => FoldedPredicate::Unchanged,
@@ -565,16 +565,16 @@ impl QueryPlanner {
                             columns,
                             predicate,
                         }
-                    }
+                    },
                     other => {
                         // Can't push down, keep structure
                         LogicalPlan::Filter {
                             input: Box::new(self.pushdown_predicates(other)),
                             predicate,
                         }
-                    }
+                    },
                 }
-            }
+            },
             // Recursively process other plan nodes
             LogicalPlan::Aggregate {
                 input,
@@ -611,7 +611,7 @@ impl QueryPlanner {
             },
             LogicalPlan::Explain(inner) => {
                 LogicalPlan::Explain(Box::new(self.pushdown_predicates(*inner)))
-            }
+            },
             // Leaf nodes pass through unchanged
             other => other,
         }
@@ -649,20 +649,20 @@ impl QueryPlanner {
             LogicalPlan::Scan { columns, .. } => {
                 // Start with columns already specified in scan
                 required.extend(columns.iter().cloned());
-            }
+            },
             LogicalPlan::ScanWithPredicate {
                 columns, predicate, ..
             } => {
                 required.extend(columns.iter().cloned());
                 // Predicate requires the field it references
                 required.insert(predicate.field.clone());
-            }
+            },
             LogicalPlan::Filter { input, predicate } => {
                 // Collect from input
                 required.extend(self.collect_required_columns(input));
                 // Add the field used in predicate
                 required.insert(predicate.field.clone());
-            }
+            },
             LogicalPlan::Aggregate {
                 input, group_by, ..
             } => {
@@ -674,31 +674,31 @@ impl QueryPlanner {
                 required.insert("value".to_string());
                 // Add group by columns
                 required.extend(group_by.iter().cloned());
-            }
+            },
             LogicalPlan::Sort { input, order_by } => {
                 required.extend(self.collect_required_columns(input));
                 // Add columns used in ordering
                 for (col, _) in order_by {
                     required.insert(col.clone());
                 }
-            }
+            },
             LogicalPlan::Limit { input, .. } => {
                 required.extend(self.collect_required_columns(input));
-            }
+            },
             LogicalPlan::Downsample { input, .. } => {
                 // Downsampling requires both timestamp and value
                 required.extend(self.collect_required_columns(input));
                 required.insert("timestamp".to_string());
                 required.insert("value".to_string());
-            }
+            },
             LogicalPlan::Latest { .. } => {
                 // Latest queries need timestamp and value
                 required.insert("timestamp".to_string());
                 required.insert("value".to_string());
-            }
+            },
             LogicalPlan::Explain(inner) => {
                 required.extend(self.collect_required_columns(inner));
-            }
+            },
         }
 
         required
@@ -731,7 +731,7 @@ impl QueryPlanner {
                     time_range,
                     columns: final_columns,
                 }
-            }
+            },
             LogicalPlan::ScanWithPredicate {
                 selector,
                 time_range,
@@ -760,7 +760,7 @@ impl QueryPlanner {
                     columns: pruned_columns,
                     predicate,
                 }
-            }
+            },
             LogicalPlan::Filter { input, predicate } => LogicalPlan::Filter {
                 input: Box::new(self.apply_column_pruning(*input, required)),
                 predicate,
@@ -800,7 +800,7 @@ impl QueryPlanner {
             },
             LogicalPlan::Explain(inner) => {
                 LogicalPlan::Explain(Box::new(self.apply_column_pruning(*inner, required)))
-            }
+            },
             // Leaf nodes without scan pass through
             other => other,
         }
@@ -846,35 +846,35 @@ impl QueryPlanner {
                     cpu_cost: rows as f64 * 0.001, // 1ms per 1000 rows
                     io_cost: chunks as f64 * 10.0, // 10ms per chunk
                 }
-            }
+            },
             LogicalPlan::Filter { input, .. } => {
                 // Filtering reduces output but scans same input
                 let mut cost = self.estimate_cost(input);
                 cost.estimated_rows /= 2; // Assume 50% selectivity
                 cost.cpu_cost *= 1.1; // Small overhead for predicate evaluation
                 cost
-            }
+            },
             LogicalPlan::Aggregate { input, .. } => {
                 // Aggregation compresses output significantly
                 let mut cost = self.estimate_cost(input);
                 cost.estimated_rows = (cost.estimated_rows / 100).max(1);
                 cost.cpu_cost *= 1.5; // Aggregation is CPU intensive
                 cost
-            }
+            },
             LogicalPlan::Sort { input, .. } => {
                 let mut cost = self.estimate_cost(input);
                 // Sort is O(n log n)
                 let n = cost.estimated_rows as f64;
                 cost.cpu_cost += n * n.log2() * 0.0001;
                 cost
-            }
+            },
             LogicalPlan::Limit { input, limit, .. } => {
                 let mut cost = self.estimate_cost(input);
                 if let Some(limit) = limit {
                     cost.estimated_rows = cost.estimated_rows.min(*limit);
                 }
                 cost
-            }
+            },
             LogicalPlan::Downsample {
                 input,
                 target_points,
@@ -884,7 +884,7 @@ impl QueryPlanner {
                 cost.estimated_rows = *target_points;
                 cost.cpu_cost *= 1.2; // Downsampling algorithm overhead
                 cost
-            }
+            },
             LogicalPlan::Latest { count, .. } => CostEstimate {
                 estimated_rows: *count,
                 estimated_bytes: count * 16,
@@ -898,7 +898,7 @@ impl QueryPlanner {
                 cost.io_cost = 0.0; // No actual I/O
                 cost.estimated_rows = 1; // Just returns plan description
                 cost
-            }
+            },
         }
     }
 }
@@ -1024,7 +1024,7 @@ impl LogicalPlan {
                     write!(f, ", time_range={}..{}", tr.start, tr.end)?;
                 }
                 writeln!(f, ")")
-            }
+            },
             LogicalPlan::ScanWithPredicate {
                 selector,
                 time_range,
@@ -1038,11 +1038,11 @@ impl LogicalPlan {
                 }
                 write!(f, ", predicate={:?}", predicate)?;
                 writeln!(f, ")")
-            }
+            },
             LogicalPlan::Filter { input, predicate } => {
                 writeln!(f, "{}Filter(predicate={:?})", prefix, predicate)?;
                 input.format_with_indent(f, indent + 1)
-            }
+            },
             LogicalPlan::Aggregate {
                 input,
                 functions,
@@ -1059,11 +1059,11 @@ impl LogicalPlan {
                 }
                 writeln!(f, ")")?;
                 input.format_with_indent(f, indent + 1)
-            }
+            },
             LogicalPlan::Sort { input, order_by } => {
                 writeln!(f, "{}Sort(order_by={:?})", prefix, order_by)?;
                 input.format_with_indent(f, indent + 1)
-            }
+            },
             LogicalPlan::Limit {
                 input,
                 limit,
@@ -1078,7 +1078,7 @@ impl LogicalPlan {
                 }
                 writeln!(f, ")")?;
                 input.format_with_indent(f, indent + 1)
-            }
+            },
             LogicalPlan::Downsample {
                 input,
                 method,
@@ -1090,18 +1090,18 @@ impl LogicalPlan {
                     prefix, method, target_points
                 )?;
                 input.format_with_indent(f, indent + 1)
-            }
+            },
             LogicalPlan::Latest { selector, count } => {
                 writeln!(
                     f,
                     "{}Latest(selector={:?}, count={})",
                     prefix, selector, count
                 )
-            }
+            },
             LogicalPlan::Explain(inner) => {
                 writeln!(f, "{}Explain", prefix)?;
                 inner.format_with_indent(f, indent + 1)
-            }
+            },
         }
     }
 }
@@ -1276,38 +1276,38 @@ impl ZoneMap {
             PredicateOp::Eq => {
                 // Can prune if value is outside min/max range
                 pred_value < self.min_value || pred_value > self.max_value
-            }
+            },
             PredicateOp::Ne => {
                 // Can only prune if entire chunk has same value that equals predicate
                 false // Conservative - don't prune
-            }
+            },
             PredicateOp::Lt => {
                 // Can prune if all values >= predicate
                 self.min_value >= pred_value
-            }
+            },
             PredicateOp::Lte => {
                 // Can prune if all values > predicate
                 self.min_value > pred_value
-            }
+            },
             PredicateOp::Gt => {
                 // Can prune if all values <= predicate
                 self.max_value <= pred_value
-            }
+            },
             PredicateOp::Gte => {
                 // Can prune if all values < predicate
                 self.max_value < pred_value
-            }
+            },
             PredicateOp::Between => {
                 // Can prune if chunk range doesn't overlap with between range
                 match &predicate.value {
                     PredicateValue::Range(lo, hi) => self.max_value < *lo || self.min_value > *hi,
                     _ => false,
                 }
-            }
+            },
             PredicateOp::IsNull | PredicateOp::IsNotNull | PredicateOp::In => {
                 // Would need null statistics in zone map
                 false
-            }
+            },
         }
     }
 
@@ -1387,7 +1387,7 @@ mod tests {
         match &plan.logical_plan {
             LogicalPlan::ScanWithPredicate { .. } => {
                 // Predicate was pushed down
-            }
+            },
             _ => panic!("Expected ScanWithPredicate after pushdown"),
         }
     }
@@ -1535,7 +1535,7 @@ mod tests {
                 assert!(
                     matches!(p.value, PredicateValue::Float(v) if (v - 10.0).abs() < f64::EPSILON)
                 );
-            }
+            },
             _ => panic!("Expected Simplified result"),
         }
     }
@@ -1563,7 +1563,7 @@ mod tests {
                 assert!(
                     matches!(p.value, PredicateValue::Float(v) if (v - 42.0).abs() < f64::EPSILON)
                 );
-            }
+            },
             _ => panic!("Expected Simplified result"),
         }
     }
@@ -1591,7 +1591,7 @@ mod tests {
                 assert!(
                     matches!(p.value, PredicateValue::Float(v) if (v - 100.0).abs() < f64::EPSILON)
                 );
-            }
+            },
             _ => panic!("Expected Simplified result"),
         }
     }
@@ -1667,7 +1667,7 @@ mod tests {
         match folded {
             LogicalPlan::Scan { .. } => {
                 // Filter was correctly removed
-            }
+            },
             _ => panic!("Expected Scan node after removing always-true filter"),
         }
     }
@@ -1727,7 +1727,7 @@ mod tests {
                 if let PredicateValue::Range(lo, hi) = predicate.value {
                     assert!(lo > hi, "Should have impossible range marker");
                 }
-            }
+            },
             _ => panic!("Expected Filter node"),
         }
     }
@@ -1856,7 +1856,7 @@ mod tests {
                 assert!(columns.contains(&"value".to_string()));
                 // unused_col is still included because it was in the original scan
                 // and the basic collect_required_columns includes all scan columns
-            }
+            },
             _ => panic!("Expected Scan node"),
         }
     }
@@ -1890,7 +1890,7 @@ mod tests {
                     assert!(columns.contains(&"timestamp".to_string()));
                     assert!(columns.contains(&"value".to_string()));
                 }
-            }
+            },
             _ => panic!("Expected Filter node"),
         }
     }
@@ -1919,7 +1919,7 @@ mod tests {
             LogicalPlan::Scan { columns, .. } => {
                 assert!(!columns.is_empty());
                 assert!(columns.contains(&"timestamp".to_string()));
-            }
+            },
             _ => panic!("Expected Scan node"),
         }
     }
@@ -1973,10 +1973,10 @@ mod tests {
                 // Columns should include timestamp and value
                 assert!(columns.contains(&"timestamp".to_string()));
                 assert!(columns.contains(&"value".to_string()));
-            }
+            },
             _ => {
                 // Plan structure may vary, this is acceptable
-            }
+            },
         }
     }
 }

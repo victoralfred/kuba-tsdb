@@ -383,7 +383,7 @@ async fn test_writer_seal_with_multiple_arc_references() {
     match result {
         Ok(_) => {
             // Seal succeeded normally
-        }
+        },
         Err(e) => {
             // If seal fails due to multiple references, it should be a proper error
             assert!(
@@ -391,7 +391,7 @@ async fn test_writer_seal_with_multiple_arc_references() {
                 "Unexpected error: {}",
                 e
             );
-        }
+        },
     }
 }
 

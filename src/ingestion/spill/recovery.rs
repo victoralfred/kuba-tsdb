@@ -48,14 +48,14 @@ impl SpillRecovery {
                     Ok(points) => {
                         debug!("Recovered {} points from {:?}", points.len(), path);
                         all_points.extend(points);
-                    }
+                    },
                     Err(e) => {
                         warn!("Error reading spill file {:?}: {}", path, e);
-                    }
+                    },
                 },
                 Err(e) => {
                     warn!("Error opening spill file {:?}: {}", path, e);
-                }
+                },
             }
         }
 
@@ -103,14 +103,14 @@ impl SpillRecovery {
                         Ok(file) => match file.read_points() {
                             Ok(points) => {
                                 results_clone.lock().push(points);
-                            }
+                            },
                             Err(e) => {
                                 errors_clone.lock().push(e);
-                            }
+                            },
                         },
                         Err(e) => {
                             errors_clone.lock().push(e);
-                        }
+                        },
                     }
                 }
             });
@@ -171,7 +171,7 @@ impl SpillRecovery {
                                 size: file.size(),
                                 error: None,
                             }
-                        }
+                        },
                         Err(e) => {
                             report.corrupted_files += 1;
                             FileReport {
@@ -181,9 +181,9 @@ impl SpillRecovery {
                                 size: file.size(),
                                 error: Some(e.to_string()),
                             }
-                        }
+                        },
                     }
-                }
+                },
                 Err(e) => {
                     report.corrupted_files += 1;
                     FileReport {
@@ -193,7 +193,7 @@ impl SpillRecovery {
                         size: 0,
                         error: Some(e.to_string()),
                     }
-                }
+                },
             };
 
             report.file_reports.push(file_report);

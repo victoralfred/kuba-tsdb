@@ -215,14 +215,14 @@ impl WalSegment {
             match WalRecord::read_from(reader) {
                 Ok(_record) => {
                     count += 1;
-                }
+                },
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
-                }
+                },
                 Err(_) => {
                     // Truncated or corrupted record at end
                     break;
-                }
+                },
             }
         }
 
@@ -373,10 +373,10 @@ impl WalSegment {
                         });
                     }
                     records.push(record);
-                }
+                },
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                     break;
-                }
+                },
                 Err(e) => {
                     let pos = reader.stream_position().unwrap_or(0);
                     return Err(WalError::Corruption {
@@ -384,7 +384,7 @@ impl WalSegment {
                         offset: pos,
                         message: format!("read error: {}", e),
                     });
-                }
+                },
             }
         }
 

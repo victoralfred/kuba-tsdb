@@ -438,7 +438,7 @@ impl TimeSeriesDB {
                 match active_chunk.append(*point) {
                     Ok(()) => {
                         points_iter.next(); // Consume the point
-                    }
+                    },
                     Err(e) => {
                         // Check if it's a "chunk full" error
                         if e.contains("Chunk full") || e.contains("max:") {
@@ -453,7 +453,7 @@ impl TimeSeriesDB {
                             warn!(series_id = series_id, error = %e, "Failed to append point");
                             points_iter.next();
                         }
-                    }
+                    },
                 }
             }
 
@@ -464,10 +464,10 @@ impl TimeSeriesDB {
                 match self.seal_active_chunk(series_id).await {
                     Ok(chunk_id) => {
                         last_chunk_id = chunk_id;
-                    }
+                    },
                     Err(e) => {
                         warn!(series_id = series_id, error = %e, "Failed to seal chunk");
-                    }
+                    },
                 }
             }
         }
@@ -635,10 +635,10 @@ impl TimeSeriesDB {
                     } else {
                         chunk_ids.push(seal_result.chunk_id);
                     }
-                }
+                },
                 Err(e) => {
                     warn!(error = %e, "Failed to seal chunk during parallel flush");
-                }
+                },
             }
         }
 
