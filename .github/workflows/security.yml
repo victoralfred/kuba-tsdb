@@ -240,7 +240,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-vet
-        run: cargo install cargo-vet --locked --force
+        run: cargo install cargo-vet --version 1.0 --force
 
       - name: Check supply chain
         shell: bash
