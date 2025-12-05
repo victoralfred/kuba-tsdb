@@ -1,0 +1,21 @@
+name: Run Custom Script
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Make script executable
+        run: chmod +x  scripts/security-check.sh
+
+      - name: Run custom script
+        run:  ./scripts/security-check.sh
