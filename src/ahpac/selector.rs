@@ -2,10 +2,19 @@
 //!
 //! This module implements the adaptive codec selection algorithm that chooses
 //! the best compression codec based on data characteristics.
+//!
+//! # Selection Strategies
+//!
+//! - **Heuristic**: Fast rule-based selection using statistical profile
+//! - **Verified**: Heuristic with fallback verification against runner-up
+//! - **Exhaustive**: Try all codecs and pick smallest output
+//! - **Neural**: Online adaptive learning from compression feedback
 
 use super::codecs::{AlpCodec, ChimpCodec, Codec, CodecId, DeltaLz4Codec, KubaCodec};
+use super::neural_predictor::NeuralPredictor;
 use super::profile::{ChunkProfile, Monotonicity};
 use crate::types::DataPoint;
+use std::sync::Arc;
 
 /// Selection strategy for codec choice
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +38,24 @@ pub enum SelectionStrategy {
     /// a fallback codec (typically Chimp). Good balance of speed
     /// and accuracy.
     Verified,
+
+    /// Online adaptive learning using neural network
+    ///
+    /// A lightweight neural predictor that learns from compression
+    /// feedback to improve codec selection over time. The predictor
+    /// adapts to actual workload patterns without manual tuning.
+    ///
+    /// During warm-up (first ~100 samples), falls back to heuristic
+    /// selection while gathering training data.
+    Neural,
 }
 
 /// Codec selector that manages available codecs and selection logic
 pub struct CodecSelector {
     /// Available codecs
     codecs: Vec<Box<dyn Codec>>,
+    /// Neural predictor for adaptive codec selection (shared across threads)
+    neural_predictor: Arc<NeuralPredictor>,
 }
 
 impl CodecSelector {
@@ -47,7 +68,38 @@ impl CodecSelector {
                 Box::new(AlpCodec::new()),
                 Box::new(DeltaLz4Codec::new()),
             ],
+            neural_predictor: Arc::new(NeuralPredictor::new()),
         }
+    }
+
+    /// Create a new codec selector with a custom neural predictor
+    ///
+    /// This allows sharing the neural predictor across multiple selectors
+    /// for consistent learning.
+    pub fn with_neural_predictor(predictor: Arc<NeuralPredictor>) -> Self {
+        Self {
+            codecs: vec![
+                Box::new(KubaCodec::new()),
+                Box::new(ChimpCodec::new()),
+                Box::new(AlpCodec::new()),
+                Box::new(DeltaLz4Codec::new()),
+            ],
+            neural_predictor: predictor,
+        }
+    }
+
+    /// Get a reference to the neural predictor
+    ///
+    /// Useful for recording feedback or checking statistics.
+    pub fn neural_predictor(&self) -> &NeuralPredictor {
+        &self.neural_predictor
+    }
+
+    /// Get the shared neural predictor Arc
+    ///
+    /// Useful for sharing across multiple selectors.
+    pub fn neural_predictor_arc(&self) -> Arc<NeuralPredictor> {
+        Arc::clone(&self.neural_predictor)
     }
 
     /// Select codec using heuristic rules based on profile
@@ -180,6 +232,56 @@ impl CodecSelector {
                 // Both failed, use raw encoding
                 let raw = Self::encode_raw(points);
                 (CodecId::Raw, raw)
+            },
+        }
+    }
+
+    /// Select codec using the neural predictor
+    ///
+    /// Uses an online adaptive neural network to select the codec.
+    /// The predictor learns from compression feedback over time.
+    ///
+    /// This method compresses with the neural-selected codec and
+    /// automatically records feedback for learning.
+    pub fn select_neural(
+        &self,
+        points: &[DataPoint],
+        profile: &ChunkProfile,
+    ) -> (CodecId, Vec<u8>) {
+        // Ask the neural predictor for a codec
+        let codec_id = self.neural_predictor.select(profile);
+        let codec = self.get_codec(codec_id);
+
+        // Try to compress
+        match codec.compress(points) {
+            Ok(data) => {
+                // Record successful compression for learning
+                let input_size = points.len() * 16; // 16 bytes per point
+                let ratio = if !data.is_empty() {
+                    input_size as f64 / data.len() as f64
+                } else {
+                    1.0
+                };
+                self.neural_predictor
+                    .record_feedback(profile, codec_id, ratio);
+                (codec_id, data)
+            },
+            Err(_) => {
+                // Neural selection failed, fall back to verified selection
+                // This also helps the neural network learn from failures
+                let (fallback_id, fallback_data) = self.select_verified(points, profile);
+
+                // Record the fallback result
+                let input_size = points.len() * 16;
+                let ratio = if !fallback_data.is_empty() {
+                    input_size as f64 / fallback_data.len() as f64
+                } else {
+                    1.0
+                };
+                self.neural_predictor
+                    .record_feedback(profile, fallback_id, ratio);
+
+                (fallback_id, fallback_data)
             },
         }
     }
@@ -417,5 +519,59 @@ mod tests {
         // or Delta+LZ4 if not integer-like
         let codec = selector.select_heuristic(&profile);
         assert!(codec == CodecId::Alp || codec == CodecId::DeltaLz4);
+    }
+
+    #[test]
+    fn test_neural_selection() {
+        let selector = CodecSelector::new();
+        let points = create_test_points(100);
+        let profile = ChunkProfile::compute(&points, 256);
+
+        // Neural selection should work (uses heuristic fallback initially)
+        let (codec_id, data) = selector.select_neural(&points, &profile);
+        assert!(!data.is_empty());
+
+        // Verify the data can be decompressed
+        let codec = selector.get_codec(codec_id);
+        let decompressed = codec.decompress(&data, points.len()).unwrap();
+        assert_eq!(decompressed.len(), points.len());
+    }
+
+    #[test]
+    fn test_neural_predictor_feedback() {
+        let selector = CodecSelector::new();
+        let points = create_test_points(100);
+        let profile = ChunkProfile::compute(&points, 256);
+
+        // Initial state
+        let initial_count = selector.neural_predictor().stats().sample_count;
+
+        // Compress with neural selection (records feedback)
+        let _ = selector.select_neural(&points, &profile);
+
+        // Should have recorded one sample
+        let final_count = selector.neural_predictor().stats().sample_count;
+        assert_eq!(final_count, initial_count + 1);
+    }
+
+    #[test]
+    fn test_neural_predictor_shared() {
+        use std::sync::Arc;
+
+        let predictor = Arc::new(super::NeuralPredictor::new());
+
+        let selector1 = CodecSelector::with_neural_predictor(Arc::clone(&predictor));
+        let selector2 = CodecSelector::with_neural_predictor(Arc::clone(&predictor));
+
+        let points = create_test_points(100);
+        let profile = ChunkProfile::compute(&points, 256);
+
+        // Use both selectors
+        let _ = selector1.select_neural(&points, &profile);
+        let _ = selector2.select_neural(&points, &profile);
+
+        // Both should have contributed to the same predictor
+        let count = predictor.stats().sample_count;
+        assert_eq!(count, 2);
     }
 }

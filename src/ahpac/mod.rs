@@ -11,12 +11,28 @@
 //! ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
 //! │  Profiler   │→ │  Selector   │→ │  Encoder    │→ Output
 //! │             │  │             │  │             │
-//! │ - variance  │  │ - rule-based│  │ - Kuba      │
+//! │ - variance  │  │ - heuristic │  │ - Kuba      │
 //! │ - autocorr  │  │ - verified  │  │ - Chimp     │
 //! │ - kurtosis  │  │ - exhaustive│  │ - ALP       │
-//! │ - xor_ratio │  │             │  │ - Delta+LZ4 │
+//! │ - xor_ratio │  │ - neural    │  │ - Delta+LZ4 │
 //! └─────────────┘  └─────────────┘  └─────────────┘
+//!                        ↑ feedback
+//!                  ┌─────┴─────┐
+//!                  │  Neural   │ (online adaptive learning)
+//!                  │ Predictor │
+//!                  └───────────┘
 //! ```
+//!
+//! # Selection Strategies
+//!
+//! - **Heuristic**: Fast rule-based selection using statistical profile (~0% overhead)
+//! - **Verified**: Heuristic with fallback comparison (~5% overhead, default)
+//! - **Exhaustive**: Try all codecs, pick smallest (~20% overhead, best ratio)
+//! - **Neural**: Online adaptive learning from compression feedback (~1% overhead)
+//!
+//! The Neural strategy uses a lightweight neural network that learns from
+//! actual compression results. It adapts to workload patterns over time
+//! without manual tuning.
 //!
 //! # Usage
 //!
@@ -24,14 +40,22 @@
 //! use kuba_tsdb::ahpac::{AhpacCompressor, SelectionStrategy};
 //! use kuba_tsdb::types::DataPoint;
 //!
-//! let compressor = AhpacCompressor::new()
-//!     .with_strategy(SelectionStrategy::Verified);
+//! // Default: Verified strategy (good balance)
+//! let compressor = AhpacCompressor::new();
+//!
+//! // Or use Neural strategy for adaptive learning
+//! let adaptive_compressor = AhpacCompressor::new()
+//!     .with_strategy(SelectionStrategy::Neural);
 //!
 //! let points: Vec<DataPoint> = get_data();
 //! let compressed = compressor.compress(&points)?;
 //!
 //! println!("Codec used: {:?}", compressed.codec);
 //! println!("Bits per sample: {:.2}", compressed.bits_per_sample());
+//!
+//! // Check neural predictor statistics
+//! let stats = adaptive_compressor.neural_predictor().stats();
+//! println!("Samples learned: {}", stats.sample_count);
 //! ```
 //!
 //! # Codecs
@@ -42,15 +66,18 @@
 //! - **Chimp**: Improved XOR encoding with better leading zero handling
 //! - **ALP**: Algebraic integer encoding for decimal-scaled floats
 //! - **Delta+LZ4**: Delta encoding followed by LZ4, good for smooth data
+//! - **Delta+Zstd**: Delta encoding followed by Zstd, best compression ratio
 
 pub mod codecs;
 pub mod frame;
+pub mod neural_predictor;
 pub mod profile;
 pub mod selector;
 
 // Re-exports for convenient access
 pub use codecs::{Codec, CodecError, CodecId};
 pub use frame::CompressedChunk;
+pub use neural_predictor::{NeuralPredictor, NeuralPredictorConfig, NeuralPredictorStats};
 pub use profile::{ChunkProfile, Monotonicity};
 pub use selector::{CodecSelector, SelectionStrategy};
 
@@ -129,6 +156,40 @@ impl AhpacCompressor {
         }
     }
 
+    /// Create a new AHPAC compressor with a shared neural predictor
+    ///
+    /// This allows multiple compressors to share learning from the same
+    /// neural predictor, enabling consistent adaptive behavior across
+    /// the entire application.
+    ///
+    /// # Arguments
+    ///
+    /// * `predictor` - Shared neural predictor for adaptive learning
+    /// * `strategy` - Codec selection strategy to use
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use kuba_tsdb::ahpac::{AhpacCompressor, NeuralPredictor, SelectionStrategy};
+    ///
+    /// let predictor = Arc::new(NeuralPredictor::new());
+    /// let compressor = AhpacCompressor::with_shared_predictor(
+    ///     predictor,
+    ///     SelectionStrategy::Neural,
+    /// );
+    /// ```
+    pub fn with_shared_predictor(
+        predictor: std::sync::Arc<NeuralPredictor>,
+        strategy: SelectionStrategy,
+    ) -> Self {
+        Self {
+            selector: CodecSelector::with_neural_predictor(predictor),
+            profile_samples: 256,
+            strategy,
+        }
+    }
+
     /// Set the codec selection strategy
     ///
     /// # Strategies
@@ -136,6 +197,7 @@ impl AhpacCompressor {
     /// - `Heuristic`: Fast rule-based selection (~0% overhead)
     /// - `Verified`: Heuristic with fallback comparison (~5% overhead)
     /// - `Exhaustive`: Try all codecs, pick best (~20% overhead)
+    /// - `Neural`: Online adaptive learning (~1% overhead)
     pub fn with_strategy(mut self, strategy: SelectionStrategy) -> Self {
         self.strategy = strategy;
         self
@@ -181,6 +243,7 @@ impl AhpacCompressor {
             },
             SelectionStrategy::Exhaustive => self.selector.select_exhaustive(points, &profile),
             SelectionStrategy::Verified => self.selector.select_verified(points, &profile),
+            SelectionStrategy::Neural => self.selector.select_neural(points, &profile),
         };
 
         // Step 3: Create the compressed chunk with metadata
@@ -236,6 +299,14 @@ impl AhpacCompressor {
     /// Get the profile sample count
     pub fn profile_samples(&self) -> usize {
         self.profile_samples
+    }
+
+    /// Get access to the neural predictor for statistics or custom feedback
+    ///
+    /// Only available when using the Neural strategy, but can be used
+    /// to inspect predictor state for any strategy.
+    pub fn neural_predictor(&self) -> &NeuralPredictor {
+        self.selector.neural_predictor()
     }
 }
 
@@ -299,5 +370,50 @@ mod tests {
         let compressor = AhpacCompressor::new().with_profile_samples(5);
         // Should be clamped to minimum of 16
         assert_eq!(compressor.profile_samples(), 16);
+    }
+
+    #[test]
+    fn test_neural_strategy() {
+        let compressor = AhpacCompressor::new().with_strategy(SelectionStrategy::Neural);
+        let points = create_test_points(100);
+
+        // Compress should work even during warm-up (falls back to heuristic)
+        let compressed = compressor.compress(&points).unwrap();
+        assert!(compressed.point_count == 100);
+        assert!(compressed.bits_per_sample() > 0.0);
+
+        // Verify decompression works
+        let decompressed = compressor.decompress(&compressed).unwrap();
+        assert_eq!(decompressed.len(), points.len());
+
+        for (original, decoded) in points.iter().zip(decompressed.iter()) {
+            assert_eq!(original.timestamp, decoded.timestamp);
+            assert!((original.value - decoded.value).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_neural_predictor_learning() {
+        let compressor = AhpacCompressor::new().with_strategy(SelectionStrategy::Neural);
+
+        // Compress multiple times to generate training data
+        for _ in 0..50 {
+            let points = create_test_points(100);
+            let _ = compressor.compress(&points);
+        }
+
+        // Check that the predictor has recorded samples
+        let stats = compressor.neural_predictor().stats();
+        assert!(stats.sample_count >= 50);
+    }
+
+    #[test]
+    fn test_neural_predictor_access() {
+        let compressor = AhpacCompressor::new();
+        let predictor = compressor.neural_predictor();
+
+        // Should start with no samples
+        let stats = predictor.stats();
+        assert_eq!(stats.sample_count, 0);
     }
 }
