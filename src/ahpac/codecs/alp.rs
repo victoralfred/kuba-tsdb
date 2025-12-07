@@ -33,7 +33,11 @@ use crate::types::DataPoint;
 /// at some decimal scale, and uses integer compression techniques
 /// to achieve much better compression than XOR-based methods.
 pub struct AlpCodec;
-
+#[derive(Debug, Clone, Copy)]
+pub enum Scale {
+    Decimal { exp: i8 },
+    Binary { exp: i8 },
+}
 impl AlpCodec {
     /// Create a new ALP codec
     pub fn new() -> Self {
@@ -44,45 +48,45 @@ impl AlpCodec {
     ///
     /// Tries common scales (powers of 10 and binary fractions) and returns
     /// the scale that makes all values integers.
-    fn detect_scale(values: &[f64]) -> Option<(f64, i8)> {
+    fn detect_scale(values: &[f64]) -> Option<(f64, Scale)> {
         if values.is_empty() {
             return None;
         }
 
-        // Try scales: 10^n for n in -6..=6 (most common in practice)
-        for exp in -6i8..=6 {
-            let scale = 10f64.powi(exp as i32);
-            let inverse_scale = 10f64.powi(-exp as i32);
-
-            let all_integer = values.iter().all(|&v| {
+        let works = |inv_scale: f64| -> bool {
+            values.iter().all(|&v| {
                 if !v.is_finite() {
                     return false;
                 }
-                let scaled = v * inverse_scale;
+                let scaled = v * inv_scale;
                 let rounded = scaled.round();
-                (scaled - rounded).abs() < 1e-9 && rounded.abs() < (i64::MAX / 2) as f64
-            });
 
-            if all_integer {
-                return Some((scale, exp));
+                let eps = 1e-9 * scaled.abs().max(1.0);
+                if (scaled - rounded).abs() > eps {
+                    return false;
+                }
+
+                rounded.abs() <= i64::MAX as f64
+            })
+        };
+
+        // Decimal powers: 10^-6 .. 10^6
+        for exp in -6i8..=6 {
+            let scale = 10f64.powi(exp as i32);
+            let inv = 10f64.powi(-exp as i32);
+
+            if works(inv) {
+                return Some((scale, Scale::Decimal { exp }));
             }
         }
 
-        // Try binary fractions: 0.5, 0.25, 0.125
-        for &(scale, exp) in &[(0.5, -1i8), (0.25, -2i8), (0.125, -3i8)] {
-            let inverse_scale = 1.0 / scale;
-            let all_integer = values.iter().all(|&v| {
-                if !v.is_finite() {
-                    return false;
-                }
-                let scaled = v * inverse_scale;
-                let rounded = scaled.round();
-                (scaled - rounded).abs() < 1e-9 && rounded.abs() < (i64::MAX / 2) as f64
-            });
+        // Binary powers: 2^-1 .. 2^-16 (try from -1 down to -16)
+        for exp in (-16i8..=-1).rev() {
+            let scale = 2f64.powi(exp as i32);
+            let inv = 2f64.powi(-exp as i32);
 
-            if all_integer {
-                // Use negative exponents starting from -10 for binary fractions
-                return Some((scale, exp - 10));
+            if works(inv) {
+                return Some((scale, Scale::Binary { exp }));
             }
         }
 
@@ -346,7 +350,7 @@ impl Codec for AlpCodec {
         let values: Vec<f64> = points.iter().map(|p| p.value).collect();
 
         // Detect scale factor
-        let (scale, exp) = Self::detect_scale(&values)
+        let (scale, scale_enum) = Self::detect_scale(&values)
             .ok_or_else(|| CodecError::UnsupportedData("Data is not integer-like".to_string()))?;
 
         // Convert to integers
@@ -355,8 +359,11 @@ impl Codec for AlpCodec {
         let mut writer = BitWriter::new();
 
         // Write scale exponent (signed byte)
-        writer.write_bits(exp as u8 as u64, 8);
-
+        let exp = match scale_enum {
+            Scale::Decimal { exp } => exp,
+            Scale::Binary { exp } => exp - 10,
+        };
+        writer.write_bits(exp as u64, 8);
         // Compress timestamps
         Self::compress_timestamps(points, &mut writer);
 

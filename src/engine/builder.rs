@@ -891,9 +891,10 @@ impl TimeSeriesDB {
                 .await
                 .map_err(Error::Compression)?;
 
-            // Filter by time range and collect
-            for point in points {
+            // Filter by time range and set series_id (compressor doesn't know series_id)
+            for mut point in points {
                 if point.timestamp >= time_range.start && point.timestamp <= time_range.end {
+                    point.series_id = series_id;
                     all_points.push(point);
                 }
             }
@@ -1012,8 +1013,9 @@ impl TimeSeriesDB {
             // Sort points within chunk by timestamp descending (newest first)
             points.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-            // Collect points until we have enough
-            for point in points {
+            // Collect points until we have enough, setting series_id (compressor doesn't know it)
+            for mut point in points {
+                point.series_id = series_id;
                 collected_points.push(point);
                 if collected_points.len() >= count {
                     break;
