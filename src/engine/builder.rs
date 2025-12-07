@@ -7,6 +7,8 @@ use super::traits::{
     ChunkLocation, ChunkStatus, Compressor, IndexConfig, SeriesMetadata, StorageConfig,
     StorageEngine, TimeIndex,
 };
+use crate::ahpac::{NeuralPredictor, SelectionStrategy};
+use crate::compression::AhpacCompressor;
 use crate::error::{Error, Result};
 use crate::storage::active_chunk::{ActiveChunk, SealConfig};
 use crate::storage::background_sealer::{
@@ -35,6 +37,14 @@ pub struct DatabaseConfig {
     pub retention_days: Option<u32>,
     /// Custom options
     pub custom_options: HashMap<String, String>,
+    /// AHPAC codec selection strategy
+    ///
+    /// Controls how the compression system selects codecs:
+    /// - `Heuristic`: Fast rule-based selection
+    /// - `Verified`: Heuristic with fallback verification (default)
+    /// - `Exhaustive`: Try all codecs, pick smallest
+    /// - `Neural`: Online adaptive learning from compression feedback
+    pub compression_strategy: SelectionStrategy,
 }
 
 impl Default for DatabaseConfig {
@@ -45,7 +55,26 @@ impl Default for DatabaseConfig {
             max_chunk_size: 1024 * 1024, // 1MB
             retention_days: None,
             custom_options: HashMap::new(),
+            compression_strategy: SelectionStrategy::Verified,
         }
+    }
+}
+
+impl DatabaseConfig {
+    /// Create configuration with Neural compression strategy
+    ///
+    /// Enables online adaptive learning for codec selection.
+    /// The neural predictor will learn from compression feedback
+    /// and adapt to the workload patterns over time.
+    pub fn with_neural_compression(mut self) -> Self {
+        self.compression_strategy = SelectionStrategy::Neural;
+        self
+    }
+
+    /// Set the compression strategy
+    pub fn with_compression_strategy(mut self, strategy: SelectionStrategy) -> Self {
+        self.compression_strategy = strategy;
+        self
     }
 }
 
@@ -90,7 +119,7 @@ impl TimeSeriesDBBuilder {
             compressor: None,
             storage: None,
             index: None,
-            config: DatabaseConfig::default(),
+            config: DatabaseConfig::default().with_neural_compression(),
             buffer_config: None,
             sealing_config: None,
             background_sealing_config: None,
@@ -248,15 +277,33 @@ impl TimeSeriesDBBuilder {
             .await
             .map_err(Error::Index)?;
 
-        // Create parallel sealing service
-        let sealing_service = Arc::new(ParallelSealingService::new(
+        // Create shared neural predictor for adaptive compression
+        let neural_predictor = Arc::new(NeuralPredictor::new());
+
+        // Create shared AHPAC compressor with neural predictor
+        // This ensures all compression operations share the same neural predictor
+        // for consistent online adaptive learning across the application
+        let shared_ahpac_compressor = Arc::new(AhpacCompressor::with_shared_predictor(
+            Arc::clone(&neural_predictor),
+            self.config.compression_strategy,
+        ));
+
+        // Create parallel sealing service with shared compressor
+        let sealing_service = Arc::new(ParallelSealingService::with_compressor(
             self.sealing_config.unwrap_or_default(),
+            Arc::clone(&shared_ahpac_compressor),
         ));
 
         // Create background sealing service if configured
         let background_sealing_service = self
             .background_sealing_config
             .map(|config| Arc::new(BackgroundSealingService::new(config)));
+
+        // Log compression strategy
+        info!(
+            "Database initialized with compression strategy: {:?}",
+            self.config.compression_strategy
+        );
 
         Ok(TimeSeriesDB {
             compressor,
@@ -267,6 +314,8 @@ impl TimeSeriesDBBuilder {
             buffer_config: self.buffer_config.unwrap_or_default(),
             sealing_service,
             background_sealing_service,
+            neural_predictor,
+            ahpac_compressor: shared_ahpac_compressor,
         })
     }
 }
@@ -326,6 +375,11 @@ pub struct TimeSeriesDB {
     sealing_service: Arc<ParallelSealingService>,
     /// Background sealing service for automatic chunk sealing (optional)
     background_sealing_service: Option<Arc<BackgroundSealingService>>,
+    /// Shared neural predictor for adaptive compression (when using Neural strategy)
+    neural_predictor: Arc<NeuralPredictor>,
+    /// Shared AHPAC compressor with neural predictor integration
+    /// Used by parallel sealing and chunk coalescing for consistent adaptive learning
+    ahpac_compressor: Arc<AhpacCompressor>,
 }
 
 impl TimeSeriesDB {
@@ -347,6 +401,40 @@ impl TimeSeriesDB {
     /// Get database configuration
     pub fn config(&self) -> &DatabaseConfig {
         &self.config
+    }
+
+    /// Get the compression strategy
+    pub fn compression_strategy(&self) -> SelectionStrategy {
+        self.config.compression_strategy
+    }
+
+    /// Get access to the shared neural predictor
+    ///
+    /// Useful for checking learning statistics when using Neural strategy:
+    /// ```rust,ignore
+    /// let stats = db.neural_predictor().stats();
+    /// println!("Samples learned: {}", stats.sample_count);
+    /// println!("Best codec: {:?}", stats.best_performing_codec());
+    /// ```
+    pub fn neural_predictor(&self) -> &Arc<NeuralPredictor> {
+        &self.neural_predictor
+    }
+
+    /// Get access to the shared AHPAC compressor
+    ///
+    /// This compressor has the neural predictor integrated and is used
+    /// for all compression operations across the database (parallel sealing,
+    /// chunk coalescing, etc.). Sharing ensures consistent adaptive learning.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Use shared compressor for custom compression operations
+    /// let compressor = db.ahpac_compressor();
+    /// let chunk = ChunkCoalescer::with_compressor(compressor.clone());
+    /// ```
+    pub fn ahpac_compressor(&self) -> &Arc<AhpacCompressor> {
+        &self.ahpac_compressor
     }
 
     /// Replace compressor at runtime
