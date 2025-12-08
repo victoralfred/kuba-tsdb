@@ -1,0 +1,187 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - develope
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # First run standard checks
+  pre-review-checks:
+    name: Pre-Review Checks
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ steps.build.outcome }}
+      test_status: ${{ steps.test.outcome }}
+      clippy_status: ${{ steps.clippy.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build
+        id: build
+        run: cargo build --all-features
+
+      - name: Run tests
+        id: test
+        run: cargo test --all-features
+
+      - name: Clippy
+        id: clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # AI Review Agent
+  ai-review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    needs: pre-review-checks
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          echo "Getting diff between ${{ github.event.pull_request.base.sha }} and ${{ github.event.pull_request.head.sha }}"
+          git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+      - name: Get PR diff
+        id: pr-diff
+        run: |
+          git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > pr_diff.patch
+          # Limit diff size to prevent token overflow (max 50KB)
+          head -c 50000 pr_diff.patch > pr_diff_truncated.patch
+
+      - name: AI Review
+        id: ai-review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BUILD_STATUS: ${{ needs.pre-review-checks.outputs.build_status }}
+          TEST_STATUS: ${{ needs.pre-review-checks.outputs.test_status }}
+          CLIPPY_STATUS: ${{ needs.pre-review-checks.outputs.clippy_status }}
+        run: |
+          # Read the diff
+          DIFF=$(cat pr_diff_truncated.patch)
+          CHANGED_FILES=$(cat changed_files.txt)
+
+          # Create the review prompt
+          cat > review_prompt.json << 'PROMPT_EOF'
+          {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "messages": [
+              {
+                "role": "user",
+                "content": "You are a senior Rust code reviewer for a high-performance time-series database (Kuba-TSDB). Review this pull request and provide constructive feedback.\n\n## Build Status\n- Build: BUILD_STATUS_PLACEHOLDER\n- Tests: TEST_STATUS_PLACEHOLDER\n- Clippy: CLIPPY_STATUS_PLACEHOLDER\n\n## Changed Files\nCHANGED_FILES_PLACEHOLDER\n\n## Diff\n```diff\nDIFF_PLACEHOLDER\n```\n\n## Review Guidelines\nFocus on:\n1. **Security**: Buffer overflows, integer overflow, unsafe code, injection vulnerabilities\n2. **Performance**: Unnecessary allocations, lock contention, algorithmic complexity\n3. **Correctness**: Edge cases, error handling, race conditions\n4. **Code Quality**: Readability, documentation, idiomatic Rust\n5. **Testing**: Test coverage, edge case testing\n\nProvide your review in this format:\n\n### Summary\n[1-2 sentence summary]\n\n### Security Concerns\n[List any security issues or 'None found']\n\n### Performance Considerations\n[List any performance issues or 'Looks good']\n\n### Suggested Improvements\n[Numbered list of specific suggestions with file:line references]\n\n### Verdict\n[APPROVE / REQUEST_CHANGES / COMMENT]\n[Brief justification]"
+              }
+            ]
+          }
+          PROMPT_EOF
+
+          # Escape special characters for JSON
+          DIFF_ESCAPED=$(echo "$DIFF" | jq -Rs .)
+          FILES_ESCAPED=$(echo "$CHANGED_FILES" | jq -Rs .)
+
+          # Replace placeholders
+          sed -i "s/BUILD_STATUS_PLACEHOLDER/$BUILD_STATUS/g" review_prompt.json
+          sed -i "s/TEST_STATUS_PLACEHOLDER/$TEST_STATUS/g" review_prompt.json
+          sed -i "s/CLIPPY_STATUS_PLACEHOLDER/$CLIPPY_STATUS/g" review_prompt.json
+
+          # Use jq to properly insert the escaped content
+          jq --arg diff "$DIFF" --arg files "$CHANGED_FILES" \
+            '.messages[0].content = (.messages[0].content | gsub("DIFF_PLACEHOLDER"; $diff) | gsub("CHANGED_FILES_PLACEHOLDER"; $files))' \
+            review_prompt.json > review_prompt_final.json
+
+          # Call Anthropic API
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d @review_prompt_final.json)
+
+          # Extract the review text
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Error: Could not get review"')
+
+          # Save review to file
+          echo "$REVIEW" > review_output.md
+
+          # Extract verdict for workflow decision
+          if echo "$REVIEW" | grep -q "APPROVE"; then
+            echo "verdict=approve" >> $GITHUB_OUTPUT
+          elif echo "$REVIEW" | grep -q "REQUEST_CHANGES"; then
+            echo "verdict=request_changes" >> $GITHUB_OUTPUT
+          else
+            echo "verdict=comment" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Review Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('review_output.md', 'utf8');
+
+            // Add header
+            const body = `## 🤖 AI Code Review\n\n${review}\n\n---\n*Automated review by Claude AI*`;
+
+            // Post as PR comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Review Decision
+        if: steps.ai-review.outputs.verdict == 'request_changes'
+        run: |
+          echo "::warning::AI Review requests changes to this PR"
+          # Optionally fail the workflow
+          # exit 1
+
+  # Summary job
+  review-summary:
+    name: Review Summary
+    runs-on: ubuntu-latest
+    needs: [pre-review-checks, ai-review]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## PR Review Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.pre-review-checks.outputs.build_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.pre-review-checks.outputs.test_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Clippy | ${{ needs.pre-review-checks.outputs.clippy_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| AI Review | ${{ needs.ai-review.result }} |" >> $GITHUB_STEP_SUMMARY
