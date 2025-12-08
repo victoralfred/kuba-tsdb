@@ -394,24 +394,24 @@ impl WriteBufferManager {
     ///
     /// Forces all buffered data to be sent to the writer.
     /// Called during shutdown to ensure no data is lost.
-    ///
-    /// Optimized to avoid collecting all series IDs into memory at once.
     pub async fn flush_all(&self) -> Result<(), IngestionError> {
-        // Flush in-place without collecting all IDs first to reduce memory usage
-        let mut flushed_count = 0;
-        loop {
-            // Find next series to flush
-            let next_series = self.buffers.iter().next().map(|e| *e.key());
+        // Collect all series IDs that have data to flush
+        // Note: We must collect IDs first because flush_series drains but doesn't
+        // remove the entry from buffers, which would cause an infinite loop if we
+        // iterated in-place.
+        let series_ids: Vec<SeriesId> = self
+            .buffers
+            .iter()
+            .filter(|entry| !entry.value().is_empty())
+            .map(|entry| *entry.key())
+            .collect();
 
-            if let Some(series_id) = next_series {
-                self.flush_series(series_id).await?;
-                flushed_count += 1;
-            } else {
-                break;
-            }
+        let count = series_ids.len();
+        for series_id in series_ids {
+            self.flush_series(series_id).await?;
         }
 
-        debug!("Flushed all {} series buffers", flushed_count);
+        debug!("Flushed all {} series buffers", count);
         Ok(())
     }
 
