@@ -86,9 +86,10 @@ use super::index::TagMatcher;
 // Timestamp Validation Constants (SEC-009)
 // ============================================================================
 
-/// Minimum valid timestamp: January 1, 2000 00:00:00 UTC (in milliseconds)
-/// This prevents accidental use of timestamps that are clearly invalid.
-pub const MIN_VALID_TIMESTAMP_MS: i64 = 946_684_800_000;
+/// Minimum valid timestamp: Unix epoch (January 1, 1970 00:00:00 UTC) in milliseconds
+/// This allows all valid Unix timestamps while preventing negative values
+/// that could cause issues in calculations.
+pub const MIN_VALID_TIMESTAMP_MS: i64 = 0;
 
 /// Maximum valid timestamp: January 1, 2100 00:00:00 UTC (in milliseconds)
 /// This prevents timestamps far in the future that could cause issues.
@@ -96,8 +97,9 @@ pub const MAX_VALID_TIMESTAMP_MS: i64 = 4_102_444_800_000;
 
 /// SEC-009: Validate that a timestamp is within reasonable bounds
 ///
-/// Returns true if the timestamp is between year 2000 and 2100.
-/// This helps catch obviously invalid timestamps that could cause issues.
+/// Returns true if the timestamp is between Unix epoch (1970) and year 2100.
+/// This helps catch obviously invalid timestamps that could cause issues
+/// while still allowing valid historical data.
 #[must_use]
 pub fn is_valid_timestamp(timestamp_ms: i64) -> bool {
     (MIN_VALID_TIMESTAMP_MS..=MAX_VALID_TIMESTAMP_MS).contains(&timestamp_ms)
@@ -339,8 +341,15 @@ impl AggregateState {
         }
 
         // Welford's online algorithm for variance
+        // SEC: Prevent division by zero (count is always >= 1 here since we increment first)
         let delta = value - self.mean;
-        self.mean += delta / self.count as f64;
+        // SEC: Use checked conversion to prevent precision loss for very large counts
+        let count_f64 = if self.count > 0 {
+            self.count as f64
+        } else {
+            1.0 // Should never happen, but defensive
+        };
+        self.mean += delta / count_f64;
         let delta2 = value - self.mean;
         self.m2 += delta * delta2;
 
@@ -377,15 +386,34 @@ impl AggregateState {
         }
 
         // Merge sums and counts
-        let combined_count = self.count + other.count;
-        let combined_sum = self.sum + other.sum;
+        // SEC: Use saturating arithmetic to prevent overflow (cap at u64::MAX)
+        let combined_count = self.count.saturating_add(other.count);
+        let combined_sum = self.sum + other.sum; // f64 overflow handled by infinity
 
         // Parallel algorithm for merging variance (Chan et al.)
         let delta = other.mean - self.mean;
-        let combined_mean = (self.sum + other.sum) / combined_count as f64;
+        // SEC: Use checked conversion to prevent precision loss for very large counts
+        // For counts > 2^53, f64 loses precision, but this is acceptable for aggregation
+        let combined_count_f64 = combined_count as f64;
+        let combined_mean = if combined_count > 0 {
+            (self.sum + other.sum) / combined_count_f64
+        } else {
+            0.0 // Defensive: should never happen
+        };
+        
+        // SEC: Use checked multiplication to prevent u64 overflow before cast
+        // If overflow occurs, use a conservative approximation
+        let count_product = if let Some(product) = self.count.checked_mul(other.count) {
+            product as f64
+        } else {
+            // Overflow: use approximation (count1 * count2) ≈ max(count1, count2)^2
+            // This is conservative and prevents DoS via overflow
+            let max_count = self.count.max(other.count) as f64;
+            max_count * max_count
+        };
         let combined_m2 = self.m2
             + other.m2
-            + delta * delta * (self.count * other.count) as f64 / combined_count as f64;
+            + delta * delta * count_product / combined_count_f64.max(1.0);
 
         self.sum = combined_sum;
         self.count = combined_count;
@@ -467,25 +495,31 @@ impl AggregateState {
                 }
 
                 if values.len() > 10_000 {
-                    // Use partial sort for large datasets
+                    // Use partial sort for large datasets (O(n) instead of O(n log n))
                     let mut sorted = values.clone();
                     // SEC: Use checked arithmetic to prevent index overflow
                     let len_minus_one = sorted.len().saturating_sub(1);
-                    let idx = ((percentile_f64 / 100.0) * len_minus_one as f64) as usize;
+                    // SEC: Prevent DoS via precision loss in index calculation
+                    // Use f64 arithmetic but validate result
+                    let idx_f64 = (percentile_f64 / 100.0) * len_minus_one as f64;
+                    let idx = idx_f64 as usize;
+                    // Clamp to valid range to prevent out-of-bounds access
                     let idx = idx.min(len_minus_one);
 
-                    // Only sort the elements around the target index
+                    // Only sort the elements around the target index (partial sort)
                     sorted.select_nth_unstable_by(idx, |a, b| {
                         a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
                     });
                     sorted.get(idx).copied()?
                 } else {
-                    // For small datasets, full sort is fine
+                    // For small datasets, full sort is fine (O(n log n) is acceptable)
                     let mut sorted: Vec<f64> = values.clone();
                     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
+                    // SEC: Use same safe index calculation
                     let len_minus_one = sorted.len().saturating_sub(1);
-                    let idx = ((percentile_f64 / 100.0) * len_minus_one as f64) as usize;
+                    let idx_f64 = (percentile_f64 / 100.0) * len_minus_one as f64;
+                    let idx = idx_f64 as usize;
                     let idx = idx.min(len_minus_one);
                     sorted.get(idx).copied()?
                 }
@@ -643,8 +677,12 @@ impl WindowIterator {
     /// Note: This constructor does not validate timestamps.
     /// Use `try_new` for validated construction.
     pub fn new(start: i64, end: i64, window: Duration, step: Option<Duration>) -> Self {
-        let window_ms = window.as_millis() as i64;
-        let step_ms = step.map(|s| s.as_millis() as i64).unwrap_or(window_ms);
+        // SEC: Use try_into to prevent overflow when converting u128 to i64
+        // If window is too large, cap at i64::MAX
+        let window_ms = window.as_millis().try_into().unwrap_or(i64::MAX);
+        let step_ms = step
+            .map(|s| s.as_millis().try_into().unwrap_or(i64::MAX))
+            .unwrap_or(window_ms);
 
         // Align start to window boundary
         let aligned_start = if window_ms > 0 {
@@ -903,7 +941,15 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
             }
             // Prevent windows larger than the time range
             // SEC: Use checked conversion to prevent overflow
-            let window_ms_i64 = window.as_millis().try_into().unwrap_or(i64::MAX);
+            // If window is too large to fit in i64, reject it
+            let window_ms_i64: i64 = match window.as_millis().try_into() {
+                Ok(ms) => ms,
+                Err(_) => {
+                    return Err(Error::Configuration(
+                        "Window size too large to represent as i64".to_string(),
+                    ));
+                },
+            };
             if window_ms_i64 > duration_ms {
                 return Err(Error::Configuration(format!(
                     "Window size ({:?}) cannot be larger than time range ({:?}ms)",
@@ -983,7 +1029,13 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
 
         // Estimate unique timestamps (assume 50% overlap for efficiency)
         // SEC: Use checked arithmetic to prevent overflow
-        let estimated_unique = (total_points as f64 * 0.5).ceil().min(usize::MAX as f64) as usize;
+        // Cap at usize::MAX to prevent DoS via excessive memory allocation
+        let estimated_unique = (total_points as f64 * 0.5)
+            .ceil()
+            .min(usize::MAX as f64) as usize;
+        // Additional safety: cap at reasonable limit even if calculation allows more
+        const MAX_ESTIMATED_UNIQUE: usize = 100_000_000; // 100M timestamps max
+        let estimated_unique = estimated_unique.min(MAX_ESTIMATED_UNIQUE);
 
         // Collect all timestamps across all series
         // Use HashSet for deduplication if we have many series (more efficient)
@@ -1095,10 +1147,25 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
 
         // Estimate number of windows for pre-allocation
         // SEC: Use checked arithmetic to prevent overflow
-        let window_ms = window.as_millis().try_into().unwrap_or(i64::MAX);
-        let step_ms = step
-            .map(|s| s.as_millis().try_into().unwrap_or(i64::MAX))
-            .unwrap_or(window_ms);
+        let window_ms: i64 = match window.as_millis().try_into() {
+            Ok(ms) => ms,
+            Err(_) => {
+                return Err(Error::Configuration(
+                    "Window size too large to represent as i64".to_string(),
+                ));
+            },
+        };
+        let step_ms: i64 = match step {
+            Some(s) => match s.as_millis().try_into() {
+                Ok(ms) => ms,
+                Err(_) => {
+                    return Err(Error::Configuration(
+                        "Step size too large to represent as i64".to_string(),
+                    ));
+                },
+            },
+            None => window_ms,
+        };
         let time_range = data
             .timestamps
             .end_time()

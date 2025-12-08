@@ -212,17 +212,26 @@ pub fn moving_avg(values: &[f64], window_size: usize) -> Vec<f64> {
     }
 
     let mut result = Vec::with_capacity(values.len());
-    let mut sum = 0.0;
+    let mut sum: f64 = 0.0;
 
     for (i, &value) in values.iter().enumerate() {
+        // SEC: Check for sum overflow (DoS protection)
+        // f64 can represent values up to ~1.7e308, but we check for reasonable limits
+        const MAX_SUM: f64 = 1e100; // Reasonable upper bound
+        if sum.abs() > MAX_SUM {
+            // Sum overflow detected - use saturating arithmetic
+            sum = sum.signum() * MAX_SUM;
+        }
         sum += value;
 
         // Remove the element that falls out of the window
         if i >= window_size {
             sum -= values[i - window_size];
+            // SEC: Prevent division by zero (window_size is validated > 0)
             result.push(sum / window_size as f64);
         } else {
             // Partial window at the start
+            // SEC: i + 1 is always > 0 here, so division is safe
             result.push(sum / (i + 1) as f64);
         }
     }
@@ -242,9 +251,14 @@ pub fn moving_sum(values: &[f64], window_size: usize) -> Vec<f64> {
     }
 
     let mut result = Vec::with_capacity(values.len());
-    let mut sum = 0.0;
+    let mut sum: f64 = 0.0;
 
     for (i, &value) in values.iter().enumerate() {
+        // SEC: Check for sum overflow (DoS protection)
+        const MAX_SUM: f64 = 1e100; // Reasonable upper bound
+        if sum.abs() > MAX_SUM {
+            sum = sum.signum() * MAX_SUM;
+        }
         sum += value;
 
         if i >= window_size {

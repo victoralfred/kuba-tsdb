@@ -981,6 +981,9 @@ impl AggQueryPlanner {
         // Assume 1 point per second for typical metrics
         // SEC: Use checked arithmetic to prevent overflow
         let points_per_series = (duration_secs as usize).max(1);
+        // SEC: Cap at reasonable limit to prevent DoS
+        const MAX_POINTS_PER_SERIES: usize = 10_000_000; // 10M points per series max
+        let points_per_series = points_per_series.min(MAX_POINTS_PER_SERIES);
         let total_points = points_per_series
             .checked_mul(series_count)
             .map(|p| p as u64)
@@ -1013,15 +1016,17 @@ impl AggQueryPlanner {
         // Memory: ~16 bytes per input point (timestamp + value)
         // Plus ~24 bytes per output point (AggregatedPoint)
         // SEC: Use checked arithmetic to prevent overflow
+        // Cap at reasonable limit to prevent DoS via memory exhaustion
+        const MAX_MEMORY_ESTIMATE: usize = usize::MAX / 2; // Use half of max to leave room
         let input_memory = (total_points as usize)
             .checked_mul(16)
-            .unwrap_or(usize::MAX);
+            .unwrap_or(MAX_MEMORY_ESTIMATE);
         let output_memory = (estimated_output_points as usize)
             .checked_mul(24)
-            .unwrap_or(usize::MAX);
+            .unwrap_or(MAX_MEMORY_ESTIMATE);
         let estimated_memory = input_memory
             .checked_add(output_memory)
-            .unwrap_or(usize::MAX);
+            .unwrap_or(MAX_MEMORY_ESTIMATE);
 
         // CPU cost based on operation complexity
         let cpu_factor = match query.function {
