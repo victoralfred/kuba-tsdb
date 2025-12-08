@@ -315,8 +315,10 @@ impl QueryPlanner {
             optimized = self.prune_columns(optimized);
         }
 
-        // TODO: Add more optimization passes
+        // Future optimization passes (when features are added):
         // - Join reordering (when we add joins)
+        // - Index selection (when secondary indexes are available)
+        // - Materialized view selection (when views are implemented)
 
         Ok(optimized)
     }
@@ -830,7 +832,8 @@ impl QueryPlanner {
             LogicalPlan::Scan { time_range, .. }
             | LogicalPlan::ScanWithPredicate { time_range, .. } => {
                 // Estimate based on time range
-                // TODO: Use actual statistics from catalog
+                // Future enhancement: Use actual statistics from catalog (chunk counts, row counts, etc.)
+                // for more accurate cost estimation
                 let duration_hours = time_range
                     .map(|tr| (tr.end - tr.start) as f64 / 3_600_000_000_000.0)
                     .unwrap_or(24.0);

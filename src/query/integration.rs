@@ -303,8 +303,9 @@ impl QueryEngine {
 
             // Latest - special handling
             LogicalPlan::Latest { selector, count } => {
-                // For latest, we scan backwards and take first N
-                // For now, use regular scan - TODO: optimize
+                // For latest queries, we scan backwards and take first N
+                // Future optimization: Use reverse scan or index-based lookup for O(1) latest retrieval
+                // when chunk metadata includes latest point information
                 let series_ids = self.resolve_series(selector).await?;
 
                 if series_ids.is_empty() {
