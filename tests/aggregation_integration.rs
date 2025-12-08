@@ -769,19 +769,19 @@ fn test_moving_functions_edge_cases() {
 
     // Empty input
     let empty: Vec<f64> = vec![];
-    assert!(moving_avg(&empty, 5).is_empty());
-    assert!(moving_sum(&empty, 5).is_empty());
+    assert!(moving_avg(&empty, 5).unwrap().is_empty());
+    assert!(moving_sum(&empty, 5).unwrap().is_empty());
     assert!(moving_min(&empty, 5).is_empty());
     assert!(moving_max(&empty, 5).is_empty());
 
     // Window size 0
     let values = vec![1.0, 2.0, 3.0];
-    assert!(moving_avg(&values, 0).is_empty());
-    assert!(moving_sum(&values, 0).is_empty());
+    assert!(moving_avg(&values, 0).unwrap().is_empty());
+    assert!(moving_sum(&values, 0).unwrap().is_empty());
 
     // Window larger than MAX_WINDOW_SIZE
     use kuba_tsdb::aggregation::functions::MAX_WINDOW_SIZE;
-    assert!(moving_avg(&values, MAX_WINDOW_SIZE + 1).is_empty());
+    assert!(moving_avg(&values, MAX_WINDOW_SIZE + 1).unwrap().is_empty());
 }
 
 #[test]

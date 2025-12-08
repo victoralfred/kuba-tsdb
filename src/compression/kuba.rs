@@ -21,7 +21,7 @@
 //! - `'10' + 7 bits`: For changes in range [-63, 64) (127 values)
 //! - `'110' + 9 bits`: For changes in range [-255, 256) (511 values)
 //! - `'1110' + 12 bits`: For changes in range [-2047, 2048) (4095 values)
-//! - `'1111' + 32 bits`: Full delta for large changes
+//! - `'1111' + 64 bits`: Full delta for large changes
 //!
 //! ## 2. XOR Floating-Point Value Compression
 //!
@@ -193,7 +193,7 @@ impl KubaCompressor {
     ///    - If dod in [-63, 64): Write '10' + 7-bit value (9 bits total)
     ///    - If dod in [-255, 256): Write '110' + 9-bit value (12 bits total)
     ///    - If dod in [-2047, 2048): Write '1110' + 12-bit value (16 bits total)
-    ///    - Otherwise: Write '1111' + full 32-bit delta (36 bits total)
+    ///    - Otherwise: Write '1111' + full 64-bit delta (68 bits total)
     ///
     /// # Example
     ///
@@ -342,7 +342,7 @@ impl KubaCompressor {
     ///    - '10': Read 7 bits, decode to dod in [-63, 63]
     ///    - '110': Read 9 bits, decode to dod in [-255, 255]
     ///    - '1110': Read 12 bits, decode to dod in [-2047, 2047]
-    ///    - '1111': Read 32 bits as full delta (bypass dod)
+    ///    - '1111': Read 64 bits as full delta (bypass dod)
     /// 4. Reconstruct timestamp: prev_timestamp + delta
     ///
     /// # Arguments
@@ -797,7 +797,7 @@ impl Compressor for KubaCompressor {
         Self::compress_timestamps(points, &mut writer)?;
         Self::compress_values(points, &mut writer);
 
-        let compressed_data = writer.finish();
+        let compressed_data = writer.finish()?;
         let compressed_size = compressed_data.len();
         let original_size = size_of_val(points);
 

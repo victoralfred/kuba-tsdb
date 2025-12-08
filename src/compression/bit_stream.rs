@@ -40,6 +40,7 @@ use crate::error::CompressionError;
 /// - `buffer`: Completed bytes that have been fully written
 /// - `current_byte`: The byte currently being assembled (0-7 bits written)
 /// - `bit_position`: Position within current_byte (0-7), indicating how many bits are used
+/// - `overflow`: Flag indicating if buffer size limit was exceeded (data loss occurred)
 ///
 /// # Example
 /// ```
@@ -57,6 +58,8 @@ pub struct BitWriter {
     current_byte: u8,
     /// Number of bits written to current_byte (0-7)
     bit_position: u8,
+    /// Flag indicating if buffer overflow occurred (data loss)
+    overflow: bool,
 }
 
 impl BitWriter {
@@ -71,6 +74,7 @@ impl BitWriter {
             buffer: Vec::new(),
             current_byte: 0,
             bit_position: 0,
+            overflow: false,
         }
     }
 
@@ -86,6 +90,7 @@ impl BitWriter {
             buffer: Vec::with_capacity(capacity),
             current_byte: 0,
             bit_position: 0,
+            overflow: false,
         }
     }
 
@@ -125,8 +130,12 @@ impl BitWriter {
             // SEC: Limit buffer size to prevent DoS via memory exhaustion
             const MAX_BUFFER_SIZE: usize = 100_000_000; // 100MB max
             if self.buffer.len() >= MAX_BUFFER_SIZE {
-                // Buffer too large - this indicates potential DoS attack
-                // In production, this should return an error, but for now we just prevent growth
+                // BUG-002 FIX: Mark overflow and prevent further writes
+                // This indicates potential DoS attack or data corruption
+                // We mark overflow so finish() can detect and report it
+                self.overflow = true;
+                // SEC: Don't reset bit_position or current_byte - they contain data that will be lost
+                // This allows finish() to detect partial byte loss
                 return;
             }
             self.buffer.push(self.current_byte);
@@ -186,22 +195,43 @@ impl BitWriter {
     /// # Returns
     /// Vector of bytes containing all written bits
     ///
+    /// # Errors
+    /// Returns `CompressionError::ResourceLimit` if buffer overflow occurred during writing
+    ///
     /// # Example
     /// ```
     /// use kuba_tsdb::compression::bit_stream::BitWriter;
     ///
     /// let mut writer = BitWriter::new();
     /// writer.write_bits(0b1010, 4);  // Only 4 bits written
-    /// let buffer = writer.finish();   // Flushes with 4 trailing zero bits
+    /// let buffer = writer.finish().unwrap();   // Flushes with 4 trailing zero bits
     /// assert_eq!(buffer.len(), 1);    // One byte total
     /// ```
-    pub fn finish(mut self) -> Vec<u8> {
+    pub fn finish(mut self) -> Result<Vec<u8>, CompressionError> {
+        // BUG-002 FIX: Check for overflow before finishing
+        if self.overflow {
+            return Err(CompressionError::ResourceLimit(format!(
+                "BitWriter buffer overflow: exceeded maximum size of {} bytes. Data loss occurred.",
+                100_000_000
+            )));
+        }
+
         // If there are any bits written in current_byte, flush it
         // The remaining bits (8 - bit_position) will be 0-padded
+        // SEC: Check buffer size before adding final byte
+        const MAX_BUFFER_SIZE: usize = 100_000_000; // 100MB max
         if self.bit_position > 0 {
+            if self.buffer.len() >= MAX_BUFFER_SIZE {
+                return Err(CompressionError::ResourceLimit(format!(
+                    "BitWriter buffer overflow: cannot flush final byte ({} bits) - buffer already at maximum size of {} bytes",
+                    self.bit_position,
+                    MAX_BUFFER_SIZE
+                )));
+            }
             self.buffer.push(self.current_byte);
         }
-        self.buffer
+
+        Ok(self.buffer)
     }
 
     /// Get current buffer size in bytes
@@ -454,7 +484,7 @@ mod tests {
         writer.write_bit(true);
         writer.write_bit(true);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         assert!(reader.read_bit().unwrap());
@@ -469,7 +499,7 @@ mod tests {
         writer.write_bits(0b1010, 4);
         writer.write_bits(0b110011, 6);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         assert_eq!(reader.read_bits(4).unwrap(), 0b1010);
@@ -482,7 +512,7 @@ mod tests {
         let value: u64 = 0x123456789ABCDEF0;
         writer.write_bits(value, 64);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         assert_eq!(reader.read_bits(64).unwrap(), value);
@@ -498,7 +528,7 @@ mod tests {
         writer.write_bits(0xFF, 8);
         writer.write_bit(false);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         // Read them back
@@ -515,7 +545,7 @@ mod tests {
         // Write exactly one byte
         writer.write_bits(0b10101010, 8);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer[0], 0b10101010);
     }
@@ -527,7 +557,7 @@ mod tests {
         // Write less than one byte
         writer.write_bits(0b1010, 4);
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer[0] >> 4, 0b1010);
     }
@@ -557,7 +587,7 @@ mod tests {
             let mut writer = BitWriter::new();
             writer.write_bits(value, 64);
 
-            let buffer = writer.finish();
+            let buffer = writer.finish().unwrap();
             let mut reader = BitReader::new(&buffer);
 
             assert_eq!(reader.read_bits(64).unwrap(), value);
@@ -571,7 +601,7 @@ mod tests {
         writer.write_bits(0b1010101, 7); // fills byte exactly
         writer.write_bits(0b11, 2); // crosses into next byte
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         assert_eq!(reader.read_bits(1).unwrap(), 0b1);
@@ -582,7 +612,7 @@ mod tests {
     fn test_is_at_end_bit_precision() {
         let mut writer = BitWriter::new();
         writer.write_bits(0b10110000, 8);
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
 
         let mut reader = BitReader::new(&buffer);
         assert!(!reader.is_at_end());
@@ -603,7 +633,7 @@ mod tests {
         let mut writer = BitWriter::new();
         writer.write_bits(0b1011, 4); // expect top 4 bits = 1011
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         assert_eq!(buffer.len(), 1);
 
         let byte = buffer[0];
@@ -615,7 +645,7 @@ mod tests {
         let mut writer = BitWriter::new();
         writer.write_bits(0b11010000, 8); // known MSB pattern
 
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
         let mut reader = BitReader::new(&buffer);
 
         assert_eq!(reader.read_bits(1).unwrap(), 1);
@@ -635,7 +665,7 @@ mod tests {
 
             let mut writer = BitWriter::new();
             writer.write_bits(value, bit_len);
-            let buffer = writer.finish();
+            let buffer = writer.finish().unwrap();
 
             let mut reader = BitReader::new(&buffer);
             let read_val = reader.read_bits(bit_len).unwrap();

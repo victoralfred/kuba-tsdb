@@ -60,6 +60,10 @@ pub enum CompressionError {
     /// Invalid input data
     #[error("Invalid data: {0}")]
     InvalidData(String),
+
+    /// Resource limit exceeded (buffer overflow, memory limit, etc.)
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimit(String),
 }
 
 /// Storage errors
