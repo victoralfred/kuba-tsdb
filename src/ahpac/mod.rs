@@ -208,7 +208,8 @@ impl AhpacCompressor {
     /// Larger values provide more accurate profiling but increase overhead.
     /// Default is 256, which balances accuracy and performance.
     pub fn with_profile_samples(mut self, samples: usize) -> Self {
-        self.profile_samples = samples.max(16); // Minimum 16 samples
+        const MAX_PROFILE_SAMPLES: usize = 10_000;
+        self.profile_samples = samples.max(16).min(MAX_PROFILE_SAMPLES);
         self
     }
 
@@ -237,7 +238,7 @@ impl AhpacCompressor {
         let (codec_id, compressed_data) = match self.strategy {
             SelectionStrategy::Heuristic => {
                 let id = self.selector.select_heuristic(&profile);
-                let codec = self.selector.get_codec(id);
+                let codec = self.selector.get_codec(id)?;
                 let data = codec.compress(points)?;
                 (id, data)
             },
@@ -247,9 +248,17 @@ impl AhpacCompressor {
         };
 
         // Step 3: Create the compressed chunk with metadata
+        // Validate point count fits in u32
+        let point_count = points.len().try_into().map_err(|_| {
+            AhpacError::InvalidFormat(format!(
+                "Too many points: {} (exceeds u32::MAX)",
+                points.len()
+            ))
+        })?;
+
         let chunk = CompressedChunk {
             codec: codec_id,
-            point_count: points.len() as u32,
+            point_count,
             start_timestamp: points.first().map(|p| p.timestamp).unwrap_or(0),
             end_timestamp: points.last().map(|p| p.timestamp).unwrap_or(0),
             data: compressed_data,
@@ -269,7 +278,7 @@ impl AhpacCompressor {
     ///
     /// A vector of `DataPoint` containing the decompressed data.
     pub fn decompress(&self, chunk: &CompressedChunk) -> Result<Vec<DataPoint>, AhpacError> {
-        let codec = self.selector.get_codec(chunk.codec);
+        let codec = self.selector.get_codec(chunk.codec)?;
         let points = codec.decompress(&chunk.data, chunk.point_count as usize)?;
         Ok(points)
     }

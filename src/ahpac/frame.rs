@@ -127,18 +127,47 @@ impl CompressedChunk {
         let codec = CodecId::from_byte(data[5])
             .ok_or_else(|| AhpacError::InvalidFormat(format!("Invalid codec ID: {}", data[5])))?;
 
-        // Parse point count
-        let point_count = u32::from_le_bytes(data[6..10].try_into().unwrap());
+        // Parse point count with proper error handling
+        let point_count = u32::from_le_bytes(
+            data[6..10]
+                .try_into()
+                .map_err(|_| AhpacError::InvalidFormat("Invalid point_count bytes".to_string()))?,
+        );
 
-        // Parse timestamps
-        let start_timestamp = i64::from_le_bytes(data[10..18].try_into().unwrap());
-        let end_timestamp = i64::from_le_bytes(data[18..26].try_into().unwrap());
+        // Parse timestamps with proper error handling
+        let start_timestamp =
+            i64::from_le_bytes(data[10..18].try_into().map_err(|_| {
+                AhpacError::InvalidFormat("Invalid start_timestamp bytes".to_string())
+            })?);
+        let end_timestamp =
+            i64::from_le_bytes(data[18..26].try_into().map_err(|_| {
+                AhpacError::InvalidFormat("Invalid end_timestamp bytes".to_string())
+            })?);
 
-        // Parse data length
-        let data_len = u32::from_le_bytes(data[26..30].try_into().unwrap()) as usize;
+        // Parse data length with proper error handling
+        let data_len = u32::from_le_bytes(
+            data[26..30]
+                .try_into()
+                .map_err(|_| AhpacError::InvalidFormat("Invalid data_len bytes".to_string()))?,
+        ) as usize;
 
-        // Verify total length
-        let expected_len = 30 + data_len + 4; // header + data + CRC
+        // Security: Validate data_len to prevent DoS attacks
+        const MAX_DATA_LEN: usize = 100 * 1024 * 1024; // 100MB limit
+        if data_len > MAX_DATA_LEN {
+            return Err(AhpacError::InvalidFormat(format!(
+                "Data length too large: {} bytes (max: {})",
+                data_len, MAX_DATA_LEN
+            )));
+        }
+
+        // Verify total length with overflow protection
+        const HEADER_SIZE: usize = 30;
+        const CRC_SIZE: usize = 4;
+        let expected_len = HEADER_SIZE
+            .checked_add(data_len)
+            .and_then(|x| x.checked_add(CRC_SIZE))
+            .ok_or_else(|| AhpacError::InvalidFormat("Length calculation overflow".to_string()))?;
+
         if data.len() != expected_len {
             return Err(AhpacError::InvalidFormat(format!(
                 "Length mismatch: expected {}, got {}",
@@ -147,11 +176,29 @@ impl CompressedChunk {
             )));
         }
 
+        // Verify we have enough data before slicing
+        if data.len() < 30 + data_len {
+            return Err(AhpacError::InvalidFormat(
+                "Insufficient data for compressed payload".to_string(),
+            ));
+        }
+
         // Extract compressed data
         let compressed_data = data[30..30 + data_len].to_vec();
 
+        // Verify we have enough data for CRC
+        if data.len() < 30 + data_len + 4 {
+            return Err(AhpacError::InvalidFormat(
+                "Insufficient data for CRC".to_string(),
+            ));
+        }
+
         // Verify CRC32
-        let stored_crc = u32::from_le_bytes(data[30 + data_len..].try_into().unwrap());
+        let stored_crc = u32::from_le_bytes(
+            data[30 + data_len..30 + data_len + 4]
+                .try_into()
+                .map_err(|_| AhpacError::InvalidFormat("Invalid CRC bytes".to_string()))?,
+        );
         let computed_crc = crc32fast::hash(&data[..30 + data_len]);
 
         if stored_crc != computed_crc {

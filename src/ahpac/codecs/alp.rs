@@ -94,11 +94,24 @@ impl AlpCodec {
     }
 
     /// Convert floats to integers using the detected scale
-    fn floats_to_integers(values: &[f64], scale: f64) -> Vec<i64> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CodecError::UnsupportedData` if a value exceeds i64 range after scaling.
+    fn floats_to_integers(values: &[f64], scale: f64) -> Result<Vec<i64>, CodecError> {
         let inverse_scale = 1.0 / scale;
         values
             .iter()
-            .map(|&v| (v * inverse_scale).round() as i64)
+            .map(|&v| {
+                let scaled = (v * inverse_scale).round();
+                if scaled > i64::MAX as f64 || scaled < i64::MIN as f64 {
+                    return Err(CodecError::UnsupportedData(format!(
+                        "Value {} exceeds i64 range after scaling",
+                        v
+                    )));
+                }
+                Ok(scaled as i64)
+            })
             .collect()
     }
 
@@ -354,7 +367,7 @@ impl Codec for AlpCodec {
             .ok_or_else(|| CodecError::UnsupportedData("Data is not integer-like".to_string()))?;
 
         // Convert to integers
-        let integers = Self::floats_to_integers(&values, scale);
+        let integers = Self::floats_to_integers(&values, scale)?;
 
         let mut writer = BitWriter::new();
 
@@ -423,7 +436,10 @@ impl Codec for AlpCodec {
         // Estimate bits based on delta range
         let values: Vec<f64> = sample.iter().map(|p| p.value).collect();
         if let Some((scale, _)) = Self::detect_scale(&values) {
-            let integers = Self::floats_to_integers(&values, scale);
+            let integers = match Self::floats_to_integers(&values, scale) {
+                Ok(ints) => ints,
+                Err(_) => return f64::MAX, // If conversion fails, codec not applicable
+            };
 
             // Calculate delta range
             let max_delta = integers

@@ -235,7 +235,8 @@ impl KubaCodec {
 
                 // Meaningful bits: 1-64 range (since XOR is non-zero, at least 1 bit is set)
                 // With clamped leading: meaningful = 64 - clamped_leading - trailing
-                let meaningful_bits = 64 - leading - trailing;
+                // Use saturating_sub to prevent underflow
+                let meaningful_bits = 64u8.saturating_sub(leading).saturating_sub(trailing).max(1);
 
                 // Check if we can reuse previous leading/trailing info
                 // Use actual_leading for comparison to ensure the XOR fits in the window
