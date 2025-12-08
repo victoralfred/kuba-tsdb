@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use super::metrics::IngestionMetrics;
@@ -41,6 +42,11 @@ pub struct BackpressureConfig {
     pub block_check_interval: Duration,
     /// Maximum time to block before rejecting
     pub max_block_time: Duration,
+    /// Hysteresis threshold for deactivation (percentage of limit, 0-100)
+    /// Backpressure deactivates when usage falls below this percentage.
+    pub deactivation_threshold: u8,
+    /// Minimum interval between warning logs (rate limiting)
+    pub warning_cooldown: Duration,
 }
 
 impl Default for BackpressureConfig {
@@ -53,6 +59,8 @@ impl Default for BackpressureConfig {
             strategy: BackpressureStrategy::Reject,
             block_check_interval: Duration::from_millis(10),
             max_block_time: Duration::from_secs(30),
+            deactivation_threshold: 90,
+            warning_cooldown: Duration::from_secs(60),
         }
     }
 }
@@ -101,6 +109,15 @@ impl BackpressureConfig {
         if self.block_check_interval > self.max_block_time {
             return Err("block_check_interval must be <= max_block_time".to_string());
         }
+        if self.deactivation_threshold > 100 {
+            return Err("deactivation_threshold must be <= 100".to_string());
+        }
+        if self.deactivation_threshold < self.memory_warning_threshold {
+            return Err(
+                "deactivation_threshold should be >= memory_warning_threshold for proper hysteresis"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -121,6 +138,20 @@ impl BackpressureConfig {
         // Use saturating multiplication to prevent overflow
         let threshold =
             (self.queue_limit as u64).saturating_mul(self.queue_warning_threshold as u64) / 100;
+        threshold.min(usize::MAX as u64) as usize
+    }
+
+    /// Get the memory deactivation threshold in bytes (for hysteresis)
+    pub fn memory_deactivation_bytes(&self) -> usize {
+        let threshold =
+            (self.memory_limit as u64).saturating_mul(self.deactivation_threshold as u64) / 100;
+        threshold.min(usize::MAX as u64) as usize
+    }
+
+    /// Get the queue deactivation threshold (for hysteresis)
+    pub fn queue_deactivation_count(&self) -> usize {
+        let threshold =
+            (self.queue_limit as u64).saturating_mul(self.deactivation_threshold as u64) / 100;
         threshold.min(usize::MAX as u64) as usize
     }
 }
@@ -146,6 +177,8 @@ pub struct BackpressureState {
     pub total_rejections: u64,
     /// When backpressure was last activated
     pub last_activation: Option<Instant>,
+    /// Total duration backpressure has been active (cumulative)
+    pub total_active_duration: Duration,
 }
 
 /// Backpressure controller
@@ -165,10 +198,16 @@ pub struct BackpressureController {
     rejections: AtomicU64,
     /// Metrics collector
     metrics: Arc<IngestionMetrics>,
-    /// Whether we've logged a warning for memory
-    memory_warning_logged: AtomicBool,
-    /// Whether we've logged a warning for queue
-    queue_warning_logged: AtomicBool,
+    /// Last time a memory warning was logged (epoch nanos, 0 = never)
+    last_memory_warning_nanos: AtomicU64,
+    /// Last time a queue warning was logged (epoch nanos, 0 = never)
+    last_queue_warning_nanos: AtomicU64,
+    /// Timestamp when backpressure was last activated (elapsed nanos)
+    last_activation_nanos: AtomicU64,
+    /// Total cumulative duration of backpressure (in nanoseconds)
+    total_active_nanos: AtomicU64,
+    /// Notifier for waking up blocked waiters when backpressure is relieved
+    space_available: Arc<Notify>,
 }
 
 impl BackpressureController {
@@ -181,8 +220,11 @@ impl BackpressureController {
             queue_depth: AtomicUsize::new(0),
             rejections: AtomicU64::new(0),
             metrics,
-            memory_warning_logged: AtomicBool::new(false),
-            queue_warning_logged: AtomicBool::new(false),
+            last_memory_warning_nanos: AtomicU64::new(0),
+            last_queue_warning_nanos: AtomicU64::new(0),
+            last_activation_nanos: AtomicU64::new(0),
+            total_active_nanos: AtomicU64::new(0),
+            space_available: Arc::new(Notify::new()),
         }
     }
 
@@ -225,44 +267,89 @@ impl BackpressureController {
     }
 
     /// Check if backpressure should be activated or deactivated
+    ///
+    /// Uses hysteresis to prevent rapid on/off toggling:
+    /// - Activates when usage >= 100% of limit
+    /// - Deactivates when usage falls below deactivation_threshold (default 90%)
     fn check_backpressure(&self) {
         let memory = self.memory_used.load(Ordering::Relaxed);
         let queue = self.queue_depth.load(Ordering::Relaxed);
+        let was_active = self.active.load(Ordering::Relaxed);
 
+        // Check if we should activate (at limit)
         let memory_exceeded = memory >= self.config.memory_limit;
         let queue_exceeded = queue >= self.config.queue_limit;
 
-        let should_activate = memory_exceeded || queue_exceeded;
-        let was_active = self.active.swap(should_activate, Ordering::SeqCst);
+        // Check if we should deactivate (below hysteresis threshold)
+        let memory_below_hysteresis = memory < self.config.memory_deactivation_bytes();
+        let queue_below_hysteresis = queue < self.config.queue_deactivation_count();
 
-        // Log state changes
-        if should_activate && !was_active {
-            if memory_exceeded {
-                warn!(
-                    "Backpressure activated: memory {} bytes >= limit {} bytes",
-                    memory, self.config.memory_limit
+        let should_activate = if was_active {
+            // Already active: stay active unless BOTH are below hysteresis threshold
+            !(memory_below_hysteresis && queue_below_hysteresis)
+        } else {
+            // Not active: activate if EITHER exceeds limit
+            memory_exceeded || queue_exceeded
+        };
+
+        // Only update state if it changes
+        if should_activate != was_active {
+            self.active.store(should_activate, Ordering::SeqCst);
+
+            if should_activate {
+                // Record activation timestamp
+                let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+                self.last_activation_nanos
+                    .store(now_nanos, Ordering::Relaxed);
+
+                if memory_exceeded {
+                    warn!(
+                        "Backpressure activated: memory {} bytes >= limit {} bytes",
+                        memory, self.config.memory_limit
+                    );
+                }
+                if queue_exceeded {
+                    warn!(
+                        "Backpressure activated: queue {} >= limit {}",
+                        queue, self.config.queue_limit
+                    );
+                }
+                self.metrics.record_backpressure_activated();
+            } else {
+                // Calculate and accumulate active duration
+                let activation_nanos = self.last_activation_nanos.load(Ordering::Relaxed);
+                if activation_nanos > 0 {
+                    let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+                    let duration = now_nanos.saturating_sub(activation_nanos);
+                    self.total_active_nanos
+                        .fetch_add(duration, Ordering::Relaxed);
+                }
+
+                debug!(
+                    "Backpressure deactivated (hysteresis): memory {}% queue {}%",
+                    ((memory as u128) * 100 / (self.config.memory_limit as u128)) as u8,
+                    ((queue as u128) * 100 / (self.config.queue_limit as u128)) as u8
                 );
+                self.metrics.record_backpressure_deactivated();
+
+                // Notify any blocked waiters that space is available
+                self.space_available.notify_waiters();
             }
-            if queue_exceeded {
-                warn!(
-                    "Backpressure activated: queue {} >= limit {}",
-                    queue, self.config.queue_limit
-                );
-            }
-            self.metrics.record_backpressure_activated();
-        } else if !should_activate && was_active {
-            debug!("Backpressure deactivated");
-            self.metrics.record_backpressure_deactivated();
         }
 
-        // Log warnings at thresholds
+        // Log warnings at thresholds (with rate limiting)
         self.check_warnings(memory, queue);
     }
 
-    /// Check and log warning thresholds
+    /// Check and log warning thresholds with rate limiting
     fn check_warnings(&self, memory: usize, queue: usize) {
         let memory_warning_threshold = self.config.memory_warning_bytes();
         let queue_warning_threshold = self.config.queue_warning_count();
+        let cooldown_nanos = self.config.warning_cooldown.as_nanos() as u64;
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
 
         // Memory warning - use u128 to prevent overflow in percentage calculation
         if memory >= memory_warning_threshold {
@@ -274,7 +361,7 @@ impl BackpressureController {
                 );
             }
         } else {
-            self.memory_warning_logged.store(false, Ordering::Relaxed);
+            self.last_memory_warning_nanos.store(0, Ordering::Relaxed);
         }
 
         // Queue warning - use u128 to prevent overflow in percentage calculation
@@ -287,7 +374,7 @@ impl BackpressureController {
                 );
             }
         } else {
-            self.queue_warning_logged.store(false, Ordering::Relaxed);
+            self.last_queue_warning_nanos.store(0, Ordering::Relaxed);
         }
     }
 
@@ -389,24 +476,45 @@ impl BackpressureController {
 
     /// Wait until backpressure is relieved (for Block strategy)
     ///
+    /// Uses notification-based waiting instead of polling for efficiency.
     /// Returns Ok(()) when space is available, or Err if timeout exceeded.
     pub async fn wait_for_space(&self) -> Result<(), String> {
         if self.config.strategy != BackpressureStrategy::Block {
             return Ok(());
         }
 
-        let start = Instant::now();
+        // Fast path: if not active, return immediately
+        if !self.active.load(Ordering::Relaxed) {
+            return Ok(());
+        }
 
-        while self.active.load(Ordering::Relaxed) {
-            if start.elapsed() > self.config.max_block_time {
+        let deadline = Instant::now() + self.config.max_block_time;
+
+        loop {
+            // Check if backpressure is relieved
+            if !self.active.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            // Check timeout
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 self.rejections.fetch_add(1, Ordering::Relaxed);
                 return Err("Backpressure block timeout exceeded".to_string());
             }
 
-            tokio::time::sleep(self.config.block_check_interval).await;
-        }
+            // Wait for notification with timeout
+            let wait_duration = remaining.min(self.config.block_check_interval);
 
-        Ok(())
+            tokio::select! {
+                _ = self.space_available.notified() => {
+                    // Notified that space may be available, loop to check
+                }
+                _ = tokio::time::sleep(wait_duration) => {
+                    // Timeout expired, loop to check again
+                }
+            }
+        }
     }
 
     /// Check if backpressure is currently active
@@ -429,25 +537,51 @@ impl BackpressureController {
         self.rejections.load(Ordering::Relaxed)
     }
 
+    /// Get total duration backpressure has been active
+    pub fn total_active_duration(&self) -> Duration {
+        Duration::from_nanos(self.total_active_nanos.load(Ordering::Relaxed))
+    }
+
     /// Get current backpressure state
     pub fn state(&self) -> BackpressureState {
         let memory_used = self.memory_used.load(Ordering::Relaxed);
         let queue_depth = self.queue_depth.load(Ordering::Relaxed);
+        let is_active = self.active.load(Ordering::Relaxed);
 
         let memory_percent = if self.config.memory_limit > 0 {
-            ((memory_used as u64 * 100) / self.config.memory_limit as u64) as u8
+            ((memory_used as u128 * 100) / self.config.memory_limit as u128) as u8
         } else {
             0
         };
 
         let queue_percent = if self.config.queue_limit > 0 {
-            ((queue_depth as u64 * 100) / self.config.queue_limit as u64) as u8
+            ((queue_depth as u128 * 100) / self.config.queue_limit as u128) as u8
         } else {
             0
         };
 
+        // Reconstruct last_activation from stored nanos
+        let activation_nanos = self.last_activation_nanos.load(Ordering::Relaxed);
+        let last_activation = if activation_nanos > 0 {
+            Some(
+                Instant::now()
+                    - Duration::from_nanos(
+                        Instant::now().elapsed().as_nanos() as u64 - activation_nanos,
+                    ),
+            )
+        } else {
+            None
+        };
+
+        // Calculate total active duration (include current active period if applicable)
+        let mut total_nanos = self.total_active_nanos.load(Ordering::Relaxed);
+        if is_active && activation_nanos > 0 {
+            let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+            total_nanos = total_nanos.saturating_add(now_nanos.saturating_sub(activation_nanos));
+        }
+
         BackpressureState {
-            active: self.active.load(Ordering::Relaxed),
+            active: is_active,
             memory_used,
             memory_limit: self.config.memory_limit,
             memory_percent,
@@ -455,7 +589,8 @@ impl BackpressureController {
             queue_limit: self.config.queue_limit,
             queue_percent,
             total_rejections: self.rejections.load(Ordering::Relaxed),
-            last_activation: None, // Would need additional tracking
+            last_activation,
+            total_active_duration: Duration::from_nanos(total_nanos),
         }
     }
 
@@ -466,8 +601,10 @@ impl BackpressureController {
         self.memory_used.store(0, Ordering::Relaxed);
         self.queue_depth.store(0, Ordering::Relaxed);
         self.rejections.store(0, Ordering::Relaxed);
-        self.memory_warning_logged.store(false, Ordering::Relaxed);
-        self.queue_warning_logged.store(false, Ordering::Relaxed);
+        self.last_memory_warning_nanos.store(0, Ordering::Relaxed);
+        self.last_queue_warning_nanos.store(0, Ordering::Relaxed);
+        self.last_activation_nanos.store(0, Ordering::Relaxed);
+        self.total_active_nanos.store(0, Ordering::Relaxed);
     }
 }
 
@@ -544,8 +681,12 @@ mod tests {
         controller.update_memory_usage(1000);
         assert!(controller.is_active());
 
-        // Below limit - backpressure deactivated
-        controller.update_memory_usage(500);
+        // Above hysteresis threshold (90% = 900) - still active
+        controller.update_memory_usage(900);
+        assert!(controller.is_active());
+
+        // Below hysteresis threshold - backpressure deactivated
+        controller.update_memory_usage(899);
         assert!(!controller.is_active());
     }
 
@@ -561,8 +702,12 @@ mod tests {
         controller.update_queue_depth(100);
         assert!(controller.is_active());
 
-        // Below limit - backpressure deactivated
-        controller.update_queue_depth(50);
+        // Above hysteresis threshold (90% = 90) - still active
+        controller.update_queue_depth(90);
+        assert!(controller.is_active());
+
+        // Below hysteresis threshold - backpressure deactivated
+        controller.update_queue_depth(89);
         assert!(!controller.is_active());
     }
 
@@ -624,5 +769,39 @@ mod tests {
         assert!(!controller.is_active());
         assert_eq!(controller.memory_used(), 0);
         assert_eq!(controller.queue_depth(), 0);
+    }
+
+    #[test]
+    fn test_hysteresis_prevents_toggling() {
+        let controller = create_controller();
+
+        // Activate at limit
+        controller.update_memory_usage(1000);
+        assert!(controller.is_active());
+
+        // Drop to 95% - still active due to hysteresis
+        controller.update_memory_usage(950);
+        assert!(controller.is_active());
+
+        // Drop to 91% - still active (threshold is 90%)
+        controller.update_memory_usage(910);
+        assert!(controller.is_active());
+
+        // Drop to 89% - now deactivates
+        controller.update_memory_usage(890);
+        assert!(!controller.is_active());
+    }
+
+    #[test]
+    fn test_deactivation_threshold_config() {
+        let config = BackpressureConfig {
+            memory_limit: 1000,
+            queue_limit: 100,
+            deactivation_threshold: 90,
+            ..Default::default()
+        };
+
+        assert_eq!(config.memory_deactivation_bytes(), 900);
+        assert_eq!(config.queue_deactivation_count(), 90);
     }
 }
