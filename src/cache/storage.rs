@@ -310,7 +310,7 @@ impl MemoryTracker {
     /// # Security
     /// - Uses saturating arithmetic to prevent overflow
     /// - Caps at max_bytes to prevent DoS via memory exhaustion
-    /// - Maintains invariant: per_shard_bytes[i] <= current_bytes <= max_bytes
+    /// - Maintains invariant: per_shard_bytes\[i\] <= current_bytes <= max_bytes
     pub fn on_insert(&self, shard_id: usize, size: usize) {
         // SEC: Use saturating arithmetic to prevent overflow
         // If overflow would occur, cap at max_bytes
