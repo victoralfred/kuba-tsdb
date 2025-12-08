@@ -399,7 +399,7 @@ pub fn exponential_moving_avg(values: &[f64], alpha: f64) -> Vec<f64> {
 
 /// Calculate point-to-point delta (difference between consecutive values)
 ///
-/// Returns a vector of length `n - 1` where each element is `values[i+1] - values[i]`.
+/// Returns a vector of length `n - 1` where each element is `values\[i+1\] - values\[i\]`.
 pub fn delta(values: &[f64]) -> Vec<f64> {
     if values.len() < 2 {
         return Vec::new();
