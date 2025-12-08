@@ -153,10 +153,18 @@ struct BatcherState {
 /// Flushes batches when either:
 /// - The batch reaches `max_batch_size` points
 /// - The batch age exceeds `max_batch_timeout`
+///
+/// # Performance Note
+///
+/// This batcher uses a single Mutex which can become a bottleneck under
+/// high concurrency. For multi-threaded workloads, consider using
+/// `ShardedBatcher` which reduces lock contention by sharding across
+/// multiple independent batchers.
 pub struct Batcher {
     /// Configuration
     config: BatchConfig,
     /// Internal state protected by mutex
+    /// Note: For high-throughput scenarios, consider ShardedBatcher
     state: Mutex<BatcherState>,
     /// Output channel for completed batches
     output: mpsc::Sender<PointBatch>,
@@ -179,7 +187,7 @@ impl Batcher {
         output: mpsc::Sender<PointBatch>,
         metrics: Arc<IngestionMetrics>,
     ) -> Self {
-        let sequence = AtomicU64::new(0);
+        let sequence = AtomicU64::new(1); // Start at 1, so first batch gets sequence 1
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
 
         let state = BatcherState {
@@ -250,8 +258,10 @@ impl Batcher {
             let mut remaining: Vec<DataPoint> = points_iter.collect();
 
             while remaining.len() >= self.config.max_batch_size {
+                // Use min to ensure we don't drain more than available (defensive)
+                let drain_size = self.config.max_batch_size.min(remaining.len());
                 let batch_points: Vec<DataPoint> =
-                    remaining.drain(..self.config.max_batch_size).collect();
+                    remaining.drain(..drain_size).collect();
                 let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
                 let batch = PointBatch::new(batch_points, seq);
 

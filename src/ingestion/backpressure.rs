@@ -297,8 +297,11 @@ impl BackpressureController {
             self.active.store(should_activate, Ordering::SeqCst);
 
             if should_activate {
-                // Record activation timestamp
-                let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+                // Record activation timestamp using SystemTime for absolute time
+                let now_nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 self.last_activation_nanos
                     .store(now_nanos, Ordering::Relaxed);
 
@@ -319,7 +322,10 @@ impl BackpressureController {
                 // Calculate and accumulate active duration
                 let activation_nanos = self.last_activation_nanos.load(Ordering::Relaxed);
                 if activation_nanos > 0 {
-                    let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+                    let now_nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
                     let duration = now_nanos.saturating_sub(activation_nanos);
                     self.total_active_nanos
                         .fetch_add(duration, Ordering::Relaxed);
@@ -579,14 +585,21 @@ impl BackpressureController {
         };
 
         // Reconstruct last_activation from stored nanos
+        // Note: We store absolute time (SystemTime nanos) but return Instant
+        // This is an approximation - for exact tracking, consider storing Instant directly
         let activation_nanos = self.last_activation_nanos.load(Ordering::Relaxed);
         let last_activation = if activation_nanos > 0 {
-            Some(
-                Instant::now()
-                    - Duration::from_nanos(
-                        Instant::now().elapsed().as_nanos() as u64 - activation_nanos,
-                    ),
-            )
+            // Approximate: assume activation was recent (within reasonable bounds)
+            // For exact tracking, we'd need to store Instant, but that requires
+            // more complex synchronization. This approximation is acceptable for metrics.
+            let now_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let duration_since_activation = now_nanos.saturating_sub(activation_nanos);
+            // Convert to Instant by subtracting from now
+            Some(Instant::now().checked_sub(Duration::from_nanos(duration_since_activation))
+                .unwrap_or_else(Instant::now))
         } else {
             None
         };
@@ -594,7 +607,10 @@ impl BackpressureController {
         // Calculate total active duration (include current active period if applicable)
         let mut total_nanos = self.total_active_nanos.load(Ordering::Relaxed);
         if is_active && activation_nanos > 0 {
-            let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+            let now_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
             total_nanos = total_nanos.saturating_add(now_nanos.saturating_sub(activation_nanos));
         }
 

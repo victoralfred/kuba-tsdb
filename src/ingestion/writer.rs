@@ -461,6 +461,8 @@ impl ParallelWriter {
                     let storage = self.storage.clone();
 
                     // Create worker for this batch, with storage if available
+                    // Note: Worker is stateless except for metrics, so creating per-batch
+                    // is acceptable. For better performance with stateful workers, consider a pool.
                     let worker = match storage {
                         Some(db) => WriteWorker::with_storage(0, config, metrics, db),
                         None => WriteWorker::with_shared_config(0, config, metrics),
@@ -474,8 +476,13 @@ impl ParallelWriter {
                         }
 
                         // Update counters AFTER task completes (fixes race condition)
+                        // Use saturating arithmetic to prevent overflow
                         batches_processed.fetch_add(1, Ordering::Relaxed);
-                        points_written.fetch_add(point_count, Ordering::Relaxed);
+                        let _ = points_written.fetch_update(
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                            |current| Some(current.saturating_add(point_count)),
+                        );
                         active_writes.fetch_sub(1, Ordering::Relaxed);
 
                         drop(permit);

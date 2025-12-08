@@ -347,17 +347,17 @@ impl IngestionPipeline {
     /// * `IngestionError::ChannelClosed` - Internal channel was closed
     #[must_use = "this returns a Result that should be checked"]
     pub async fn ingest_batch(&self, points: Vec<DataPoint>) -> Result<(), IngestionError> {
-        if points.is_empty() {
-            return Ok(());
-        }
-
-        // Check batch size limit to prevent memory spikes
+        // Validate batch size FIRST before any processing to prevent memory exhaustion
         if points.len() > MAX_INGEST_BATCH_SIZE {
             return Err(IngestionError::ValidationError(format!(
                 "Batch size {} exceeds maximum allowed {}",
                 points.len(),
                 MAX_INGEST_BATCH_SIZE
             )));
+        }
+
+        if points.is_empty() {
+            return Ok(());
         }
 
         // Check backpressure before accepting
