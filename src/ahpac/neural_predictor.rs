@@ -367,14 +367,23 @@ impl NeuralPredictor {
     /// Uses atomic read-modify-write to ensure thread safety.
     fn next_random(&self) -> u64 {
         // Use fetch_update for atomic read-modify-write
-        self.rng_state
+        // fetch_update returns the OLD value, so we need to compute the new value from it
+        let old_state = self
+            .rng_state
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |mut state| {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
                 Some(state)
             })
-            .unwrap_or_else(|x| x)
+            .unwrap_or_else(|x| x);
+
+        // Apply the same transformation to get the new state that was stored
+        let mut new_state = old_state;
+        new_state ^= new_state << 13;
+        new_state ^= new_state >> 7;
+        new_state ^= new_state << 17;
+        new_state
     }
 
     /// Record feedback from a compression operation
