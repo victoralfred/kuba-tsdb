@@ -218,23 +218,31 @@ impl KubaCompressor {
     ///
     /// For regular intervals (most common case), this achieves ~64:1 compression
     /// after the first two timestamps (1 bit vs 64 bits per timestamp).
-    fn compress_timestamps(points: &[DataPoint], writer: &mut BitWriter) {
+    fn compress_timestamps(
+        points: &[DataPoint],
+        writer: &mut BitWriter,
+    ) -> Result<(), CompressionError> {
         if points.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Store first timestamp as full 64 bits
         // This serves as the baseline for all subsequent delta calculations
+        // SEC: Cast i64 to u64 is safe (bit pattern preserved)
         writer.write_bits(points[0].timestamp as u64, 64);
 
         if points.len() == 1 {
-            return;
+            return Ok(());
         }
 
         // Store second timestamp as delta from first (64 bits)
         // We need this to establish the baseline delta for delta-of-delta encoding
-        // Note: Using 64 bits here (not 14) to handle any possible interval
-        let first_delta = points[1].timestamp - points[0].timestamp;
+        // SEC: Use checked arithmetic to prevent overflow
+        let first_delta = points[1]
+            .timestamp
+            .checked_sub(points[0].timestamp)
+            .expect("Timestamp delta overflow in compress_timestamps");
+        // SEC: Cast i64 to u64 is safe (bit pattern preserved for signed values)
         writer.write_bits(first_delta as u64, 64);
 
         // Now we can do delta-of-delta encoding for remaining timestamps
@@ -243,8 +251,16 @@ impl KubaCompressor {
 
         for point in &points[2..] {
             // Calculate current delta and delta-of-delta
-            // Using wrapping arithmetic to handle potential overflow safely
-            let delta = point.timestamp.wrapping_sub(prev_timestamp);
+            // SEC: Use checked arithmetic to detect overflow and prevent DoS
+            let delta = match point.timestamp.checked_sub(prev_timestamp) {
+                Some(d) => d,
+                None => {
+                    return Err(CompressionError::InvalidData(format!(
+                        "Timestamp overflow: {} - {} would overflow i64",
+                        point.timestamp, prev_timestamp
+                    )));
+                },
+            };
 
             // EDGE-004: Validate delta is within reasonable bounds
             // Log a warning if delta seems unusually large (potential data corruption)
@@ -258,7 +274,16 @@ impl KubaCompressor {
                 );
             }
 
-            let dod = delta.wrapping_sub(prev_delta);
+            // SEC: Use checked arithmetic for delta-of-delta to prevent overflow
+            let dod = match delta.checked_sub(prev_delta) {
+                Some(d) => d,
+                None => {
+                    return Err(CompressionError::InvalidData(format!(
+                        "Delta-of-delta overflow: {} - {} would overflow i64",
+                        delta, prev_delta
+                    )));
+                },
+            };
 
             // Variable bit packing based on delta-of-delta magnitude
             // The ranges are EXCLUSIVE on the upper bound (e.g., -63..64 means [-63, 63])
@@ -290,14 +315,17 @@ impl KubaCompressor {
                 // Very large/irregular change: store full delta
                 // Write '1111' prefix (4 bits) + full 32-bit delta (36 bits total)
                 // This bypasses delta-of-delta for irregular time series
+                // SEC: Cast i64 to u64 and mask to 32 bits (sign-extended value)
                 writer.write_bits(0b1111, 4);
-                writer.write_bits(delta as u64, 32);
+                writer.write_bits((delta as u64) & 0xFFFF_FFFF, 32);
             }
 
             // Update tracking variables for next iteration
             prev_timestamp = point.timestamp;
             prev_delta = delta;
         }
+
+        Ok(())
     }
 
     /// Decompress timestamps using delta-of-delta decoding
@@ -359,6 +387,7 @@ impl KubaCompressor {
         let mut timestamps = Vec::with_capacity(count);
 
         // Read first timestamp (full 64 bits baseline)
+        // SEC: Cast u64 to i64 preserves bit pattern (signed interpretation)
         let first_timestamp = reader.read_bits(64)? as i64;
         timestamps.push(first_timestamp);
 
@@ -367,8 +396,14 @@ impl KubaCompressor {
         }
 
         // Read first delta (64 bits) and calculate second timestamp
+        // SEC: Use checked arithmetic to prevent overflow
         let first_delta = reader.read_bits(64)? as i64;
-        let second_timestamp = first_timestamp + first_delta;
+        let second_timestamp = first_timestamp.checked_add(first_delta).ok_or_else(|| {
+            CompressionError::CorruptedData(format!(
+                "Timestamp overflow: {} + {} would overflow i64",
+                first_timestamp, first_delta
+            ))
+        })?;
         timestamps.push(second_timestamp);
 
         // Decode remaining timestamps using delta-of-delta
@@ -401,12 +436,20 @@ impl KubaCompressor {
                     // '1111': Full 32-bit delta (bypass delta-of-delta)
                     // Used for irregular time series with large jumps
                     // Directly use this as the delta without adding to prev_delta
-                    reader.read_bits(32)? as i64
+                    // SEC: Sign-extend from 32 bits to i64
+                    let delta_u32 = reader.read_bits(32)? as u32;
+                    delta_u32 as i32 as i64
                 }
             };
 
             // Reconstruct timestamp and add to result
-            let timestamp = prev_timestamp + delta;
+            // SEC: Use checked arithmetic to prevent overflow
+            let timestamp = prev_timestamp.checked_add(delta).ok_or_else(|| {
+                CompressionError::CorruptedData(format!(
+                    "Timestamp overflow: {} + {} would overflow i64",
+                    prev_timestamp, delta
+                ))
+            })?;
             timestamps.push(timestamp);
 
             // Update state for next iteration
@@ -524,19 +567,30 @@ impl KubaCompressor {
 
                     // Write leading zero count (5 bits = up to 31, but we have 64-bit values)
                     // Note: We can encode up to 31 leading zeros with 5 bits
-                    writer.write_bits(leading as u64, 5);
+                    // SEC: Clamp leading to 31 (5-bit max) to prevent encoding issues
+                    let leading_clamped = leading.min(31);
+                    writer.write_bits(leading_clamped as u64, 5);
 
                     // Write meaningful bits length (6 bits = up to 63 bits)
-                    let meaningful_bits = 64 - leading - trailing;
-                    writer.write_bits(meaningful_bits as u64, 6);
+                    // SEC: Use saturating arithmetic to prevent underflow
+                    // meaningful_bits should be 1-64, but clamp to valid range
+                    let meaningful_bits = 64u32
+                        .saturating_sub(leading_clamped)
+                        .saturating_sub(trailing)
+                        .max(1);
+                    // SEC: Clamp to 64 max (6 bits can encode 0-63, we store meaningful-1)
+                    // So max meaningful_bits is 64, stored as 63
+                    let meaningful_bits_clamped = meaningful_bits.min(64) as u8;
+                    writer.write_bits((meaningful_bits_clamped - 1) as u64, 6);
 
                     // Write the meaningful bits themselves
-                    if meaningful_bits > 0 {
-                        writer.write_bits(xor >> trailing, meaningful_bits as u8);
+                    // SEC: Use clamped meaningful_bits
+                    if meaningful_bits_clamped > 0 {
+                        writer.write_bits(xor >> trailing, meaningful_bits_clamped);
                     }
 
-                    // Update tracking for next iteration
-                    prev_leading = leading;
+                    // Update tracking for next iteration (use clamped leading)
+                    prev_leading = leading_clamped;
                     prev_trailing = trailing;
                 }
             }
@@ -605,8 +659,11 @@ impl KubaCompressor {
             // Value changed, read XOR encoding
             let xor = if !reader.read_bit()? {
                 // '10': Use previous block's leading/trailing parameters
-                let meaningful_bits = 64 - prev_leading - prev_trailing;
-                if meaningful_bits > 0 {
+                // SEC: Use saturating arithmetic to prevent underflow
+                let meaningful_bits = 64u32
+                    .saturating_sub(prev_leading)
+                    .saturating_sub(prev_trailing);
+                if meaningful_bits > 0 && meaningful_bits <= 64 {
                     // Read meaningful bits and shift back to original position
                     reader.read_bits(meaningful_bits as u8)? << prev_trailing
                 } else {
@@ -615,21 +672,36 @@ impl KubaCompressor {
             } else {
                 // '11': New block parameters
                 let leading = reader.read_bits(5)? as u32;
-                let meaningful_bits = reader.read_bits(6)? as u32;
+                // SEC: Decoder stores (meaningful - 1), so add 1 to recover
+                let meaningful_minus_one = reader.read_bits(6)? as u32;
+                let meaningful_bits = meaningful_minus_one + 1;
+
+                // SEC: Validate meaningful_bits is in valid range (1-64)
+                if meaningful_bits == 0 || meaningful_bits > 64 {
+                    return Err(CompressionError::CorruptedData(format!(
+                        "Invalid meaningful_bits: {} (must be 1-64)",
+                        meaningful_bits
+                    )));
+                }
+
+                // SEC: Use saturating arithmetic to prevent underflow
+                // Calculate trailing zeros: 64 - leading - meaningful
+                let trailing = 64u32
+                    .saturating_sub(leading)
+                    .saturating_sub(meaningful_bits);
 
                 if meaningful_bits > 0 {
                     // Read meaningful bits
                     let bits = reader.read_bits(meaningful_bits as u8)?;
-                    // Calculate trailing zeros and update tracking
-                    let trailing = 64 - leading - meaningful_bits;
+                    // Update tracking
                     prev_leading = leading;
                     prev_trailing = trailing;
                     // Shift bits back to original position
                     bits << trailing
                 } else {
-                    // Edge case: no meaningful bits (shouldn't happen normally)
+                    // Edge case: no meaningful bits (shouldn't happen due to validation above)
                     prev_leading = leading;
-                    prev_trailing = 64 - leading;
+                    prev_trailing = trailing;
                     0
                 }
             };
@@ -723,7 +795,7 @@ impl Compressor for KubaCompressor {
         writer.write_bits(points.len() as u64, 32);
 
         // Compress timestamps and values
-        Self::compress_timestamps(points, &mut writer);
+        Self::compress_timestamps(points, &mut writer)?;
         Self::compress_values(points, &mut writer);
 
         let compressed_data = writer.finish();

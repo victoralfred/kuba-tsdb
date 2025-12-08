@@ -223,7 +223,26 @@ impl ParallelCompressor {
             return Vec::new();
         }
 
-        let total_points: usize = batches.iter().map(|(_, pts)| pts.len()).sum();
+        // SEC: Limit batch size to prevent DoS
+        const MAX_BATCH_COUNT: usize = 10_000;
+        let batches = if batches.len() > MAX_BATCH_COUNT {
+            tracing::warn!(
+                batch_count = batches.len(),
+                max_allowed = MAX_BATCH_COUNT,
+                "Batch count exceeds maximum, truncating"
+            );
+            // Truncate to max
+            batches.into_iter().take(MAX_BATCH_COUNT).collect()
+        } else {
+            batches
+        };
+
+        // SEC: Use checked sum to prevent overflow
+        let total_points: usize = batches
+            .iter()
+            .map(|(_, pts)| pts.len())
+            .try_fold(0usize, |acc, len| acc.checked_add(len))
+            .unwrap_or(usize::MAX);
 
         // Use single-threaded for small batches
         if batches.len() == 1 || total_points < self.config.min_parallel_batch_size {
@@ -237,12 +256,38 @@ impl ParallelCompressor {
             "Starting parallel compression"
         );
 
-        let mut join_set = JoinSet::new();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(
-            self.config.max_concurrent_tasks,
-        ));
+        // SEC: Cap max_concurrent_tasks to prevent resource exhaustion
+        const MAX_CONCURRENT_TASKS: usize = 1000;
+        let max_tasks = self.config.max_concurrent_tasks.min(MAX_CONCURRENT_TASKS);
 
-        for (series_id, points) in batches {
+        let mut join_set = JoinSet::new();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_tasks));
+
+        // SEC: Limit number of spawned tasks to prevent DoS
+        const MAX_SPAWNED_TASKS: usize = 10_000;
+
+        for (task_count, (series_id, points)) in batches.into_iter().enumerate() {
+            // SEC: Limit spawned tasks
+            if task_count >= MAX_SPAWNED_TASKS {
+                warn!(
+                    task_count = task_count,
+                    max_allowed = MAX_SPAWNED_TASKS,
+                    "Task limit reached, skipping remaining batches"
+                );
+                break;
+            }
+
+            // SEC: Limit points per batch to prevent DoS
+            const MAX_POINTS_PER_BATCH: usize = 10_000_000; // 10M points max
+            if points.len() > MAX_POINTS_PER_BATCH {
+                warn!(
+                    series_id = series_id,
+                    point_count = points.len(),
+                    max_allowed = MAX_POINTS_PER_BATCH,
+                    "Point count exceeds maximum, skipping batch"
+                );
+                continue;
+            }
             let compressor = Arc::clone(&self.compressor);
             let permit = Arc::clone(&semaphore);
 

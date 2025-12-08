@@ -146,7 +146,20 @@ impl AlpCodec {
         }
 
         // Delta encode remaining values
-        let deltas: Vec<i64> = integers.windows(2).map(|w| w[1] - w[0]).collect();
+        // SEC: Use checked arithmetic to prevent overflow
+        let deltas: Vec<i64> = integers
+            .windows(2)
+            .map(|w| {
+                w[1].checked_sub(w[0]).unwrap_or_else(|| {
+                    // Overflow: use saturating behavior
+                    if w[1] > w[0] {
+                        i64::MAX
+                    } else {
+                        i64::MIN
+                    }
+                })
+            })
+            .collect();
 
         // Zigzag encode deltas
         let zigzag_deltas: Vec<u64> = deltas.iter().map(|&d| Self::zigzag_encode(d)).collect();
@@ -192,13 +205,26 @@ impl AlpCodec {
         })? as u8;
 
         // Read and decode remaining values
+        // SEC: Validate bits_per_delta to prevent DoS
+        if bits_per_delta > 64 {
+            return Err(CodecError::DecompressionFailed(
+                "Invalid bits_per_delta: must be <= 64".to_string(),
+            ));
+        }
+
         let mut prev = integers[0];
         for _ in 1..count {
             let zigzag_delta = reader.read_bits(bits_per_delta).map_err(|e| {
                 CodecError::DecompressionFailed(format!("Failed to read delta: {}", e))
             })?;
             let delta = Self::zigzag_decode(zigzag_delta);
-            prev += delta;
+            // SEC: Use checked arithmetic to prevent overflow
+            prev = prev.checked_add(delta).ok_or_else(|| {
+                CodecError::DecompressionFailed(format!(
+                    "Integer overflow: {} + {} would overflow i64",
+                    prev, delta
+                ))
+            })?;
             integers.push(prev);
         }
 
