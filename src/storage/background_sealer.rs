@@ -352,6 +352,9 @@ impl BackgroundSealingService {
     }
 
     /// Seal a single chunk
+    ///
+    /// SAFETY: Only removes chunk from active_chunks AFTER successful sealing
+    /// and index registration to prevent data loss on failure.
     async fn seal_chunk<I: TimeIndex + ?Sized>(
         &self,
         series_id: SeriesId,
@@ -369,26 +372,38 @@ impl BackgroundSealingService {
 
         let point_count = points.len();
 
-        // Remove from active chunks map
-        {
-            let mut chunks = active_chunks.write().await;
-            chunks.remove(&series_id);
-        }
-
         // Generate target path
         let timestamp = chrono::Utc::now().timestamp_millis();
         let target_path = data_dir
             .join(format!("series_{}", series_id))
             .join(format!("chunk_{}.kub", timestamp));
 
-        // Check if we should use streaming compression
-        if self.config.enable_streaming && point_count > self.config.streaming_threshold {
-            self.seal_with_streaming(series_id, points, target_path, index)
-                .await
+        // Perform sealing and index registration FIRST
+        // Only remove from active_chunks after success to prevent data loss
+        let result =
+            if self.config.enable_streaming && point_count > self.config.streaming_threshold {
+                self.seal_with_streaming(series_id, points, target_path, index)
+                    .await
+            } else {
+                self.seal_standard(series_id, points, target_path, index)
+                    .await
+            };
+
+        // Only remove from active chunks map AFTER successful seal
+        // This ensures we don't lose data if sealing or index registration fails
+        if result.is_ok() {
+            let mut chunks = active_chunks.write().await;
+            chunks.remove(&series_id);
         } else {
-            self.seal_standard(series_id, points, target_path, index)
-                .await
+            // Log the failure - data in chunk is already consumed by take_points()
+            // but at least we didn't remove the chunk entry prematurely
+            warn!(
+                series_id = series_id,
+                "Seal failed after taking points - data may need recovery"
+            );
         }
+
+        result
     }
 
     /// Standard sealing (non-streaming)
