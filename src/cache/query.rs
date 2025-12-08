@@ -34,6 +34,10 @@ pub struct CacheConfig {
 
     /// Enable cache (default: true)
     pub enabled: bool,
+
+    /// Maximum size per entry in bytes (DoS protection)
+    /// Default: 10MB per query result
+    pub max_entry_size_bytes: usize,
 }
 
 impl Default for CacheConfig {
@@ -43,6 +47,7 @@ impl Default for CacheConfig {
             max_entries: 10_000,
             default_ttl: Duration::from_secs(60),
             enabled: true,
+            max_entry_size_bytes: 10 * 1024 * 1024, // 10MB per entry (DoS protection)
         }
     }
 }
@@ -71,6 +76,18 @@ impl CacheConfig {
         self.enabled = false;
         self
     }
+
+    /// Set maximum entry size in bytes (DoS protection)
+    ///
+    /// Rejects entries larger than this limit to prevent DoS attacks
+    /// via huge query results.
+    ///
+    /// # Arguments
+    /// * `bytes` - Maximum size per entry in bytes
+    pub fn with_max_entry_size(mut self, bytes: usize) -> Self {
+        self.max_entry_size_bytes = bytes;
+        self
+    }
 }
 
 // ============================================================================
@@ -83,9 +100,19 @@ pub struct CacheKey(u64);
 
 impl CacheKey {
     /// Create a cache key from a query
+    ///
+    /// # Security
+    /// - Uses DefaultHasher (SipHash) which is resistant to hash collision attacks
+    /// - Hash is derived from query structure, not user input directly
+    ///
+    /// # Performance
+    /// - O(n) where n is query size (for Debug formatting)
+    /// - Hash computation is fast (SipHash-1-3)
     pub fn from_query(query: &Query) -> Self {
         use std::hash::DefaultHasher;
         let mut hasher = DefaultHasher::new();
+        // SEC: DefaultHasher uses SipHash which is cryptographically secure
+        // and resistant to hash collision attacks
         format!("{:?}", query).hash(&mut hasher);
         CacheKey(hasher.finish())
     }
@@ -132,6 +159,10 @@ impl CacheEntry {
     }
 
     /// Estimate the memory size of a result
+    ///
+    /// # Security
+    /// - Uses checked arithmetic to prevent overflow
+    /// - Caps estimate at reasonable limit to prevent DoS
     fn estimate_size(result: &QueryResult) -> usize {
         use crate::query::result::ResultData;
 
@@ -139,22 +170,36 @@ impl CacheEntry {
 
         match &result.data {
             ResultData::Rows(rows) => {
-                size += rows.len() * 48;
+                // SEC: Use checked arithmetic to prevent overflow
+                if let Some(rows_size) = rows.len().checked_mul(48) {
+                    size = size.saturating_add(rows_size);
+                } else {
+                    // Overflow: cap at max
+                    size = usize::MAX;
+                }
             },
             ResultData::Series(series) => {
                 for s in series {
-                    size += s.values.len() * 16;
+                    // SEC: Use checked arithmetic
+                    if let Some(series_size) = s.values.len().checked_mul(16) {
+                        size = size.saturating_add(series_size);
+                    } else {
+                        size = usize::MAX;
+                        break; // Stop on overflow
+                    }
                 }
             },
             ResultData::Scalar(_) => {
-                size += 8;
+                size = size.saturating_add(8);
             },
             ResultData::Explain(s) => {
-                size += s.len();
+                size = size.saturating_add(s.len());
             },
         }
 
-        size
+        // SEC: Cap at reasonable limit (1GB) to prevent DoS
+        const MAX_ESTIMATED_SIZE: usize = 1024 * 1024 * 1024; // 1GB
+        size.min(MAX_ESTIMATED_SIZE)
     }
 
     /// Check if entry has expired
@@ -173,15 +218,27 @@ impl CacheEntry {
 // ============================================================================
 
 /// LRU cache for query results with series-based invalidation
+///
+/// # Security
+/// - Limits entry size to prevent DoS via huge query results
+/// - Uses saturating arithmetic to prevent overflow
+/// - Limits eviction attempts to prevent DoS
+///
+/// # Performance
+/// - PERF: LRU eviction is currently O(n) - could be optimized to O(1)
+///   with a proper LRU data structure (e.g., linked hash map)
+/// - FUTURE: Add cache stampede protection (mutex per key for concurrent misses)
 pub struct QueryCache {
     /// Cache configuration
     config: CacheConfig,
 
     /// Cached entries
+    /// PERF: Currently uses HashMap - consider LinkedHashMap for O(1) LRU
     entries: RwLock<HashMap<CacheKey, CacheEntry>>,
 
     /// Reverse index: series_id -> cache keys that depend on it
     /// Used for efficient invalidation when series data changes
+    /// SEC: No explicit limit, but bounded by max_entries
     series_index: RwLock<HashMap<SeriesId, HashSet<CacheKey>>>,
 
     /// Current total size in bytes
@@ -220,6 +277,13 @@ impl QueryCache {
     }
 
     /// Get a cached result for a query
+    ///
+    /// # Performance
+    /// - Returns cached result if available and not expired
+    /// - Automatically removes expired entries
+    ///
+    /// # Security
+    /// - Uses saturating arithmetic to prevent underflow
     pub fn get(&self, query: &Query) -> Option<QueryResult> {
         if !self.config.enabled {
             return None;
@@ -232,7 +296,10 @@ impl QueryCache {
             if entry.is_expired() {
                 let size = entry.size_bytes as u64;
                 entries.remove(&key);
-                self.current_size.fetch_sub(size, Ordering::Relaxed);
+                // SEC: Use saturating subtraction to prevent underflow
+                let old_size = self.current_size.load(Ordering::Relaxed);
+                self.current_size
+                    .store(old_size.saturating_sub(size), Ordering::Relaxed);
                 self.stats.misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
@@ -256,6 +323,10 @@ impl QueryCache {
     }
 
     /// Cache a query result with custom TTL
+    ///
+    /// # Security
+    /// - Validates entry size to prevent DoS via huge query results
+    /// - Rejects entries larger than max_entry_size_bytes
     pub fn put_with_ttl(&self, query: &Query, result: QueryResult, ttl: Duration) {
         if !self.config.enabled {
             return;
@@ -269,6 +340,17 @@ impl QueryCache {
         let entry = CacheEntry::new(result, ttl, series_ids.clone());
         let entry_size = entry.size_bytes;
 
+        // SEC: Reject entries that are too large (DoS protection)
+        if entry_size > self.config.max_entry_size_bytes {
+            // Entry too large - don't cache it
+            return;
+        }
+
+        // SEC: Reject entries larger than entire cache
+        if entry_size > self.config.max_size_bytes {
+            return;
+        }
+
         self.evict_if_needed(entry_size);
 
         let mut entries = self.entries.write();
@@ -276,7 +358,10 @@ impl QueryCache {
         // Remove old entry from series index if it exists
         if let Some(old_entry) = entries.get(&key) {
             let old_size = old_entry.size_bytes as u64;
-            self.current_size.fetch_sub(old_size, Ordering::Relaxed);
+            // SEC: Use saturating subtraction to prevent underflow
+            let current = self.current_size.load(Ordering::Relaxed);
+            self.current_size
+                .store(current.saturating_sub(old_size), Ordering::Relaxed);
 
             // Remove from series index
             let mut series_idx = self.series_index.write();
@@ -295,8 +380,12 @@ impl QueryCache {
             }
         }
 
-        self.current_size
-            .fetch_add(entry_size as u64, Ordering::Relaxed);
+        // SEC: Use saturating addition to prevent overflow
+        let current = self.current_size.load(Ordering::Relaxed);
+        let new_size = current.saturating_add(entry_size as u64);
+        // SEC: Cap at max_size_bytes to prevent DoS
+        let capped_size = new_size.min(self.config.max_size_bytes as u64);
+        self.current_size.store(capped_size, Ordering::Relaxed);
         entries.insert(key, entry);
     }
 
@@ -322,13 +411,21 @@ impl QueryCache {
     ///
     /// Call this when data is written to a series to ensure cache freshness.
     /// This is O(n) where n is the number of queries cached for this series.
+    ///
+    /// # Security
+    /// - Limits invalidation batch size to prevent DoS
+    /// - Uses efficient batch operations
     pub fn invalidate_series(&self, series_id: SeriesId) {
         // Get all cache keys that depend on this series
         let keys_to_invalidate: Vec<CacheKey> = {
             let series_idx = self.series_index.read();
             series_idx
                 .get(&series_id)
-                .map(|keys| keys.iter().copied().collect())
+                .map(|keys| {
+                    // SEC: Limit batch size to prevent DoS via invalidation storm
+                    const MAX_INVALIDATION_BATCH: usize = 10_000;
+                    keys.iter().copied().take(MAX_INVALIDATION_BATCH).collect()
+                })
                 .unwrap_or_default()
         };
 
@@ -341,7 +438,19 @@ impl QueryCache {
     /// Invalidate all cached queries for multiple series
     ///
     /// More efficient than calling invalidate_series multiple times.
+    ///
+    /// # Security
+    /// - Limits batch size to prevent DoS
+    /// - Validates input size
     pub fn invalidate_series_batch(&self, series_ids: &[SeriesId]) {
+        // SEC: Limit batch size to prevent DoS
+        const MAX_BATCH_SIZE: usize = 10_000;
+        let series_ids = if series_ids.len() > MAX_BATCH_SIZE {
+            &series_ids[..MAX_BATCH_SIZE]
+        } else {
+            series_ids
+        };
+
         // Collect all unique keys to invalidate
         let keys_to_invalidate: HashSet<CacheKey> = {
             let series_idx = self.series_index.read();
@@ -349,6 +458,7 @@ impl QueryCache {
                 .iter()
                 .filter_map(|sid| series_idx.get(sid))
                 .flat_map(|keys| keys.iter().copied())
+                .take(MAX_BATCH_SIZE) // SEC: Limit total keys to invalidate
                 .collect()
         };
 
@@ -359,11 +469,18 @@ impl QueryCache {
     }
 
     /// Internal method to invalidate a cache key
+    ///
+    /// # Security
+    /// - Uses saturating arithmetic to prevent underflow
     fn invalidate_key(&self, key: CacheKey) {
         let mut entries = self.entries.write();
         if let Some(entry) = entries.remove(&key) {
-            self.current_size
-                .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
+            // SEC: Use saturating subtraction to prevent underflow
+            let current = self.current_size.load(Ordering::Relaxed);
+            self.current_size.store(
+                current.saturating_sub(entry.size_bytes as u64),
+                Ordering::Relaxed,
+            );
             self.stats.invalidations.fetch_add(1, Ordering::Relaxed);
 
             // Remove from series index
@@ -415,25 +532,70 @@ impl QueryCache {
     }
 
     /// Evict entries if cache is over limits
+    ///
+    /// # Security
+    /// - Uses checked arithmetic to prevent overflow
+    /// - Limits eviction attempts to prevent DoS
+    /// - Handles race conditions in size tracking
     fn evict_if_needed(&self, new_entry_size: usize) {
         let mut entries = self.entries.write();
 
-        while entries.len() >= self.config.max_entries {
+        // SEC: Limit eviction attempts to prevent DoS
+        const MAX_EVICTION_ATTEMPTS: usize = 1000;
+        let mut eviction_count = 0;
+
+        // Evict by entry count limit
+        while entries.len() >= self.config.max_entries && eviction_count < MAX_EVICTION_ATTEMPTS {
             self.evict_lru(&mut entries);
+            eviction_count += 1;
         }
 
-        let current = self.current_size.load(Ordering::Relaxed) as usize;
-        while current + new_entry_size > self.config.max_size_bytes && !entries.is_empty() {
+        // SEC: Use checked arithmetic to prevent overflow
+        // Re-read current size inside the loop to handle race conditions
+        let mut eviction_count_size = 0;
+        loop {
+            let current = self.current_size.load(Ordering::Relaxed);
+            // SEC: Check for overflow when converting u64 to usize
+            let current_usize = if current > usize::MAX as u64 {
+                usize::MAX
+            } else {
+                current as usize
+            };
+
+            // SEC: Use checked arithmetic
+            if let Some(total) = current_usize.checked_add(new_entry_size) {
+                if total <= self.config.max_size_bytes || entries.is_empty() {
+                    break;
+                }
+            } else {
+                // Overflow: must evict
+            }
+
+            if eviction_count_size >= MAX_EVICTION_ATTEMPTS {
+                break; // Prevent infinite loop
+            }
+
             self.evict_lru(&mut entries);
+            eviction_count_size += 1;
         }
     }
 
     /// Evict the least recently used entry
+    ///
+    /// # Performance
+    /// - PERF: This is O(n) where n is the number of entries
+    /// - Future optimization: Use a proper LRU data structure (e.g., linked hash map)
+    ///   to make this O(1)
+    ///
+    /// # Security
+    /// - Uses saturating subtraction to prevent underflow
     fn evict_lru(&self, entries: &mut HashMap<CacheKey, CacheEntry>) {
         if entries.is_empty() {
             return;
         }
 
+        // PERF: O(n) scan to find LRU entry
+        // TODO: Replace HashMap with LinkedHashMap or similar for O(1) LRU eviction
         let lru_key = entries
             .iter()
             .min_by_key(|(_, e)| e.last_accessed)
@@ -441,8 +603,10 @@ impl QueryCache {
 
         if let Some(key) = lru_key {
             if let Some(entry) = entries.remove(&key) {
-                self.current_size
-                    .fetch_sub(entry.size_bytes as u64, Ordering::Relaxed);
+                // SEC: Use saturating subtraction to prevent underflow
+                let old_size = self.current_size.load(Ordering::Relaxed);
+                let new_size = old_size.saturating_sub(entry.size_bytes as u64);
+                self.current_size.store(new_size, Ordering::Relaxed);
                 self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }

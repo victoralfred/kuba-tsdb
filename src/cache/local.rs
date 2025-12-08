@@ -152,16 +152,30 @@ where
     /// * `key` - Cache key
     /// * `data` - Data to cache
     /// * `ttl_ms` - Time-to-live in milliseconds
+    ///
+    /// # Security
+    /// - Limits eviction attempts to prevent DoS
+    /// - Validates TTL to prevent negative or extremely large values
     pub async fn set_with_ttl(&self, key: K, data: V, ttl_ms: i64) {
+        // SEC: Validate TTL to prevent DoS via extremely large TTLs
+        const MAX_TTL_MS: i64 = 365 * 24 * 60 * 60 * 1000; // 1 year max
+        const MIN_TTL_MS: i64 = 0;
+        let ttl_ms = ttl_ms.clamp(MIN_TTL_MS, MAX_TTL_MS);
+
         let mut entries = self.entries.write().await;
 
+        // SEC: Limit eviction attempts to prevent DoS
+        const MAX_EVICTION_ATTEMPTS: usize = 100;
+        let mut eviction_attempts = 0;
+
         // Evict if at capacity
-        if entries.len() >= self.max_entries {
+        while entries.len() >= self.max_entries && eviction_attempts < MAX_EVICTION_ATTEMPTS {
             // First try to evict expired entries
             let expired_keys: Vec<K> = entries
                 .iter()
                 .filter(|(_, v)| v.is_expired())
                 .map(|(k, _)| k.clone())
+                .take(10) // Limit batch size to prevent DoS
                 .collect();
 
             for k in expired_keys {
@@ -179,6 +193,8 @@ where
                     entries.remove(&k);
                 }
             }
+
+            eviction_attempts += 1;
         }
 
         entries.insert(key, CachedMetadata::new(data, ttl_ms));

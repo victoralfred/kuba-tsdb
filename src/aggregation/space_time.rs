@@ -403,7 +403,7 @@ impl AggregateState {
         } else {
             0.0 // Defensive: should never happen
         };
-        
+
         // SEC: Use checked multiplication to prevent u64 overflow before cast
         // If overflow occurs, use a conservative approximation
         let count_product = if let Some(product) = self.count.checked_mul(other.count) {
@@ -414,9 +414,8 @@ impl AggregateState {
             let max_count = self.count.max(other.count) as f64;
             max_count * max_count
         };
-        let combined_m2 = self.m2
-            + other.m2
-            + delta * delta * count_product / combined_count_f64.max(1.0);
+        let combined_m2 =
+            self.m2 + other.m2 + delta * delta * count_product / combined_count_f64.max(1.0);
 
         self.sum = combined_sum;
         self.count = combined_count;
@@ -1033,9 +1032,7 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
         // Estimate unique timestamps (assume 50% overlap for efficiency)
         // SEC: Use checked arithmetic to prevent overflow
         // Cap at usize::MAX to prevent DoS via excessive memory allocation
-        let estimated_unique = (total_points as f64 * 0.5)
-            .ceil()
-            .min(usize::MAX as f64) as usize;
+        let estimated_unique = (total_points as f64 * 0.5).ceil().min(usize::MAX as f64) as usize;
         // Additional safety: cap at reasonable limit even if calculation allows more
         const MAX_ESTIMATED_UNIQUE: usize = 100_000_000; // 100M timestamps max
         let estimated_unique = estimated_unique.min(MAX_ESTIMATED_UNIQUE);
