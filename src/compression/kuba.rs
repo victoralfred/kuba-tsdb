@@ -313,11 +313,11 @@ impl KubaCompressor {
                 writer.write_bits(((dod + 2047) as u64) & 0xFFF, 12);
             } else {
                 // Very large/irregular change: store full delta
-                // Write '1111' prefix (4 bits) + full 32-bit delta (36 bits total)
+                // Write '1111' prefix (4 bits) + full 64-bit delta (68 bits total)
                 // This bypasses delta-of-delta for irregular time series
-                // SEC: Cast i64 to u64 and mask to 32 bits (sign-extended value)
+                // SEC: Use 64 bits to handle deltas that exceed i32 range
                 writer.write_bits(0b1111, 4);
-                writer.write_bits((delta as u64) & 0xFFFF_FFFF, 32);
+                writer.write_bits(delta as u64, 64);
             }
 
             // Update tracking variables for next iteration
@@ -433,12 +433,11 @@ impl KubaCompressor {
                     let dod = (reader.read_bits(12)? as i64) - 2047;
                     prev_delta + dod
                 } else {
-                    // '1111': Full 32-bit delta (bypass delta-of-delta)
+                    // '1111': Full 64-bit delta (bypass delta-of-delta)
                     // Used for irregular time series with large jumps
                     // Directly use this as the delta without adding to prev_delta
-                    // SEC: Sign-extend from 32 bits to i64
-                    let delta_u32 = reader.read_bits(32)? as u32;
-                    delta_u32 as i32 as i64
+                    // SEC: Read full 64-bit delta to handle values exceeding i32 range
+                    reader.read_bits(64)? as i64
                 }
             };
 
