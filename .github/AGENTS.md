@@ -162,7 +162,7 @@ Edit `.github/workflows/pr-review.yml` and update the review prompt to:
 
 Update the `model` field in the workflow:
 ```json
-"model": "claude-sonnet-4-20250514"  // or claude-opus-4-20250514 for deeper review
+"model": "claude-opus-4-20250514"  // or claude-opus-4-20250514 for deeper review
 ```
 
 ### Add Branch Protection
