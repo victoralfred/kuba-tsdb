@@ -999,12 +999,11 @@ impl AggQueryPlanner {
             // Number of windows = ceil(duration / step)
             // SEC: Use checked arithmetic to prevent overflow
             if step_ms > 0 {
-                let num_windows = duration_ms
+                duration_ms
                     .checked_add(step_ms - 1)
                     .and_then(|d| d.checked_div(step_ms))
                     .map(|n| n.max(1) as u64)
-                    .unwrap_or(u64::MAX);
-                num_windows
+                    .unwrap_or(u64::MAX)
             } else {
                 1
             }

@@ -19,6 +19,13 @@ use kuba_tsdb::aggregation::{
 use kuba_tsdb::types::{DataPoint, SeriesId, TimeRange};
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// Base timestamp for tests (around Sept 2001, within valid range)
+const TEST_BASE_TS: i64 = 1_000_000_000_000;
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -111,12 +118,13 @@ fn create_test_resolver() -> (Arc<MetadataStore>, TagResolver, Vec<SeriesId>) {
 fn create_test_data_source(series_ids: &[SeriesId]) -> InMemoryDataSource {
     let mut source = InMemoryDataSource::new();
 
-    // Add data points for each series
+    // Add data points for each series (100 points at 1 second intervals)
     for &series_id in series_ids {
         let base_value = (series_id % 100) as f64;
         let points: Vec<DataPoint> = (0..100)
             .map(|i| {
-                let timestamp = i * 1_000_000_000; // 1 second intervals
+                // Use valid timestamps starting from TEST_BASE_TS
+                let timestamp = TEST_BASE_TS + i * 1000; // 1 second intervals in ms
                 let value = base_value + (i as f64 * 0.1);
                 DataPoint {
                     series_id,
@@ -263,8 +271,8 @@ fn test_instant_aggregation() {
     let query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 100_000_000_000,
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 100_000, // 100 seconds (matches test data)
         },
         AggregateFunction::Sum,
     );
@@ -291,8 +299,8 @@ fn test_windowed_aggregation() {
     let query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 100_000_000_000,
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 100_000, // 100 seconds (matches test data)
         },
         AggregateFunction::Avg,
     )
@@ -315,8 +323,8 @@ fn test_aggregation_functions() {
     let cpu_series = store.get_metric_series("cpu_usage");
     let matcher = TagMatcher::new().metric("cpu_usage");
     let time_range = TimeRange {
-        start: 0,
-        end: 100_000_000_000,
+        start: TEST_BASE_TS,
+        end: TEST_BASE_TS + 100_000, // 100 seconds (matches test data)
     };
 
     // Test different aggregation functions
@@ -417,6 +425,8 @@ fn test_query_planner_planning() {
         parallel_threshold: 5,
         max_parallel_workers: 4,
         enable_cardinality_check: true,
+        max_queries_per_second: Some(100),
+        query_timeout_secs: Some(300),
     };
 
     // Use the same resolver for the planner by dropping and recreating
@@ -517,8 +527,8 @@ fn test_end_to_end_aggregation() {
     let agg_query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 100_000_000_000,
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 100_000, // 100 seconds (matches test data)
         },
         AggregateFunction::Avg,
     )
@@ -547,8 +557,8 @@ fn test_empty_result_handling() {
     let query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 100_000,
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 100_000,
         },
         AggregateFunction::Sum,
     );
@@ -567,7 +577,7 @@ fn test_single_point_aggregation() {
         id,
         vec![DataPoint {
             series_id: id,
-            timestamp: 1000,
+            timestamp: TEST_BASE_TS + 1000,
             value: 42.0,
         }],
     );
@@ -578,8 +588,8 @@ fn test_single_point_aggregation() {
     let query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 10000,
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 10000,
         },
         AggregateFunction::Avg,
     );
@@ -600,7 +610,7 @@ fn test_large_time_range() {
     // Use milliseconds for timestamps to match WindowIterator's expectations
     let points: Vec<DataPoint> = (0..100)
         .map(|i| {
-            let timestamp = i * 60_000; // 1 minute intervals in milliseconds
+            let timestamp = TEST_BASE_TS + i * 60_000; // 1 minute intervals in milliseconds
             DataPoint {
                 series_id: id,
                 timestamp,
@@ -616,8 +626,8 @@ fn test_large_time_range() {
     let query = AggregateQuery::new(
         matcher,
         TimeRange {
-            start: 0,
-            end: 100 * 60_000, // 100 minutes in milliseconds
+            start: TEST_BASE_TS,
+            end: TEST_BASE_TS + 100 * 60_000, // 100 minutes in milliseconds
         },
         AggregateFunction::Avg,
     )

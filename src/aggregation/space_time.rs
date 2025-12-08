@@ -47,12 +47,15 @@
 //! use kuba_tsdb::types::{DataPoint, TimeRange};
 //! use std::time::Duration;
 //!
+//! // Valid base timestamp (year 2001, within allowed range)
+//! const BASE_TS: i64 = 1_000_000_000_000;
+//!
 //! // Create in-memory data source with sample data
 //! let mut data_source = InMemoryDataSource::new();
 //! data_source.add_series(1, vec![
-//!     DataPoint::new(1, 1000, 10.0),
-//!     DataPoint::new(1, 2000, 20.0),
-//!     DataPoint::new(1, 3000, 30.0),
+//!     DataPoint::new(1, BASE_TS + 1000, 10.0),
+//!     DataPoint::new(1, BASE_TS + 2000, 20.0),
+//!     DataPoint::new(1, BASE_TS + 3000, 30.0),
 //! ]);
 //!
 //! let aggregator = SpaceTimeAggregator::new(data_source);
@@ -60,7 +63,7 @@
 //! // Query: avg over the time range
 //! let query = AggregateQuery {
 //!     matcher: TagMatcher::new(),
-//!     time_range: TimeRange::new(0, 4000).unwrap(),
+//!     time_range: TimeRange::new(BASE_TS, BASE_TS + 4000).unwrap(),
 //!     window: Some(Duration::from_millis(4000)),
 //!     function: AggregateFunction::Avg,
 //!     step: None,
@@ -1311,6 +1314,9 @@ impl DataSource for InMemoryDataSource {
 mod tests {
     use super::*;
 
+    /// Base timestamp for tests (around Sept 2001, within valid range)
+    const TEST_BASE_TS: i64 = 1_000_000_000_000;
+
     fn create_test_points(
         series_id: SeriesId,
         start_ts: i64,
@@ -1451,14 +1457,14 @@ mod tests {
         let mut source = InMemoryDataSource::new();
 
         // Two series with overlapping data
-        source.add_series(1, create_test_points(1, 0, 5, 0.0)); // 0, 1, 2, 3, 4
-        source.add_series(2, create_test_points(2, 0, 5, 10.0)); // 10, 11, 12, 13, 14
+        source.add_series(1, create_test_points(1, TEST_BASE_TS, 5, 0.0)); // 0, 1, 2, 3, 4
+        source.add_series(2, create_test_points(2, TEST_BASE_TS, 5, 10.0)); // 10, 11, 12, 13, 14
 
         let aggregator = SpaceTimeAggregator::new(source);
 
         let query = AggregateQuery::new(
             TagMatcher::new(),
-            TimeRange::new(0, 5000).unwrap(),
+            TimeRange::new(TEST_BASE_TS, TEST_BASE_TS + 5000).unwrap(),
             AggregateFunction::Sum,
         );
 
@@ -1473,33 +1479,31 @@ mod tests {
     fn test_space_time_aggregator_windowed() {
         let mut source = InMemoryDataSource::new();
 
-        // Series with 10 points over 10 seconds (timestamps 0, 1000, 2000, ... 9000)
+        // Series with 10 points over 10 seconds
         // Values are 0.0, 1.0, 2.0, ... 9.0
-        source.add_series(1, create_test_points(1, 0, 10, 0.0));
+        source.add_series(1, create_test_points(1, TEST_BASE_TS, 10, 0.0));
 
         let aggregator = SpaceTimeAggregator::new(source);
 
         let query = AggregateQuery::new(
             TagMatcher::new(),
-            TimeRange::new(0, 10_000).unwrap(),
+            TimeRange::new(TEST_BASE_TS, TEST_BASE_TS + 10_000).unwrap(),
             AggregateFunction::Sum,
         )
         .with_window(Duration::from_secs(2));
 
         let result = aggregator.aggregate(&[1], &query).unwrap();
 
-        // Windows: [0,2000), [2000,4000), [4000,6000), [6000,8000), [8000,10000)
+        // Windows: [0,2000), [2000,4000), [4000,6000), [6000,8000), [8000,10000) relative to base
         // Values at timestamps:
         // - 0ms, 1000ms (values 0,1) -> window 0 gets 0+1=1
         // - 2000ms, 3000ms (values 2,3) -> window 1 gets 2+3=5
         // - 4000ms, 5000ms (values 4,5) -> window 2 gets 4+5=9
         // - 6000ms, 7000ms (values 6,7) -> window 3 gets 6+7=13
         // - 8000ms, 9000ms (values 8,9) -> window 4 gets 8+9=17
-        // But note: if query end is 10000 and window is [8000,10000), 9000 < 10000
         assert_eq!(result.points.len(), 5);
         assert_eq!(result.points[0].value, 1.0);
-        // The actual sum depends on window boundaries
-        // Window 4: [8000, 10000) includes ts 8000 and 9000, so values 8 and 9
+        // Window 4: includes ts 8000 and 9000, so values 8 and 9
         assert_eq!(result.points[4].value, 17.0);
     }
 
@@ -1510,18 +1514,24 @@ mod tests {
         // Two series
         source.add_series(
             1,
-            vec![DataPoint::new(1, 1000, 10.0), DataPoint::new(1, 2000, 20.0)],
+            vec![
+                DataPoint::new(1, TEST_BASE_TS + 1000, 10.0),
+                DataPoint::new(1, TEST_BASE_TS + 2000, 20.0),
+            ],
         );
         source.add_series(
             2,
-            vec![DataPoint::new(2, 1000, 30.0), DataPoint::new(2, 2000, 40.0)],
+            vec![
+                DataPoint::new(2, TEST_BASE_TS + 1000, 30.0),
+                DataPoint::new(2, TEST_BASE_TS + 2000, 40.0),
+            ],
         );
 
         let aggregator = SpaceTimeAggregator::new(source);
 
         let query = AggregateQuery::new(
             TagMatcher::new(),
-            TimeRange::new(0, 3000).unwrap(),
+            TimeRange::new(TEST_BASE_TS, TEST_BASE_TS + 3000).unwrap(),
             AggregateFunction::Avg,
         );
 
@@ -1539,7 +1549,7 @@ mod tests {
 
         let query = AggregateQuery::new(
             TagMatcher::new(),
-            TimeRange::new(0, 1000).unwrap(),
+            TimeRange::new(TEST_BASE_TS, TEST_BASE_TS + 1000).unwrap(),
             AggregateFunction::Sum,
         );
 
@@ -1551,14 +1561,14 @@ mod tests {
     #[test]
     fn test_space_time_aggregator_stats() {
         let mut source = InMemoryDataSource::new();
-        source.add_series(1, create_test_points(1, 0, 100, 0.0));
-        source.add_series(2, create_test_points(2, 0, 100, 0.0));
+        source.add_series(1, create_test_points(1, TEST_BASE_TS, 100, 0.0));
+        source.add_series(2, create_test_points(2, TEST_BASE_TS, 100, 0.0));
 
         let aggregator = SpaceTimeAggregator::new(source);
 
         let query = AggregateQuery::new(
             TagMatcher::new(),
-            TimeRange::new(0, 100_000).unwrap(),
+            TimeRange::new(TEST_BASE_TS, TEST_BASE_TS + 100_000).unwrap(),
             AggregateFunction::Sum,
         )
         .with_window(Duration::from_secs(10));
