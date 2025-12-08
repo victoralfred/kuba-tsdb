@@ -196,15 +196,26 @@ impl ParallelScanner {
     ///
     /// Reads up to max_parallel_chunks chunks concurrently using rayon,
     /// decompresses them, applies filters, and stores results.
+    ///
+    /// # Security
+    /// - Limits chunk count to prevent DoS
     fn prefetch_next_window(&mut self) -> Result<(), QueryError> {
         if self.window_start >= self.chunks.len() {
             self.exhausted = true;
             return Ok(());
         }
 
+        // SEC: Cap max_parallel_chunks to prevent DoS
+        const MAX_PARALLEL_CHUNKS: usize = 1000; // 1K chunks max per window
+        let max_chunks = self.config.max_parallel_chunks.min(MAX_PARALLEL_CHUNKS);
+
         // Determine window of chunks to read
-        let window_end =
-            (self.window_start + self.config.max_parallel_chunks).min(self.chunks.len());
+        // SEC: Use checked arithmetic to prevent overflow
+        let window_end = self
+            .window_start
+            .checked_add(max_chunks)
+            .unwrap_or(self.chunks.len())
+            .min(self.chunks.len());
         let chunk_window = &self.chunks[self.window_start..window_end];
 
         // Build query options
@@ -254,9 +265,13 @@ impl ParallelScanner {
 
                     rows_read.fetch_add(filtered.len(), Ordering::Relaxed);
 
+                    // SEC: Limit batch size to prevent DoS
+                    const MAX_BATCH_SIZE: usize = 10_000_000; // 10M points max
+                    let safe_batch_size = batch_size.min(MAX_BATCH_SIZE);
+
                     // Form batches
                     let mut batches = Vec::new();
-                    let mut current_batch = DataBatch::with_capacity(batch_size);
+                    let mut current_batch = DataBatch::with_capacity(safe_batch_size);
 
                     for point in filtered {
                         current_batch.push_with_series(
@@ -306,8 +321,12 @@ impl ParallelScanner {
 
                     rows_read.fetch_add(filtered.len(), Ordering::Relaxed);
 
+                    // SEC: Limit batch size to prevent DoS
+                    const MAX_BATCH_SIZE: usize = 10_000_000; // 10M points max
+                    let safe_batch_size = batch_size.min(MAX_BATCH_SIZE);
+
                     let mut batches = Vec::new();
-                    let mut current_batch = DataBatch::with_capacity(batch_size);
+                    let mut current_batch = DataBatch::with_capacity(safe_batch_size);
 
                     for point in filtered {
                         current_batch.push_with_series(
@@ -315,10 +334,10 @@ impl ParallelScanner {
                             point.value,
                             point.series_id,
                         );
-                        if current_batch.len() >= batch_size {
+                        if current_batch.len() >= safe_batch_size {
                             batches.push(std::mem::replace(
                                 &mut current_batch,
-                                DataBatch::with_capacity(batch_size),
+                                DataBatch::with_capacity(safe_batch_size),
                             ));
                         }
                     }

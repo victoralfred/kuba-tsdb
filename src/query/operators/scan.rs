@@ -144,11 +144,23 @@ impl ScanOperator {
                     let handle = tokio::runtime::Handle::try_current()
                         .map_err(|_| QueryError::execution("No tokio runtime available"))?;
 
-                    handle
+                    let mut found_series = handle
                         .block_on(db.find_series(measurement, &tag_filter))
                         .map_err(|e| {
                             QueryError::execution(format!("Series lookup failed: {}", e))
-                        })?
+                        })?;
+
+                    // SEC: Limit number of series to prevent DoS
+                    const MAX_SERIES_PER_QUERY: usize = 10_000; // 10K series max
+                    if found_series.len() > MAX_SERIES_PER_QUERY {
+                        tracing::warn!(
+                            series_count = found_series.len(),
+                            max_allowed = MAX_SERIES_PER_QUERY,
+                            "Series count exceeds maximum, truncating"
+                        );
+                        found_series.truncate(MAX_SERIES_PER_QUERY);
+                    }
+                    found_series
                 } else {
                     // No selector criteria - cannot scan all series
                     return Ok(());
@@ -171,11 +183,28 @@ impl ScanOperator {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| QueryError::execution("No tokio runtime available"))?;
 
+        // SEC: Limit total points to prevent DoS
+        const MAX_POINTS_PER_QUERY: usize = 100_000_000; // 100M points max
         let mut all_points: Vec<DataPoint> = Vec::new();
 
         for series_id in series_ids {
             match handle.block_on(db.query(series_id, time_range)) {
-                Ok(points) => all_points.extend(points),
+                Ok(points) => {
+                    // SEC: Check if adding these points would exceed limit
+                    if all_points.len().saturating_add(points.len()) > MAX_POINTS_PER_QUERY {
+                        tracing::warn!(
+                            current_points = all_points.len(),
+                            new_points = points.len(),
+                            max_allowed = MAX_POINTS_PER_QUERY,
+                            "Point limit reached, truncating query results"
+                        );
+                        let remaining = MAX_POINTS_PER_QUERY.saturating_sub(all_points.len());
+                        all_points.extend(points.into_iter().take(remaining));
+                        break; // Stop querying more series
+                    } else {
+                        all_points.extend(points);
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(series_id = series_id, error = %e, "Error querying series");
                 },

@@ -204,25 +204,39 @@ where
 /// assert_eq!(ma[1], 1.5);  // Partial window: avg of [1.0, 2.0]
 /// assert_eq!(ma[2], 2.0);  // Full window: avg of [1.0, 2.0, 3.0]
 /// ```
-#[must_use]
-pub fn moving_avg(values: &[f64], window_size: usize) -> Vec<f64> {
+/// Calculate a moving average over a sliding window
+///
+/// # Returns
+/// - `Ok(Vec<f64>)` - Moving averages for each position
+/// - `Err(String)` - If sum overflow occurs (BUG-003 FIX: no longer silently corrupts)
+///
+/// # Errors
+/// Returns an error if the sum exceeds the maximum allowed value (1e100),
+/// preventing silent data corruption from overflow.
+pub fn moving_avg(values: &[f64], window_size: usize) -> Result<Vec<f64>, String> {
     // VAL-001: Validate window size
     if values.is_empty() || window_size == 0 || window_size > MAX_WINDOW_SIZE {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut result = Vec::with_capacity(values.len());
     let mut sum: f64 = 0.0;
 
     for (i, &value) in values.iter().enumerate() {
-        // SEC: Check for sum overflow (DoS protection)
+        // BUG-003 FIX: Check for sum overflow and return error instead of silently corrupting
         // f64 can represent values up to ~1.7e308, but we check for reasonable limits
         const MAX_SUM: f64 = 1e100; // Reasonable upper bound
-        if sum.abs() > MAX_SUM {
-            // Sum overflow detected - use saturating arithmetic
-            sum = sum.signum() * MAX_SUM;
+
+        // SEC: Check if adding value would cause overflow
+        // Use checked arithmetic to detect potential overflow
+        let new_sum = sum + value;
+        if new_sum.abs() > MAX_SUM || new_sum.is_infinite() || new_sum.is_nan() {
+            return Err(format!(
+                "Moving average sum overflow at index {}: sum={}, value={}, max_allowed={}",
+                i, sum, value, MAX_SUM
+            ));
         }
-        sum += value;
+        sum = new_sum;
 
         // Remove the element that falls out of the window
         if i >= window_size {
@@ -236,30 +250,44 @@ pub fn moving_avg(values: &[f64], window_size: usize) -> Vec<f64> {
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Calculate a moving sum over a sliding window
 ///
 /// # Complexity
 /// Time: O(n), Space: O(n)
-#[must_use]
-pub fn moving_sum(values: &[f64], window_size: usize) -> Vec<f64> {
+/// Calculate a moving sum over a sliding window
+///
+/// # Returns
+/// - `Ok(Vec<f64>)` - Moving sums for each position
+/// - `Err(String)` - If sum overflow occurs (BUG-003 FIX: no longer silently corrupts)
+///
+/// # Errors
+/// Returns an error if the sum exceeds the maximum allowed value (1e100),
+/// preventing silent data corruption from overflow.
+pub fn moving_sum(values: &[f64], window_size: usize) -> Result<Vec<f64>, String> {
     // VAL-001: Validate window size
     if values.is_empty() || window_size == 0 || window_size > MAX_WINDOW_SIZE {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut result = Vec::with_capacity(values.len());
     let mut sum: f64 = 0.0;
 
     for (i, &value) in values.iter().enumerate() {
-        // SEC: Check for sum overflow (DoS protection)
+        // BUG-003 FIX: Check for sum overflow and return error instead of silently corrupting
         const MAX_SUM: f64 = 1e100; // Reasonable upper bound
-        if sum.abs() > MAX_SUM {
-            sum = sum.signum() * MAX_SUM;
+
+        // SEC: Check if adding value would cause overflow
+        let new_sum = sum + value;
+        if new_sum.abs() > MAX_SUM || new_sum.is_infinite() || new_sum.is_nan() {
+            return Err(format!(
+                "Moving sum overflow at index {}: sum={}, value={}, max_allowed={}",
+                i, sum, value, MAX_SUM
+            ));
         }
-        sum += value;
+        sum = new_sum;
 
         if i >= window_size {
             sum -= values[i - window_size];
@@ -267,7 +295,7 @@ pub fn moving_sum(values: &[f64], window_size: usize) -> Vec<f64> {
         result.push(sum);
     }
 
-    result
+    Ok(result)
 }
 
 /// Calculate moving minimum over a sliding window
@@ -837,7 +865,7 @@ mod tests {
     #[test]
     fn test_moving_avg() {
         let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let ma = moving_avg(&values, 3);
+        let ma = moving_avg(&values, 3).unwrap();
 
         assert_eq!(ma.len(), 5);
         assert!((ma[0] - 1.0).abs() < 0.001);
@@ -850,7 +878,7 @@ mod tests {
     #[test]
     fn test_moving_sum() {
         let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let ms = moving_sum(&values, 3);
+        let ms = moving_sum(&values, 3).unwrap();
 
         assert_eq!(ms.len(), 5);
         assert_eq!(ms[0], 1.0);

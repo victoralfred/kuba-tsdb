@@ -409,7 +409,9 @@ impl Codec for AlpCodec {
         // Compress integer values
         Self::encode_integers(&integers, &mut writer);
 
-        Ok(writer.finish())
+        writer
+            .finish()
+            .map_err(|e| CodecError::CompressionFailed(e.to_string()))
     }
 
     fn decompress(&self, data: &[u8], count: usize) -> Result<Vec<DataPoint>, CodecError> {

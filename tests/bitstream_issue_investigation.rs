@@ -9,7 +9,7 @@ fn test_issue1_bit_ordering_consistency() {
     // Test 1: Single byte pattern - should preserve exact bit order
     let mut writer = BitWriter::new();
     writer.write_bits(0b10101100, 8);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     println!("Written pattern: 0b10101100");
     println!("Buffer bytes: {:08b}", buffer[0]);
@@ -25,7 +25,7 @@ fn test_issue1_bit_ordering_consistency() {
     // Test 2: Multi-byte pattern (16 bits)
     let mut writer = BitWriter::new();
     writer.write_bits(0b1010110011110000, 16);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     println!("\nWritten 16-bit pattern: 0b1010110011110000");
     println!("Buffer[0]: {:08b}, Buffer[1]: {:08b}", buffer[0], buffer[1]);
@@ -38,7 +38,7 @@ fn test_issue1_bit_ordering_consistency() {
     let pattern = 0b11010010;
     let mut writer = BitWriter::new();
     writer.write_bits(pattern, 8);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     let mut reader = BitReader::new(&buffer);
     for i in (0..8).rev() {
@@ -72,7 +72,7 @@ fn test_issue2_64bit_boundary() {
     for &value in &test_cases {
         let mut writer = BitWriter::new();
         writer.write_bits(value, 64);
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
 
         let mut reader = BitReader::new(&buffer);
         let read_value = reader.read_bits(64).unwrap();
@@ -95,7 +95,7 @@ fn test_issue3_cross_byte_boundaries() {
     writer.write_bits(0b0101010, 7); // 7 bits: 0101010
     writer.write_bits(0b11, 2); // 2 bits: 11
 
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
     println!("Cross-byte buffer: {:08b} {:08b}", buffer[0], buffer[1]);
 
     // Expected layout:
@@ -158,7 +158,7 @@ fn test_issue5_partial_byte_padding() {
     // Write only 4 bits
     let mut writer = BitWriter::new();
     writer.write_bits(0b1011, 4);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     assert_eq!(buffer.len(), 1, "Should produce 1 byte");
     println!("4-bit write (0b1011) produces byte: {:08b}", buffer[0]);
@@ -180,7 +180,7 @@ fn test_issue6_value_masking() {
     // Should only write lower 4 bits: 0b0000
     let mut writer = BitWriter::new();
     writer.write_bits(0b10110000, 4);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     println!("Writing 0b10110000 with num_bits=4");
     println!("Result byte: {:08b}", buffer[0]);
@@ -205,7 +205,7 @@ fn test_issue6_value_masking() {
     // Test with another value
     let mut writer = BitWriter::new();
     writer.write_bits(0xFF, 4); // All bits set, but only write 4
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     let mut reader = BitReader::new(&buffer);
     let read_value = reader.read_bits(4).unwrap();
@@ -260,7 +260,7 @@ fn test_issue8_writer_reader_synchronization() {
     writer.write_bits(0xAA, 8);
     writer.write_bits(0x55, 8);
     writer.write_bits(0xFF, 8);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     let mut reader = BitReader::new(&buffer);
     assert_eq!(reader.read_bits(8).unwrap(), 0xAA);
@@ -273,7 +273,7 @@ fn test_issue8_writer_reader_synchronization() {
     writer.write_bits(0b00000, 5);
     writer.write_bits(0b1010, 4);
     writer.write_bits(0b0101, 4);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     let mut reader = BitReader::new(&buffer);
     assert_eq!(reader.read_bits(3).unwrap(), 0b111);
@@ -288,7 +288,7 @@ fn test_issue8_writer_reader_synchronization() {
     writer.write_bit(false);
     writer.write_bits(0b11, 2);
     writer.write_bit(true);
-    let buffer = writer.finish();
+    let buffer = writer.finish().unwrap();
 
     let mut reader = BitReader::new(&buffer);
     assert!(reader.read_bit().unwrap());
@@ -313,7 +313,7 @@ fn test_issue9_fuzz_verification() {
 
         let mut writer = BitWriter::new();
         writer.write_bits(value, num_bits);
-        let buffer = writer.finish();
+        let buffer = writer.finish().unwrap();
 
         let mut reader = BitReader::new(&buffer);
         let read_value = reader.read_bits(num_bits).unwrap();

@@ -839,28 +839,35 @@ impl QueryPlanner {
                     .unwrap_or(24.0);
 
                 // Rough estimate: ~1 chunk per hour, ~10K rows per chunk
-                let chunks = (duration_hours.ceil() as usize).max(1);
-                let rows = chunks * 10_000;
+                // SEC: Use checked arithmetic to prevent overflow
+                let chunks = (duration_hours.ceil() as usize).clamp(1, 10_000_000); // Cap at 10M chunks
+                                                                                    // SEC: Use checked multiplication to prevent overflow
+                let rows = chunks.saturating_mul(10_000).min(1_000_000_000); // Cap at 1B rows
+
+                // SEC: Use checked multiplication for bytes estimation
+                let estimated_bytes = rows.saturating_mul(16);
 
                 CostEstimate {
                     estimated_rows: rows,
-                    estimated_bytes: rows * 16, // timestamp (8) + value (8)
+                    estimated_bytes,
                     chunks_to_scan: chunks,
-                    cpu_cost: rows as f64 * 0.001, // 1ms per 1000 rows
-                    io_cost: chunks as f64 * 10.0, // 10ms per chunk
+                    cpu_cost: (rows as f64).min(1e9) * 0.001, // 1ms per 1000 rows, cap at 1B
+                    io_cost: (chunks as f64).min(1e6) * 10.0, // 10ms per chunk, cap at 1M
                 }
             },
             LogicalPlan::Filter { input, .. } => {
                 // Filtering reduces output but scans same input
                 let mut cost = self.estimate_cost(input);
-                cost.estimated_rows /= 2; // Assume 50% selectivity
+                // SEC: Use saturating division to prevent underflow
+                cost.estimated_rows = cost.estimated_rows.saturating_div(2).max(1); // Assume 50% selectivity
                 cost.cpu_cost *= 1.1; // Small overhead for predicate evaluation
                 cost
             },
             LogicalPlan::Aggregate { input, .. } => {
                 // Aggregation compresses output significantly
                 let mut cost = self.estimate_cost(input);
-                cost.estimated_rows = (cost.estimated_rows / 100).max(1);
+                // SEC: Use saturating division to prevent underflow
+                cost.estimated_rows = cost.estimated_rows.saturating_div(100).max(1);
                 cost.cpu_cost *= 1.5; // Aggregation is CPU intensive
                 cost
             },
@@ -874,7 +881,10 @@ impl QueryPlanner {
             LogicalPlan::Limit { input, limit, .. } => {
                 let mut cost = self.estimate_cost(input);
                 if let Some(limit) = limit {
-                    cost.estimated_rows = cost.estimated_rows.min(*limit);
+                    // SEC: Cap limit to prevent DoS
+                    const MAX_LIMIT: usize = 100_000_000; // 100M max
+                    let capped_limit = (*limit).min(MAX_LIMIT);
+                    cost.estimated_rows = cost.estimated_rows.min(capped_limit);
                 }
                 cost
             },
@@ -884,16 +894,25 @@ impl QueryPlanner {
                 ..
             } => {
                 let mut cost = self.estimate_cost(input);
-                cost.estimated_rows = *target_points;
+                // SEC: Cap target_points to prevent DoS
+                const MAX_TARGET_POINTS: usize = 10_000_000; // 10M max
+                cost.estimated_rows = (*target_points).min(MAX_TARGET_POINTS);
                 cost.cpu_cost *= 1.2; // Downsampling algorithm overhead
                 cost
             },
-            LogicalPlan::Latest { count, .. } => CostEstimate {
-                estimated_rows: *count,
-                estimated_bytes: count * 16,
-                chunks_to_scan: 1, // Only need latest chunk
-                cpu_cost: 1.0,
-                io_cost: 10.0,
+            LogicalPlan::Latest { count, .. } => {
+                // SEC: Cap count to prevent DoS
+                const MAX_LATEST_COUNT: usize = 1_000_000; // 1M max
+                let capped_count = (*count).min(MAX_LATEST_COUNT);
+                // SEC: Use checked multiplication
+                let estimated_bytes = capped_count.saturating_mul(16);
+                CostEstimate {
+                    estimated_rows: capped_count,
+                    estimated_bytes,
+                    chunks_to_scan: 1, // Only need latest chunk
+                    cpu_cost: 1.0,
+                    io_cost: 10.0,
+                }
             },
             LogicalPlan::Explain(inner) => {
                 // Explain doesn't execute, just plans

@@ -342,8 +342,22 @@ impl SubscriptionManager {
             SeriesSubscription::new(self.config.channel_buffer_size)
         });
 
-        // Check subscriber limit
-        if sub.subscriber_count() >= self.config.max_subscribers_per_series as u64 {
+        // SEC: Check subscriber limit and total subscription limit
+        // SEC: Cap max_subscribers_per_series to prevent DoS
+        const MAX_SUBSCRIBERS_PER_SERIES: usize = 10_000; // 10K max
+        let max_per_series = self
+            .config
+            .max_subscribers_per_series
+            .min(MAX_SUBSCRIBERS_PER_SERIES);
+
+        if sub.subscriber_count() >= max_per_series as u64 {
+            return None;
+        }
+
+        // SEC: Check total subscription limit
+        let total_subs = self.stats.subscriptions_created.load(Ordering::Relaxed);
+        const MAX_TOTAL_SUBSCRIPTIONS: u64 = 1_000_000; // 1M max
+        if total_subs >= MAX_TOTAL_SUBSCRIPTIONS {
             return None;
         }
 

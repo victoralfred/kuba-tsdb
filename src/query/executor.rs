@@ -64,6 +64,9 @@ pub struct ExecutorConfig {
     pub timeout: Duration,
 
     /// Maximum number of rows in result (default: 1_000_000)
+    ///
+    /// # Security
+    /// - Capped at 100M to prevent DoS via huge result sets
     pub max_result_rows: usize,
 
     /// Enable SIMD vectorization (default: true)
@@ -123,8 +126,13 @@ impl ExecutorConfig {
     }
 
     /// Set maximum result rows
+    ///
+    /// # Security
+    /// - Caps at 100M to prevent DoS
     pub fn with_max_result_rows(mut self, rows: usize) -> Self {
-        self.max_result_rows = rows;
+        // SEC: Cap max_result_rows to prevent DoS
+        const MAX_ALLOWED_ROWS: usize = 100_000_000; // 100M max
+        self.max_result_rows = rows.min(MAX_ALLOWED_ROWS);
         self
     }
 
@@ -374,11 +382,46 @@ impl QueryExecutor {
         let mut rows_scanned = 0u64;
         let mut was_truncated = false;
 
+        // SEC: Limit total rows scanned to prevent DoS
+        const MAX_ROWS_SCANNED: u64 = 1_000_000_000; // 1B rows max
+        let mut total_rows_scanned = 0u64;
+
         // Pull batches from operator tree until exhausted or limit reached
         while let Some(batch) = operator.next_batch(ctx)? {
-            // Track statistics
-            rows_scanned += batch.len() as u64;
-            self.stats.rows_scanned += batch.len() as u64;
+            // SEC: Validate batch size to prevent DoS
+            const MAX_BATCH_SIZE: usize = 10_000_000; // 10M points max per batch
+            if batch.len() > MAX_BATCH_SIZE {
+                return Err(QueryError::resource_limit(format!(
+                    "Batch size {} exceeds maximum allowed {}",
+                    batch.len(),
+                    MAX_BATCH_SIZE
+                )));
+            }
+
+            // SEC: Use checked arithmetic to prevent overflow
+            let batch_len_u64 = batch.len() as u64;
+            if let Some(new_total) = total_rows_scanned.checked_add(batch_len_u64) {
+                if new_total > MAX_ROWS_SCANNED {
+                    return Err(QueryError::resource_limit(format!(
+                        "Total rows scanned {} exceeds maximum allowed {}",
+                        new_total, MAX_ROWS_SCANNED
+                    )));
+                }
+                total_rows_scanned = new_total;
+            } else {
+                return Err(QueryError::resource_limit("Rows scanned counter overflow"));
+            }
+
+            // Track statistics with overflow protection
+            rows_scanned = rows_scanned.saturating_add(batch_len_u64);
+            self.stats.rows_scanned = self.stats.rows_scanned.saturating_add(batch_len_u64);
+
+            // SEC: Pre-allocate capacity to prevent multiple reallocations
+            // Reserve space for remaining rows (up to limit)
+            let remaining_capacity = self.config.max_result_rows.saturating_sub(rows.len());
+            if remaining_capacity > 0 {
+                rows.reserve(remaining_capacity.min(batch.len()));
+            }
 
             // Convert batch to result rows
             for i in 0..batch.len() {
@@ -413,8 +456,8 @@ impl QueryExecutor {
             }
         }
 
-        // Update statistics
-        self.stats.rows_returned += rows.len() as u64;
+        // Update statistics with overflow protection
+        self.stats.rows_returned = self.stats.rows_returned.saturating_add(rows.len() as u64);
 
         // Build result with metadata
         let mut result = QueryResult::new(rows).with_rows_scanned(rows_scanned);
@@ -622,12 +665,17 @@ impl ExecutionContext {
     /// Allocate memory from the budget
     ///
     /// Returns true if allocation succeeded, false if would exceed limit
+    ///
+    /// # Security
+    /// - Uses checked arithmetic to prevent overflow
     pub fn allocate_memory(&mut self, bytes: usize) -> bool {
-        if self.memory_used + bytes > self.memory_limit {
-            false
-        } else {
-            self.memory_used += bytes;
-            true
+        // SEC: Use checked arithmetic to prevent overflow
+        match self.memory_used.checked_add(bytes) {
+            Some(new_total) if new_total <= self.memory_limit => {
+                self.memory_used = new_total;
+                true
+            },
+            _ => false,
         }
     }
 
@@ -637,8 +685,12 @@ impl ExecutionContext {
     }
 
     /// Record rows produced
+    ///
+    /// # Security
+    /// - Uses saturating arithmetic to prevent overflow
     pub fn record_rows(&mut self, count: usize) {
-        self.rows_produced += count;
+        // SEC: Use saturating arithmetic to prevent overflow
+        self.rows_produced = self.rows_produced.saturating_add(count);
     }
 
     /// Cancel execution

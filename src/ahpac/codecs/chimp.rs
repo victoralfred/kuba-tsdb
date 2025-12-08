@@ -325,7 +325,9 @@ impl Codec for ChimpCodec {
         Self::compress_timestamps(points, &mut writer);
         Self::compress_values(points, &mut writer);
 
-        Ok(writer.finish())
+        writer
+            .finish()
+            .map_err(|e| CodecError::CompressionFailed(e.to_string()))
     }
 
     fn decompress(&self, data: &[u8], count: usize) -> Result<Vec<DataPoint>, CodecError> {

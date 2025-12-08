@@ -151,7 +151,7 @@ jobs:
             const review = fs.readFileSync('review_output.md', 'utf8');
 
             // Add header
-            const body = `## 🤖 AI Code Review\n\n${review}\n\n---\n*Automated review by Claude AI*`;
+            const body = `## Code Review agent\n\n${review}\n\n---\n*Automated review by Claude AI*`;
 
             // Post as PR comment
             await github.rest.issues.createComment({
@@ -165,8 +165,7 @@ jobs:
         if: steps.ai-review.outputs.verdict == 'request_changes'
         run: |
           echo "::warning::AI Review requests changes to this PR"
-          # Optionally fail the workflow
-          # exit 1
+        
 
   # Summary job
   review-summary:
