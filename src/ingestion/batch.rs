@@ -260,8 +260,7 @@ impl Batcher {
             while remaining.len() >= self.config.max_batch_size {
                 // Use min to ensure we don't drain more than available (defensive)
                 let drain_size = self.config.max_batch_size.min(remaining.len());
-                let batch_points: Vec<DataPoint> =
-                    remaining.drain(..drain_size).collect();
+                let batch_points: Vec<DataPoint> = remaining.drain(..drain_size).collect();
                 let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
                 let batch = PointBatch::new(batch_points, seq);
 

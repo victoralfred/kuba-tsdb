@@ -94,10 +94,11 @@ impl IngestionMetrics {
     #[inline]
     pub fn record_received(&self, count: u64) {
         // Use saturating arithmetic to prevent overflow
-        let _ = self.points_received
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(count))
-            });
+        let _ =
+            self.points_received
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_add(count))
+                });
     }
 
     /// Record points rejected due to backpressure
@@ -139,20 +140,23 @@ impl IngestionMetrics {
     #[inline]
     pub fn record_write(&self, point_count: u64, bytes: u64, latency: Duration) {
         // Use saturating arithmetic for critical counters to prevent overflow
-        let _ = self.points_written
+        let _ = self
+            .points_written
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(point_count))
             });
-        let _ = self.bytes_written
+        let _ = self
+            .bytes_written
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(bytes))
             });
 
         let latency_us = latency.as_micros() as u64;
-        let _ = self.write_latency_sum_us
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(latency_us))
-            });
+        let _ = self.write_latency_sum_us.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(latency_us)),
+        );
         self.write_latency_count.fetch_add(1, Ordering::Relaxed);
     }
 

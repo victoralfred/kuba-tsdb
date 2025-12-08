@@ -598,8 +598,11 @@ impl BackpressureController {
                 .as_nanos() as u64;
             let duration_since_activation = now_nanos.saturating_sub(activation_nanos);
             // Convert to Instant by subtracting from now
-            Some(Instant::now().checked_sub(Duration::from_nanos(duration_since_activation))
-                .unwrap_or_else(Instant::now))
+            Some(
+                Instant::now()
+                    .checked_sub(Duration::from_nanos(duration_since_activation))
+                    .unwrap_or_else(Instant::now),
+            )
         } else {
             None
         };

@@ -205,10 +205,11 @@ impl WriteBufferManager {
             // Approximate memory increase: 16 bytes per point (timestamp + value)
             // Use saturating_mul to prevent overflow
             let memory_increase = new_points.saturating_mul(16);
-            let _ = self.memory_used
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_add(memory_increase))
-                });
+            let _ =
+                self.memory_used
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        Some(current.saturating_add(memory_increase))
+                    });
         }
 
         // Record overwrites in metrics
@@ -314,11 +315,11 @@ impl WriteBufferManager {
         if !overwrite {
             self.total_buffered.fetch_add(1, Ordering::Relaxed);
             // Use fetch_update with saturating_add to prevent overflow
-            let _ = self.memory_used.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |current| Some(current.saturating_add(16)),
-            );
+            let _ =
+                self.memory_used
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        Some(current.saturating_add(16))
+                    });
         } else {
             self.metrics.record_overwrite();
         }
@@ -401,7 +402,7 @@ impl WriteBufferManager {
         loop {
             // Find next series to flush
             let next_series = self.buffers.iter().next().map(|e| *e.key());
-            
+
             if let Some(series_id) = next_series {
                 self.flush_series(series_id).await?;
                 flushed_count += 1;
