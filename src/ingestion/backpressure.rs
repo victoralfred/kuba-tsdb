@@ -386,8 +386,7 @@ impl BackpressureController {
                     .compare_exchange(last_warning, now_nanos, Ordering::SeqCst, Ordering::Relaxed)
                     .is_ok()
                 {
-                    let percent =
-                        ((queue as u128) * 100 / (self.config.queue_limit as u128)) as u8;
+                    let percent = ((queue as u128) * 100 / (self.config.queue_limit as u128)) as u8;
                     warn!("Queue depth high: {} ({}% of limit)", queue, percent);
                 }
             }
