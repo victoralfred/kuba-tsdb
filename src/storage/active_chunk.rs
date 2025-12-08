@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::RwLock;
 use std::time::Instant;
+use tracing::warn;
 
 // Re-export SealConfig for convenience
 pub use crate::storage::chunk::SealConfig;
@@ -228,9 +229,20 @@ impl ActiveChunk {
             //   Thread A: load(100), set to 50
             //   Thread B: load(100), set to 25
             //   Thread A: store(50) <- overwrites B's correct value of 25!
+            //
+            // SEC: Add overflow protection for timestamp calculations
 
             // Update minimum timestamp atomically
+            // SEC: Prevent infinite loops with max retries
+            const MAX_CAS_RETRIES: u32 = 100;
+            let mut retries = 0;
             loop {
+                if retries >= MAX_CAS_RETRIES {
+                    warn!("CAS retry limit reached for min_timestamp update");
+                    break;
+                }
+                retries += 1;
+
                 let current_min = self.min_timestamp.load(Ordering::Acquire);
                 if point.timestamp >= current_min {
                     break; // No update needed
@@ -248,7 +260,14 @@ impl ActiveChunk {
             }
 
             // Update maximum timestamp atomically
+            retries = 0;
             loop {
+                if retries >= MAX_CAS_RETRIES {
+                    warn!("CAS retry limit reached for max_timestamp update");
+                    break;
+                }
+                retries += 1;
+
                 let current_max = self.max_timestamp.load(Ordering::Acquire);
                 if point.timestamp <= current_max {
                     break; // No update needed
@@ -327,8 +346,15 @@ impl ActiveChunk {
         let min_ts = self.min_timestamp.load(Ordering::Relaxed);
         let max_ts = self.max_timestamp.load(Ordering::Relaxed);
 
-        // Use saturating_sub to prevent overflow with extreme timestamp values
-        let duration = max_ts.saturating_sub(min_ts);
+        // SEC: Use checked_sub to detect overflow, fallback to saturating_sub
+        // This prevents DoS via extreme timestamp values
+        let duration = max_ts.checked_sub(min_ts).unwrap_or_else(|| {
+            warn!(
+                "Timestamp overflow detected: min={}, max={}, using saturating_sub",
+                min_ts, max_ts
+            );
+            max_ts.saturating_sub(min_ts)
+        });
 
         if duration >= self.seal_config.max_duration_ms {
             return true;

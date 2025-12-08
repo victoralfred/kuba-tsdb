@@ -145,6 +145,10 @@ impl RedisConfig {
     }
 
     /// Validate the configuration
+    ///
+    /// # Security
+    /// - Validates pool size to prevent DoS via connection exhaustion
+    /// - Validates timeouts to prevent resource exhaustion
     pub fn validate(&self) -> Result<(), String> {
         if self.url.is_empty() {
             return Err("Redis URL cannot be empty".to_string());
@@ -152,8 +156,17 @@ impl RedisConfig {
         if self.pool_size == 0 {
             return Err("Pool size must be greater than 0".to_string());
         }
+        // SEC: Limit pool size to prevent DoS via connection exhaustion
         if self.pool_size > 1000 {
-            return Err("Pool size cannot exceed 1000".to_string());
+            return Err("Pool size cannot exceed 1000 to prevent DoS".to_string());
+        }
+
+        // SEC: Validate timeouts are reasonable to prevent resource exhaustion
+        if self.connection_timeout.as_secs() > 300 {
+            return Err("Connection timeout cannot exceed 300 seconds".to_string());
+        }
+        if self.command_timeout.as_secs() > 60 {
+            return Err("Command timeout cannot exceed 60 seconds".to_string());
         }
 
         // Validate TLS configuration

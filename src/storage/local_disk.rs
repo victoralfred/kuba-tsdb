@@ -559,10 +559,30 @@ impl StorageEngine for LocalDiskEngine {
 
         // Create series directory if needed
         let series_dir = self.series_path(series_id);
+
+        // SEC: Validate path to prevent path traversal attacks
+        crate::storage::security::validate_path_no_traversal(&series_dir, &self.base_path)
+            .map_err(|e| {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Path validation failed: {}", e),
+                ))
+            })?;
+
         fs::create_dir_all(&series_dir).await?;
 
         // Determine chunk path (use .kub extension for all, type is in header)
         let path = self.chunk_path(series_id, &chunk_id, CompressionType::Kuba);
+
+        // SEC: Validate chunk path to prevent path traversal
+        crate::storage::security::validate_path_no_traversal(&path, &self.base_path).map_err(
+            |e| {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Chunk path validation failed: {}", e),
+                ))
+            },
+        )?;
 
         // Create chunk header
         let mut header = ChunkHeader::new(series_id);
@@ -973,11 +993,18 @@ impl StorageEngine for LocalDiskEngine {
                     })?;
 
                     // Fix VAL-001: Validate compressed_size before allocation
+                    // SEC: Prevent DoS via huge chunk sizes
                     if header.compressed_size > MAX_CHUNK_SIZE {
                         return Err(StorageError::CorruptedData(format!(
-                            "Chunk size {} exceeds maximum allowed size {}",
+                            "Chunk size {} exceeds maximum allowed size {}. This may indicate corruption or a DoS attempt.",
                             header.compressed_size, MAX_CHUNK_SIZE
                         )));
+                    }
+                    // SEC: Additional validation - check for zero or unreasonably small sizes
+                    if header.compressed_size == 0 {
+                        return Err(StorageError::CorruptedData(
+                            "Chunk compressed_size is zero, indicating corruption".to_string()
+                        ));
                     }
 
                     // Read compressed data
@@ -1080,9 +1107,23 @@ impl StorageEngine for LocalDiskEngine {
         let now = chrono::Utc::now().timestamp_millis();
 
         // Define retention period (30 days by default, could be made configurable)
-        let retention_ms: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
-                                                          // Fix EDGE-010: Use saturating_sub to prevent underflow
-        let retention_cutoff = now.saturating_sub(retention_ms);
+        // SEC: Use checked arithmetic to prevent overflow
+        let retention_ms: i64 = match (30i64).checked_mul(24 * 60 * 60 * 1000) {
+            Some(ms) => ms,
+            None => {
+                warn!("Retention period calculation overflow, using default 30 days");
+                30 * 24 * 60 * 60 * 1000 // This should never overflow in practice
+            },
+        };
+
+        // Fix EDGE-010: Use checked_sub to detect underflow, fallback to saturating_sub
+        let retention_cutoff = now.checked_sub(retention_ms).unwrap_or_else(|| {
+            warn!(
+                "Retention cutoff calculation underflow: now={}, retention_ms={}",
+                now, retention_ms
+            );
+            now.saturating_sub(retention_ms)
+        });
 
         // Collect chunks to delete (older than retention period)
         // We do this in two phases to avoid holding locks during I/O

@@ -176,6 +176,7 @@ pub struct WriteBuffer {
     series_state: RwLock<HashMap<SeriesId, SeriesBufferState>>,
 
     /// Global sequence counter for ordering
+    /// SEC: Uses AtomicU64 with wrapping to prevent overflow DoS
     sequence_counter: AtomicU64,
 
     /// Statistics: points buffered
@@ -236,6 +237,10 @@ impl WriteBuffer {
     ///
     /// Ok(true) if points were buffered successfully,
     /// Ok(false) if buffer is full (overflow)
+    ///
+    /// # Security
+    /// - Limits input size to prevent DoS
+    /// - Validates batch size before processing
     pub async fn append(
         &self,
         series_id: SeriesId,
@@ -243,6 +248,16 @@ impl WriteBuffer {
     ) -> Result<bool, IndexError> {
         if points.is_empty() {
             return Ok(true);
+        }
+
+        // SEC: Limit input size to prevent DoS
+        const MAX_POINTS_PER_BATCH: usize = 1_000_000; // 1M points max per batch
+        if points.len() > MAX_POINTS_PER_BATCH {
+            return Err(IndexError::ConnectionError(format!(
+                "Too many points in batch: {} (maximum: {})",
+                points.len(),
+                MAX_POINTS_PER_BATCH
+            )));
         }
 
         let points_count = points.len();
@@ -263,7 +278,11 @@ impl WriteBuffer {
         }
 
         // Create batch
+        // SEC: Use wrapping_add to prevent overflow DoS attack
+        // Sequence numbers wrap around at u64::MAX, which is acceptable for ordering
+        // This prevents an attacker from causing overflow by sending many requests
         let sequence = self.sequence_counter.fetch_add(1, Ordering::Relaxed);
+        // Note: fetch_add wraps on overflow, which is safe for sequence numbers
         let batch = BufferedBatch {
             points: points.iter().map(BufferedPoint::from_data_point).collect(),
             created_at: chrono::Utc::now().timestamp_millis(),

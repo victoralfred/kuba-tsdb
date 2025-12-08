@@ -513,13 +513,23 @@ impl TimeSeriesDB {
             "Writing points to buffer"
         );
 
+        // SEC: Limit input size to prevent DoS
+        const MAX_POINTS_PER_WRITE: usize = 10_000_000; // 10M points max
+        if points.len() > MAX_POINTS_PER_WRITE {
+            return Err(Error::General(format!(
+                "Too many points in single write: {} (maximum: {})",
+                points.len(),
+                MAX_POINTS_PER_WRITE
+            )));
+        }
+
         let mut last_chunk_id = ChunkId::new();
         let mut points_iter = points.into_iter().peekable();
 
         // Process all points, sealing chunks as needed
         while points_iter.peek().is_some() {
             // Get or create active chunk for this series
-            let active_chunk = self.get_or_create_active_chunk(series_id).await;
+            let active_chunk = self.get_or_create_active_chunk(series_id).await?;
 
             // Append points until chunk is full or we run out of points
             while let Some(point) = points_iter.peek() {
@@ -564,14 +574,29 @@ impl TimeSeriesDB {
     }
 
     /// Get or create an active chunk for a series
-    async fn get_or_create_active_chunk(&self, series_id: SeriesId) -> Arc<ActiveChunk> {
-        // First try to get existing chunk
+    ///
+    /// # Security
+    /// - Limits total active chunks to prevent DoS via memory exhaustion
+    /// - Uses double-checked locking pattern to avoid race conditions
+    async fn get_or_create_active_chunk(&self, series_id: SeriesId) -> Result<Arc<ActiveChunk>> {
+        // SEC: Limit total active chunks to prevent DoS
+        const MAX_ACTIVE_CHUNKS: usize = 100_000;
+
+        // First try to get existing chunk (read lock)
         {
             let chunks = self.active_chunks.read().await;
             if let Some(chunk) = chunks.get(&series_id) {
                 if !chunk.is_sealed() {
-                    return Arc::clone(chunk);
+                    return Ok(Arc::clone(chunk));
                 }
+            }
+
+            // SEC: Check total chunk count before creating new one
+            if chunks.len() >= MAX_ACTIVE_CHUNKS {
+                return Err(Error::General(format!(
+                    "Maximum active chunks limit ({}) reached. Please seal some chunks before creating new ones.",
+                    MAX_ACTIVE_CHUNKS
+                )));
             }
         }
 
@@ -582,9 +607,27 @@ impl TimeSeriesDB {
             self.buffer_config.initial_capacity,
             seal_config,
         ));
+
+        // Double-checked locking: acquire write lock and verify again
         let mut chunks = self.active_chunks.write().await;
+
+        // SEC: Re-check limit after acquiring write lock (another thread might have added)
+        if chunks.len() >= MAX_ACTIVE_CHUNKS {
+            return Err(Error::General(format!(
+                "Maximum active chunks limit ({}) reached. Please seal some chunks before creating new ones.",
+                MAX_ACTIVE_CHUNKS
+            )));
+        }
+
+        // Check again if chunk was created by another thread
+        if let Some(chunk) = chunks.get(&series_id) {
+            if !chunk.is_sealed() {
+                return Ok(Arc::clone(chunk));
+            }
+        }
+
         chunks.insert(series_id, Arc::clone(&new_chunk));
-        new_chunk
+        Ok(new_chunk)
     }
 
     /// Seal the active chunk for a series and write to storage
