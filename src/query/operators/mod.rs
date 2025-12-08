@@ -524,7 +524,7 @@ pub mod simd {
 
     /// Apply mask to select values (scatter operation)
     ///
-    /// Returns values where `mask[i]` is true.
+    /// Returns values where `mask\[i\]` is true.
     #[inline]
     pub fn apply_mask(values: &[f64], mask: &[bool]) -> Vec<f64> {
         values

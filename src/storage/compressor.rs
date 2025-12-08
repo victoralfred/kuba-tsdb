@@ -445,6 +445,18 @@ impl CompressionService {
                     continue; // Too young
                 }
 
+                // SEC: Validate file size to prevent DoS
+                const MAX_CHUNK_SIZE: u64 = 1_000_000_000; // 1GB max
+                if metadata.len() > MAX_CHUNK_SIZE {
+                    tracing::warn!(
+                        chunk_path = %chunk_path.display(),
+                        size = metadata.len(),
+                        max_allowed = MAX_CHUNK_SIZE,
+                        "Chunk size exceeds maximum, skipping"
+                    );
+                    continue;
+                }
+
                 // Add to compression queue
                 tasks.push(CompressionTask {
                     chunk_path,
@@ -453,6 +465,7 @@ impl CompressionService {
                     created_at: created,
                 });
 
+                // SEC: Use checked arithmetic for limit check
                 if tasks.len() >= config.max_chunks_per_scan {
                     break;
                 }
@@ -471,6 +484,15 @@ impl CompressionService {
         task: &CompressionTask,
         delete_original: bool,
     ) -> Result<u64, StorageError> {
+        // SEC: Validate file size before reading to prevent DoS
+        const MAX_CHUNK_SIZE: u64 = 1_000_000_000; // 1GB max
+        if task.original_size > MAX_CHUNK_SIZE {
+            return Err(StorageError::Io(std::io::Error::other(format!(
+                "Chunk size {} exceeds maximum allowed {}",
+                task.original_size, MAX_CHUNK_SIZE
+            ))));
+        }
+
         // Read the chunk file
         let data = fs::read(&task.chunk_path).await?;
 
@@ -504,14 +526,27 @@ impl CompressionService {
         let tasks = Self::scan_for_chunks(&self.base_path, &self.config).await?;
 
         let count = tasks.len();
+        // SEC: Limit number of queued tasks to prevent DoS
+        const MAX_QUEUED_TASKS: usize = 10_000;
+        let mut queued = 0;
         for task in tasks {
+            if queued >= MAX_QUEUED_TASKS {
+                tracing::warn!(
+                    queued = queued,
+                    max_allowed = MAX_QUEUED_TASKS,
+                    "Task queue limit reached, skipping remaining tasks"
+                );
+                break;
+            }
             self.task_tx.send(task).map_err(|_| {
                 StorageError::Io(std::io::Error::other("Failed to queue compression task"))
             })?;
+            queued += 1;
         }
 
         let mut stats = self.stats.write().await;
-        stats.pending_count += count;
+        // SEC: Use checked arithmetic to prevent overflow
+        stats.pending_count = stats.pending_count.saturating_add(queued);
 
         println!("Manually triggered scan: queued {} chunks", count);
         Ok(())

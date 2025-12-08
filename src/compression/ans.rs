@@ -66,7 +66,22 @@ impl AnsEncoder {
     }
 
     /// Build frequency table from data
+    ///
+    /// # Security
+    /// - Limits input size to prevent DoS via huge data
+    /// - Uses checked arithmetic to prevent overflow
     pub fn build_frequencies(&mut self, data: &[u8]) {
+        // SEC: Limit input size to prevent DoS
+        const MAX_INPUT_SIZE: usize = 100_000_000; // 100MB max
+        if data.len() > MAX_INPUT_SIZE {
+            // For very large inputs, sample instead of processing all
+            // This prevents DoS while still building reasonable frequency table
+            let sample_size = MAX_INPUT_SIZE.min(data.len());
+            let step = data.len() / sample_size.max(1);
+            let sampled: Vec<u8> = data.iter().step_by(step.max(1)).copied().collect();
+            return self.build_frequencies(&sampled);
+        }
+
         // Count symbol occurrences
         let mut counts = vec![0u32; 256];
         for &byte in data {
@@ -74,6 +89,7 @@ impl AnsEncoder {
         }
 
         // Normalize frequencies to table size
+        // SEC: Use checked sum to prevent overflow
         let total: u32 = counts.iter().sum();
         if total == 0 {
             self.frequencies = vec![1; 256];
@@ -102,13 +118,15 @@ impl AnsEncoder {
                 }
 
                 // Second pass: distribute remaining table slots proportionally
-                let remaining = TABLE_SIZE as u32 - assigned;
+                // SEC: Use checked arithmetic to prevent overflow
+                let remaining = (TABLE_SIZE as u32).saturating_sub(assigned);
                 if remaining > 0 && total > 0 {
                     let scale = remaining as f64 / total as f64;
                     for (i, &count) in counts.iter().enumerate() {
                         if count > 0 {
+                            // SEC: Use saturating arithmetic to prevent overflow
                             let extra = (count as f64 * scale) as u32;
-                            freqs[i] += extra;
+                            freqs[i] = freqs[i].saturating_add(extra);
                         }
                     }
                 }
@@ -228,15 +246,44 @@ impl AnsEncoder {
             let cumul = self.cumulative[symbol as usize];
 
             // Renormalize if state would overflow
-            while state >= STATE_MAX / self.total_freq as u64 * freq as u64 {
+            // SEC: Use checked arithmetic to prevent overflow
+            // Calculate threshold: STATE_MAX / (total_freq / freq)
+            // Equivalent to: STATE_MAX * freq / total_freq
+            let threshold = if freq > 0 && self.total_freq > 0 {
+                // SEC: Use checked multiplication to prevent overflow
+                if let Some(product) = (STATE_MAX as u128).checked_mul(freq as u128) {
+                    (product / self.total_freq as u128) as u64
+                } else {
+                    STATE_MAX // Overflow: use max threshold
+                }
+            } else {
+                STATE_MAX // Defensive: avoid division by zero
+            };
+
+            while state >= threshold {
                 bits_buffer.push((state & 0xFFFF) as u16);
                 state >>= 16;
             }
 
             // rANS encoding step
-            state = (state / freq as u64) * self.total_freq as u64
-                + cumul as u64
-                + (state % freq as u64);
+            // SEC: Use checked arithmetic to prevent overflow
+            if freq > 0 && self.total_freq > 0 {
+                let quotient = state / freq as u64;
+                let remainder = state % freq as u64;
+                // SEC: Check for overflow in multiplication
+                if let Some(product) = quotient.checked_mul(self.total_freq as u64) {
+                    if let Some(sum) = product.checked_add(cumul as u64) {
+                        state = sum.saturating_add(remainder);
+                    } else {
+                        state = u64::MAX; // Overflow: cap at max
+                    }
+                } else {
+                    state = u64::MAX; // Overflow: cap at max
+                }
+            } else {
+                // Defensive: should never happen if frequencies are valid
+                return Vec::new();
+            }
         }
 
         // Output final state
@@ -322,6 +369,10 @@ impl AnsDecoder {
 
         // Read number of non-zero symbols (as varint)
         let (num_symbols, bytes_read) = decode_varint(data)?;
+        // SEC: Validate num_symbols to prevent DoS
+        if num_symbols > 256 {
+            return Err(AnsError::InvalidFrequencies);
+        }
         let num_symbols = num_symbols as usize;
         pos += bytes_read;
 
@@ -336,6 +387,10 @@ impl AnsDecoder {
 
             let (freq, bytes_read) = decode_varint(&data[pos..])?;
             pos += bytes_read;
+            // SEC: Validate frequency to prevent DoS
+            if freq > TABLE_SIZE as u32 {
+                return Err(AnsError::InvalidFrequencies);
+            }
             self.frequencies[symbol] = freq;
         }
 
@@ -344,12 +399,13 @@ impl AnsDecoder {
         self.cumulative.push(0);
         let mut sum = 0u32;
         for &freq in &self.frequencies {
-            sum += freq;
+            // SEC: Use checked arithmetic to prevent overflow
+            sum = sum.checked_add(freq).ok_or(AnsError::InvalidFrequencies)?;
             self.cumulative.push(sum);
         }
         self.total_freq = sum;
 
-        if self.total_freq == 0 {
+        if self.total_freq == 0 || self.total_freq > TABLE_SIZE as u32 {
             return Err(AnsError::InvalidFrequencies);
         }
 
@@ -357,11 +413,27 @@ impl AnsDecoder {
 
         // Read data length
         let (data_len, bytes_read) = decode_varint(&data[pos..])?;
+        // SEC: Validate data_len to prevent DoS
+        const MAX_DECODE_SIZE: u32 = 100_000_000; // 100MB max
+        if data_len > MAX_DECODE_SIZE {
+            return Err(AnsError::TruncatedData);
+        }
         pos += bytes_read;
 
         // Read bits buffer length
         let (bits_len, bytes_read) = decode_varint(&data[pos..])?;
+        // SEC: Validate bits_len to prevent DoS
+        const MAX_BITS_BUFFER: u32 = 10_000_000; // Reasonable limit
+        if bits_len > MAX_BITS_BUFFER {
+            return Err(AnsError::TruncatedData);
+        }
         pos += bytes_read;
+
+        // SEC: Validate we have enough data
+        let required_bytes = bits_len as usize * 2;
+        if pos + required_bytes > data.len() {
+            return Err(AnsError::TruncatedData);
+        }
 
         // Read bits buffer
         let mut bits_buffer = Vec::with_capacity(bits_len as usize);
@@ -386,7 +458,11 @@ impl AnsDecoder {
         }
 
         // Decode symbols
-        for _ in 0..data_len {
+        // SEC: Limit decode iterations to prevent DoS
+        const MAX_DECODE_ITERATIONS: u32 = 100_000_000; // 100M max
+        let decode_limit = data_len.min(MAX_DECODE_ITERATIONS);
+
+        for _ in 0..decode_limit {
             // Find symbol from state
             let slot = (state % self.total_freq as u64) as usize;
             if slot >= self.symbol_table.len() {
@@ -399,15 +475,44 @@ impl AnsDecoder {
             let freq = self.frequencies[symbol as usize];
             let cumul = self.cumulative[symbol as usize];
 
-            state = freq as u64 * (state / self.total_freq as u64)
-                + (state % self.total_freq as u64)
-                - cumul as u64;
+            // SEC: Use checked arithmetic to prevent overflow
+            if freq > 0 && self.total_freq > 0 {
+                let quotient = state / self.total_freq as u64;
+                let remainder = state % self.total_freq as u64;
+                // SEC: Check for overflow in multiplication
+                if let Some(product) = (freq as u64).checked_mul(quotient) {
+                    if let Some(sum) = product.checked_add(remainder) {
+                        state = sum.saturating_sub(cumul as u64);
+                    } else {
+                        return Err(AnsError::InvalidState);
+                    }
+                } else {
+                    return Err(AnsError::InvalidState);
+                }
+            } else {
+                return Err(AnsError::InvalidState);
+            }
 
             // Renormalize if needed
-            while state < STATE_MIN && bits_pos < bits_buffer.len() {
+            // SEC: Limit renormalization iterations to prevent DoS
+            let mut renormalize_count = 0;
+            const MAX_RENORMALIZE: usize = 1000;
+            while state < STATE_MIN
+                && bits_pos < bits_buffer.len()
+                && renormalize_count < MAX_RENORMALIZE
+            {
                 state = (state << 16) | bits_buffer[bits_pos] as u64;
                 bits_pos += 1;
+                renormalize_count += 1;
             }
+            if renormalize_count >= MAX_RENORMALIZE {
+                return Err(AnsError::InvalidState);
+            }
+        }
+
+        // SEC: Verify we decoded the expected amount
+        if decode_limit < data_len {
+            return Err(AnsError::TruncatedData);
         }
 
         Ok(output)

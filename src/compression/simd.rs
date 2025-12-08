@@ -38,11 +38,22 @@
 /// # Returns
 ///
 /// Vector of u64 XOR deltas (first value is original bits, rest are XORs)
+///
+/// # Security
+/// - Limits input size to prevent DoS via huge allocations
 #[inline]
 pub fn xor_encode_batch(values: &[f64]) -> Vec<u64> {
     if values.is_empty() {
         return Vec::new();
     }
+
+    // SEC: Limit input size to prevent DoS
+    const MAX_VALUES: usize = 10_000_000; // 10M values max
+    let values = if values.len() > MAX_VALUES {
+        &values[..MAX_VALUES]
+    } else {
+        values
+    };
 
     let mut result = Vec::with_capacity(values.len());
 
