@@ -64,7 +64,7 @@ use kuba_tsdb::{
     engine::{DatabaseConfig, TimeSeriesDBBuilder},
     query::subscription::{SubscriptionConfig, SubscriptionManager},
     redis::{RedisConfig as RedisPoolConfig, RedisTimeIndex},
-    storage::LocalDiskEngine,
+    storage::{BackgroundSealingConfig, LocalDiskEngine},
 };
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
@@ -115,6 +115,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/cache/stats", get(handlers::get_cache_stats))
         // Integrity scan
         .route("/api/v1/integrity/scan", post(handlers::integrity_scan))
+        // Index rebuild (for recovering from corruption)
+        .route("/api/v1/index/rebuild", post(handlers::rebuild_index))
         // Compression metrics
         .route(
             "/api/v1/compression/stats",
@@ -283,6 +285,7 @@ async fn init_database(
             .with_storage_arc(storage_dyn)
             .with_index(redis_index)
             .with_compressor(compressor)
+            .with_background_sealing_config(BackgroundSealingConfig::default())
             .build()
             .await?
     } else {
@@ -311,6 +314,7 @@ async fn init_database(
             .with_storage_arc(storage_dyn)
             .with_index(in_memory_index)
             .with_compressor(compressor)
+            .with_background_sealing_config(BackgroundSealingConfig::default())
             .build()
             .await?
     };
@@ -667,6 +671,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database
     let (db, storage) = init_database(&config, &app_config).await?;
     info!("Database initialized successfully");
+
+    // Start background sealing service for automatic chunk persistence
+    // This ensures chunks are flushed to disk even if they don't reach the point threshold
+    // Default: seal after 500 points or 30 seconds, whichever comes first
+    db.start_background_sealing().await;
+    info!("Background sealing service started (500 points or 30s threshold)");
 
     // Create subscription manager with configured settings
     let subscription_config = SubscriptionConfig {

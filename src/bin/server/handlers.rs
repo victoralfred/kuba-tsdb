@@ -1017,3 +1017,131 @@ pub async fn integrity_scan(
         }),
     )
 }
+
+/// Rebuild the time index from on-disk chunks
+///
+/// This endpoint scans the storage directory and rebuilds the time index
+/// from the actual chunk files. Useful for recovering from index corruption
+/// or after a crash where the index was not properly updated.
+///
+/// # Request Body
+///
+/// ```json
+/// {
+///     "series_ids": [123, 456],  // Optional: specific series to rebuild
+///     "clear_existing": false     // Optional: clear index before rebuild
+/// }
+/// ```
+///
+/// # Response
+///
+/// Returns the number of series and chunks indexed, plus timing info.
+pub async fn rebuild_index(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<IndexRebuildRequest>,
+) -> impl IntoResponse {
+    tracing::info!(
+        series_count = req.series_ids.len(),
+        clear_existing = req.clear_existing,
+        "Starting index rebuild"
+    );
+
+    let start = std::time::Instant::now();
+
+    // Determine which series to rebuild
+    let series_ids: Vec<SeriesId> = if req.series_ids.is_empty() {
+        // Discover all series from storage by scanning directories
+        match discover_series_from_storage(&state.storage).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(IndexRebuildResponse {
+                        success: false,
+                        series_rebuilt: 0,
+                        chunks_indexed: 0,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!("Failed to discover series: {}", e)),
+                    }),
+                );
+            },
+        }
+    } else {
+        req.series_ids
+    };
+
+    tracing::info!(
+        series_count = series_ids.len(),
+        "Rebuilding index for series"
+    );
+
+    // Rebuild the index
+    match state.db.rebuild_index_for_series(&series_ids).await {
+        Ok(chunks_indexed) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            tracing::info!(
+                series_rebuilt = series_ids.len(),
+                chunks_indexed = chunks_indexed,
+                duration_ms = duration_ms,
+                "Index rebuild completed successfully"
+            );
+            (
+                StatusCode::OK,
+                Json(IndexRebuildResponse {
+                    success: true,
+                    series_rebuilt: series_ids.len(),
+                    chunks_indexed,
+                    duration_ms,
+                    error: None,
+                }),
+            )
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "Index rebuild failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(IndexRebuildResponse {
+                    success: false,
+                    series_rebuilt: 0,
+                    chunks_indexed: 0,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(e.to_string()),
+                }),
+            )
+        },
+    }
+}
+
+/// Discover series IDs from storage directory structure
+async fn discover_series_from_storage(
+    storage: &Arc<LocalDiskEngine>,
+) -> Result<Vec<SeriesId>, String> {
+    let data_dir = storage.base_path();
+
+    let mut series_ids = Vec::new();
+
+    // Read the data directory
+    let entries =
+        std::fs::read_dir(data_dir).map_err(|e| format!("Failed to read data directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Extract series ID from directory name (format: "series_<id>")
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Some(id_str) = name.strip_prefix("series_") {
+                    if let Ok(id) = id_str.parse::<SeriesId>() {
+                        series_ids.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::debug!(
+        series_found = series_ids.len(),
+        "Discovered series from storage"
+    );
+
+    Ok(series_ids)
+}

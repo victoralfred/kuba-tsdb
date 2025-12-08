@@ -35,7 +35,7 @@
 //!
 //! // Calculate 3-point moving average
 //! let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-//! let smoothed = moving_avg(&values, 3);
+//! let smoothed = moving_avg(&values, 3).unwrap();
 //! assert_eq!(smoothed.len(), 5);
 //! ```
 
@@ -198,7 +198,7 @@ where
 /// use kuba_tsdb::aggregation::moving_avg;
 ///
 /// let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-/// let ma = moving_avg(&values, 3);
+/// let ma = moving_avg(&values, 3).unwrap();
 /// assert_eq!(ma.len(), 5);
 /// assert_eq!(ma[0], 1.0);  // Partial window: avg of [1.0]
 /// assert_eq!(ma[1], 1.5);  // Partial window: avg of [1.0, 2.0]

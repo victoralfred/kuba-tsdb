@@ -20,7 +20,7 @@
 //! let mut writer = BitWriter::new();
 //! writer.write_bit(true);
 //! writer.write_bits(0b1010, 4);
-//! let buffer = writer.finish();
+//! let buffer = writer.finish().unwrap();
 //!
 //! // Read them back
 //! let mut reader = BitReader::new(&buffer);

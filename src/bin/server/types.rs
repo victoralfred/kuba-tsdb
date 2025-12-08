@@ -530,3 +530,34 @@ pub struct CorruptedChunkInfo {
     /// Suggested recovery action
     pub recovery_suggestion: String,
 }
+
+// =============================================================================
+// Index Rebuild Types
+// =============================================================================
+
+/// Request to rebuild the time index from disk storage
+#[derive(Debug, Deserialize)]
+pub struct IndexRebuildRequest {
+    /// Optional list of series IDs to rebuild. If empty, rebuilds all.
+    #[serde(default)]
+    pub series_ids: Vec<u128>,
+    /// If true, clear the existing index before rebuilding
+    #[serde(default)]
+    pub clear_existing: bool,
+}
+
+/// Response from index rebuild operation
+#[derive(Debug, Serialize)]
+pub struct IndexRebuildResponse {
+    /// Whether the rebuild succeeded
+    pub success: bool,
+    /// Number of series processed
+    pub series_rebuilt: usize,
+    /// Number of chunks indexed
+    pub chunks_indexed: usize,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
