@@ -328,7 +328,17 @@ impl RedisTimeIndex {
             .fetch_add(cache_misses.len() as u64, Ordering::Relaxed);
 
         // Batch fetch from Redis using pipelines
+        // SEC: Limit batch size to prevent DoS and memory exhaustion
         const BATCH_SIZE: usize = 100;
+        const MAX_TOTAL_SERIES: usize = 100_000; // Limit total series to prevent DoS
+
+        if cache_misses.len() > MAX_TOTAL_SERIES {
+            return Err(IndexError::ConnectionError(format!(
+                "Too many series to fetch: {} (maximum: {})",
+                cache_misses.len(),
+                MAX_TOTAL_SERIES
+            )));
+        }
 
         for batch in cache_misses.chunks(BATCH_SIZE) {
             let batch_ids: Vec<SeriesId> = batch.to_vec();
@@ -640,8 +650,17 @@ impl TimeIndex for RedisTimeIndex {
             .collect();
 
         // Step 3: Fetch all metadata in batches using pipelines (avoids N+1 problem)
-        // Batch size of 500 prevents overwhelming Redis with very large queries
+        // SEC: Limit batch size to prevent DoS and memory exhaustion
         const PIPELINE_BATCH_SIZE: usize = 500;
+        const MAX_CHUNKS_PER_QUERY: usize = 100_000; // Limit total chunks to prevent DoS
+
+        if chunk_ids.len() > MAX_CHUNKS_PER_QUERY {
+            return Err(IndexError::ConnectionError(format!(
+                "Too many chunks in query: {} (maximum: {})",
+                chunk_ids.len(),
+                MAX_CHUNKS_PER_QUERY
+            )));
+        }
         let mut all_metadata: Vec<Option<String>> = Vec::with_capacity(chunk_ids.len());
 
         for batch_keys in chunk_keys.chunks(PIPELINE_BATCH_SIZE) {

@@ -15,6 +15,7 @@
 use crate::types::{ChunkId, SeriesId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::warn;
 
 /// Magic number identifying Kuba chunk format: "Kuba" in hex
 pub const CHUNK_MAGIC: u32 = 0x474F5249; // "GORI" (first 4 bytes of "Kuba")
@@ -708,13 +709,22 @@ impl Chunk {
                 ));
             }
 
-            // CRITICAL: Hard limit to prevent unbounded memory growth
+            // SEC: Hard limit to prevent unbounded memory growth and DoS
             const MAX_CHUNK_POINTS: usize = 10_000_000; // 10 million points
             if points.len() >= MAX_CHUNK_POINTS {
                 return Err(format!(
-                    "Chunk has reached maximum size of {} points. \
+                    "Chunk has reached maximum size of {} points (DoS protection). \
                      Call should_seal() and seal before appending more data.",
                     MAX_CHUNK_POINTS
+                ));
+            }
+
+            // SEC: Additional check - prevent capacity overflow
+            if self.capacity > 0 && points.len() >= self.capacity {
+                return Err(format!(
+                    "Chunk has reached configured capacity of {} points. \
+                     Call should_seal() and seal before appending more data.",
+                    self.capacity
                 ));
             }
 
@@ -790,20 +800,33 @@ impl Chunk {
             return true;
         }
 
-        // Check duration threshold (use checked_sub to prevent overflow)
+        // SEC: Check duration threshold with overflow protection
+        // Use checked_sub to prevent DoS via extreme timestamp values
         match self
             .metadata
             .end_timestamp
             .checked_sub(self.metadata.start_timestamp)
         {
             Some(duration) => {
+                // SEC: Validate duration is non-negative and reasonable
+                if duration < 0 {
+                    warn!(
+                        "Invalid time range: start={} > end={}, forcing seal",
+                        self.metadata.start_timestamp, self.metadata.end_timestamp
+                    );
+                    return true;
+                }
                 if duration >= config.max_duration_ms {
                     return true;
                 }
             },
             None => {
                 // Overflow means extreme time range spanning i64 limits
-                // Definitely should seal in this case
+                // SEC: Log warning and force seal to prevent DoS
+                warn!(
+                    "Timestamp overflow detected: start={}, end={}, forcing seal",
+                    self.metadata.start_timestamp, self.metadata.end_timestamp
+                );
                 return true;
             },
         }
@@ -960,6 +983,15 @@ impl Chunk {
         .await
         .map_err(|e| format!("Compression task panicked: {}", e))?
         .map_err(|e| format!("Compression failed: {}", e))?;
+
+        // SEC: Validate compressed size to prevent DoS
+        const MAX_COMPRESSED_SIZE: u32 = 64 * 1024 * 1024; // 64MB max
+        if compressed.compressed_size > MAX_COMPRESSED_SIZE as usize {
+            return Err(format!(
+                "Compressed chunk size {} exceeds maximum allowed {} (DoS protection)",
+                compressed.compressed_size, MAX_COMPRESSED_SIZE
+            ));
+        }
 
         // Build chunk header
         let mut header = ChunkHeader::new(self.metadata.series_id);
