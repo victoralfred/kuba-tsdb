@@ -363,13 +363,27 @@ impl NeuralPredictor {
     }
 
     /// Simple xorshift PRNG for exploration
+    ///
+    /// Uses atomic read-modify-write to ensure thread safety.
     fn next_random(&self) -> u64 {
-        let mut state = self.rng_state.load(Ordering::Relaxed);
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        self.rng_state.store(state, Ordering::Relaxed);
-        state
+        // Use fetch_update for atomic read-modify-write
+        // fetch_update returns the OLD value, so we need to compute the new value from it
+        let old_state = self
+            .rng_state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |mut state| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                Some(state)
+            })
+            .unwrap_or_else(|x| x);
+
+        // Apply the same transformation to get the new state that was stored
+        let mut new_state = old_state;
+        new_state ^= new_state << 13;
+        new_state ^= new_state >> 7;
+        new_state ^= new_state << 17;
+        new_state
     }
 
     /// Record feedback from a compression operation
@@ -391,20 +405,26 @@ impl NeuralPredictor {
 
         // Update sample count
         self.sample_count.fetch_add(1, Ordering::Relaxed);
-        self.codec_counts[codec_idx].fetch_add(1, Ordering::Relaxed);
+
+        // Increment count first and get the new value (fixes race condition)
+        let count = self.codec_counts[codec_idx].fetch_add(1, Ordering::Relaxed) + 1;
 
         // Update running average ratio for this codec
         {
             let mut avg_ratios = self.avg_ratios.write();
-            let count = self.codec_counts[codec_idx].load(Ordering::Relaxed) as f64;
-            // Incremental average update
-            avg_ratios[codec_idx] += (ratio - avg_ratios[codec_idx]) / count;
+            // Use the actual count (now incremented) for accurate averaging
+            avg_ratios[codec_idx] += (ratio - avg_ratios[codec_idx]) / count as f64;
         }
 
         // Compute reward: how much better than average?
         let avg_ratios = self.avg_ratios.read();
-        let global_avg: f64 = avg_ratios.iter().sum::<f64>() / OUTPUT_SIZE as f64;
-        let reward = if global_avg > 0.0 {
+        // Prevent division by zero
+        let global_avg: f64 = if OUTPUT_SIZE > 0 {
+            avg_ratios.iter().sum::<f64>() / OUTPUT_SIZE as f64
+        } else {
+            1.0 // Fallback
+        };
+        let reward = if global_avg > f64::EPSILON {
             (ratio - global_avg) / global_avg
         } else {
             0.0

@@ -10,7 +10,7 @@
 //! - **Exhaustive**: Try all codecs and pick smallest output
 //! - **Neural**: Online adaptive learning from compression feedback
 
-use super::codecs::{AlpCodec, ChimpCodec, Codec, CodecId, DeltaLz4Codec, KubaCodec};
+use super::codecs::{AlpCodec, ChimpCodec, Codec, CodecError, CodecId, DeltaLz4Codec, KubaCodec};
 use super::neural_predictor::NeuralPredictor;
 use super::profile::{ChunkProfile, Monotonicity};
 use crate::types::DataPoint;
@@ -189,7 +189,14 @@ impl CodecSelector {
         profile: &ChunkProfile,
     ) -> (CodecId, Vec<u8>) {
         let primary_id = self.select_heuristic(profile);
-        let primary_codec = self.get_codec(primary_id);
+        let primary_codec = match self.get_codec(primary_id) {
+            Ok(codec) => codec,
+            Err(_) => {
+                // Codec not found, fall back to raw
+                let raw = Self::encode_raw(points);
+                return (CodecId::Raw, raw);
+            },
+        };
 
         let primary_result = primary_codec.compress(points);
 
@@ -214,7 +221,19 @@ impl CodecSelector {
         }
 
         // Also try fallback codec
-        let fallback = self.get_codec(fallback_id);
+        let fallback = match self.get_codec(fallback_id) {
+            Ok(codec) => codec,
+            Err(_) => {
+                // Fallback codec not found, use primary result or raw
+                return match primary_result {
+                    Ok(data) => (primary_id, data),
+                    Err(_) => {
+                        let raw = Self::encode_raw(points);
+                        (CodecId::Raw, raw)
+                    },
+                };
+            },
+        };
         let fallback_result = fallback.compress(points);
 
         match (primary_result, fallback_result) {
@@ -250,7 +269,13 @@ impl CodecSelector {
     ) -> (CodecId, Vec<u8>) {
         // Ask the neural predictor for a codec
         let codec_id = self.neural_predictor.select(profile);
-        let codec = self.get_codec(codec_id);
+        let codec = match self.get_codec(codec_id) {
+            Ok(codec) => codec,
+            Err(_) => {
+                // Codec not found, fall back to verified selection
+                return self.select_verified(points, profile);
+            },
+        };
 
         // Try to compress
         match codec.compress(points) {
@@ -287,12 +312,16 @@ impl CodecSelector {
     }
 
     /// Get a codec by its ID
-    pub fn get_codec(&self, id: CodecId) -> &dyn Codec {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CodecError::InvalidFormat` if the codec ID is not found.
+    pub fn get_codec(&self, id: CodecId) -> Result<&dyn Codec, CodecError> {
         self.codecs
             .iter()
             .find(|c| c.id() == id)
             .map(|c| c.as_ref())
-            .expect("Codec not found")
+            .ok_or_else(|| CodecError::InvalidFormat(format!("Codec not found: {:?}", id)))
     }
 
     /// Encode data as raw (uncompressed) bytes
@@ -429,7 +458,7 @@ mod tests {
         assert!(codec_id != CodecId::Raw);
 
         // Verify the data can be decompressed
-        let codec = selector.get_codec(codec_id);
+        let codec = selector.get_codec(codec_id).unwrap();
         let decompressed = codec.decompress(&data, points.len()).unwrap();
         assert_eq!(decompressed.len(), points.len());
     }
@@ -444,7 +473,7 @@ mod tests {
         assert!(!data.is_empty());
 
         // Verify the data can be decompressed
-        let codec = selector.get_codec(codec_id);
+        let codec = selector.get_codec(codec_id).unwrap();
         let decompressed = codec.decompress(&data, points.len()).unwrap();
         assert_eq!(decompressed.len(), points.len());
     }
@@ -502,10 +531,10 @@ mod tests {
     fn test_get_codec() {
         let selector = CodecSelector::new();
 
-        let kuba = selector.get_codec(CodecId::Kuba);
+        let kuba = selector.get_codec(CodecId::Kuba).unwrap();
         assert_eq!(kuba.id(), CodecId::Kuba);
 
-        let chimp = selector.get_codec(CodecId::Chimp);
+        let chimp = selector.get_codec(CodecId::Chimp).unwrap();
         assert_eq!(chimp.id(), CodecId::Chimp);
     }
 
@@ -532,7 +561,7 @@ mod tests {
         assert!(!data.is_empty());
 
         // Verify the data can be decompressed
-        let codec = selector.get_codec(codec_id);
+        let codec = selector.get_codec(codec_id).unwrap();
         let decompressed = codec.decompress(&data, points.len()).unwrap();
         assert_eq!(decompressed.len(), points.len());
     }

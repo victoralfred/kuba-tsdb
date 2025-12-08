@@ -159,11 +159,15 @@ impl DeltaLz4Codec {
 
         // Read first timestamp
         if pos + 8 > data.len() {
-            return Err(CodecError::DecompressionFailed(
-                "Buffer too short for first timestamp".to_string(),
-            ));
+            return Err(CodecError::BufferTooSmall {
+                needed: pos + 8,
+                have: data.len(),
+            });
         }
-        let first_ts = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        let first_ts =
+            i64::from_le_bytes(data[pos..pos + 8].try_into().map_err(|_| {
+                CodecError::DecompressionFailed("Invalid timestamp bytes".to_string())
+            })?);
         pos += 8;
 
         let mut timestamps = vec![first_ts];
@@ -180,11 +184,16 @@ impl DeltaLz4Codec {
 
         // Read first value
         if pos + 8 > data.len() {
-            return Err(CodecError::DecompressionFailed(
-                "Buffer too short for first value".to_string(),
-            ));
+            return Err(CodecError::BufferTooSmall {
+                needed: pos + 8,
+                have: data.len(),
+            });
         }
-        let first_val_bits = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        let first_val_bits = u64::from_le_bytes(
+            data[pos..pos + 8]
+                .try_into()
+                .map_err(|_| CodecError::DecompressionFailed("Invalid value bytes".to_string()))?,
+        );
         pos += 8;
 
         let mut values = vec![f64::from_bits(first_val_bits)];
@@ -193,11 +202,14 @@ impl DeltaLz4Codec {
         let mut prev_val = first_val_bits;
         for _ in 1..count {
             if pos + 8 > data.len() {
-                return Err(CodecError::DecompressionFailed(
-                    "Buffer too short for value".to_string(),
-                ));
+                return Err(CodecError::BufferTooSmall {
+                    needed: pos + 8,
+                    have: data.len(),
+                });
             }
-            let xor = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            let xor = u64::from_le_bytes(data[pos..pos + 8].try_into().map_err(|_| {
+                CodecError::DecompressionFailed("Invalid XOR value bytes".to_string())
+            })?);
             let val_bits = prev_val ^ xor;
             values.push(f64::from_bits(val_bits));
             prev_val = val_bits;
