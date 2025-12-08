@@ -72,7 +72,7 @@
 //! assert!(!result.points.is_empty());
 //! ```
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -458,11 +458,37 @@ impl AggregateState {
                     return None;
                 }
 
-                let mut sorted: Vec<f64> = values.clone();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                // PERF: For large datasets, use partial sort (nth_element) instead of full sort
+                // This is O(n) instead of O(n log n) for single quantile queries
+                // SEC: Validate percentile range and prevent index overflow
+                let percentile_f64 = percentile as f64;
+                if !(0.0..=100.0).contains(&percentile_f64) {
+                    return None;
+                }
 
-                let idx = (percentile as f64 / 100.0 * (sorted.len() - 1) as f64) as usize;
-                sorted.get(idx).copied()?
+                if values.len() > 10_000 {
+                    // Use partial sort for large datasets
+                    let mut sorted = values.clone();
+                    // SEC: Use checked arithmetic to prevent index overflow
+                    let len_minus_one = sorted.len().saturating_sub(1);
+                    let idx = ((percentile_f64 / 100.0) * len_minus_one as f64) as usize;
+                    let idx = idx.min(len_minus_one);
+
+                    // Only sort the elements around the target index
+                    sorted.select_nth_unstable_by(idx, |a, b| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    sorted.get(idx).copied()?
+                } else {
+                    // For small datasets, full sort is fine
+                    let mut sorted: Vec<f64> = values.clone();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+                    let len_minus_one = sorted.len().saturating_sub(1);
+                    let idx = ((percentile_f64 / 100.0) * len_minus_one as f64) as usize;
+                    let idx = idx.min(len_minus_one);
+                    sorted.get(idx).copied()?
+                }
             },
         })
     }
@@ -755,6 +781,11 @@ pub trait DataSource: Send + Sync {
 /// Performs two-phase aggregation:
 /// 1. Spatial: Combines data from multiple series matching tag criteria
 /// 2. Temporal: Aggregates data into time windows
+///
+/// # Security
+/// - Enforces limits on series count and points per series
+/// - Validates time ranges and window sizes
+/// - Prevents resource exhaustion attacks
 pub struct SpaceTimeAggregator<S: DataSource> {
     /// Data source for fetching series data
     source: S,
@@ -763,9 +794,11 @@ pub struct SpaceTimeAggregator<S: DataSource> {
     stats: AggregatorStats,
 
     /// Maximum series to process per query
+    /// SEC: Prevents DoS via excessive series queries
     max_series_per_query: usize,
 
     /// Maximum points to process per series
+    /// SEC: Prevents memory exhaustion via large series
     max_points_per_series: usize,
 }
 
@@ -796,12 +829,47 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
     ///
     /// This is the main entry point when series have already been resolved
     /// by the TagResolver.
+    ///
+    /// # Security
+    /// - Validates time range bounds (SEC-009)
+    /// - Enforces series and point limits to prevent resource exhaustion
+    /// - Validates window sizes to prevent excessive memory allocation
     pub fn aggregate(
         &self,
         series_ids: &[SeriesId],
         query: &AggregateQuery,
     ) -> Result<UnifiedTimeSeries> {
         self.stats.queries.fetch_add(1, Ordering::Relaxed);
+
+        // SEC-009: Validate time range
+        if !is_valid_timestamp(query.time_range.start) {
+            return Err(Error::Configuration(format!(
+                "Invalid start timestamp: {} (must be between {} and {})",
+                query.time_range.start, MIN_VALID_TIMESTAMP_MS, MAX_VALID_TIMESTAMP_MS
+            )));
+        }
+        if !is_valid_timestamp(query.time_range.end) {
+            return Err(Error::Configuration(format!(
+                "Invalid end timestamp: {} (must be between {} and {})",
+                query.time_range.end, MIN_VALID_TIMESTAMP_MS, MAX_VALID_TIMESTAMP_MS
+            )));
+        }
+        if query.time_range.start >= query.time_range.end {
+            return Err(Error::Configuration(format!(
+                "Invalid time range: start ({}) must be less than end ({})",
+                query.time_range.start, query.time_range.end
+            )));
+        }
+
+        // Validate time range duration to prevent excessive queries
+        let duration_ms = query.time_range.end - query.time_range.start;
+        const MAX_TIME_RANGE_MS: i64 = 365 * 24 * 60 * 60 * 1000; // 1 year
+        if duration_ms > MAX_TIME_RANGE_MS {
+            return Err(Error::Configuration(format!(
+                "Time range too large: {}ms (maximum: {}ms)",
+                duration_ms, MAX_TIME_RANGE_MS
+            )));
+        }
 
         if series_ids.is_empty() {
             self.stats.empty_results.fetch_add(1, Ordering::Relaxed);
@@ -815,6 +883,47 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
                 series_ids.len(),
                 self.max_series_per_query
             )));
+        }
+
+        // Validate window size if specified
+        if let Some(window) = query.window {
+            if window.is_zero() {
+                return Err(Error::Configuration(
+                    "Window size cannot be zero".to_string(),
+                ));
+            }
+            // Prevent extremely small windows that would create too many buckets
+            const MIN_WINDOW_MS: u128 = 1; // 1ms minimum
+            if window.as_millis() < MIN_WINDOW_MS {
+                return Err(Error::Configuration(format!(
+                    "Window size too small: {}ms (minimum: {}ms)",
+                    window.as_millis(),
+                    MIN_WINDOW_MS
+                )));
+            }
+            // Prevent windows larger than the time range
+            // SEC: Use checked conversion to prevent overflow
+            let window_ms_i64 = window.as_millis().try_into().unwrap_or(i64::MAX);
+            if window_ms_i64 > duration_ms {
+                return Err(Error::Configuration(format!(
+                    "Window size ({:?}) cannot be larger than time range ({:?}ms)",
+                    window, duration_ms
+                )));
+            }
+
+            // Prevent too many windows (memory exhaustion protection)
+            const MAX_WINDOWS: usize = 1_000_000; // 1M windows max
+            let estimated_windows = if window_ms_i64 > 0 {
+                (duration_ms / window_ms_i64) as usize
+            } else {
+                MAX_WINDOWS + 1 // Will fail validation
+            };
+            if estimated_windows > MAX_WINDOWS {
+                return Err(Error::Configuration(format!(
+                    "Too many windows: {} (maximum: {}). Window size too small relative to time range.",
+                    estimated_windows, MAX_WINDOWS
+                )));
+            }
         }
 
         // Fetch data from all series
@@ -845,29 +954,69 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
     }
 
     /// Build SpaceTimeMultiSeriesData from fetched data
+    ///
+    /// # Performance
+    /// - Pre-allocates capacity for timestamp vector based on estimated size
+    /// - Uses HashSet for deduplication before sorting (faster for sparse data)
+    /// - Validates point limits to prevent memory exhaustion
     fn build_multi_series_data(
         &self,
         data: HashMap<SeriesId, Vec<DataPoint>>,
     ) -> Result<SpaceTimeMultiSeriesData> {
-        // Collect all timestamps across all series
-        let mut all_timestamps: Vec<i64> = data
-            .values()
-            .flat_map(|points| points.iter().map(|p| p.timestamp))
-            .collect();
-
-        all_timestamps.sort_unstable();
-        all_timestamps.dedup();
-
         let total_points: usize = data.values().map(|p| p.len()).sum();
+
+        // Check point limit per series to prevent memory exhaustion
+        for (series_id, points) in &data {
+            if points.len() > self.max_points_per_series {
+                return Err(Error::Configuration(format!(
+                    "Series {} has too many points: {} > {}",
+                    series_id,
+                    points.len(),
+                    self.max_points_per_series
+                )));
+            }
+        }
+
         self.stats
             .points_processed
             .fetch_add(total_points as u64, Ordering::Relaxed);
+
+        // Estimate unique timestamps (assume 50% overlap for efficiency)
+        // SEC: Use checked arithmetic to prevent overflow
+        let estimated_unique = (total_points as f64 * 0.5).ceil().min(usize::MAX as f64) as usize;
+
+        // Collect all timestamps across all series
+        // Use HashSet for deduplication if we have many series (more efficient)
+        let all_timestamps: Vec<i64> = if data.len() > 10 {
+            // For many series, use HashSet to deduplicate before sorting
+            let mut timestamp_set = std::collections::HashSet::with_capacity(estimated_unique);
+            for points in data.values() {
+                for point in points {
+                    timestamp_set.insert(point.timestamp);
+                }
+            }
+            let mut timestamps: Vec<i64> = timestamp_set.into_iter().collect();
+            timestamps.sort_unstable();
+            timestamps
+        } else {
+            // For few series, collect and sort directly (less overhead)
+            let mut timestamps = Vec::with_capacity(estimated_unique);
+            for points in data.values() {
+                for point in points {
+                    timestamps.push(point.timestamp);
+                }
+            }
+            timestamps.sort_unstable();
+            timestamps.dedup();
+            timestamps
+        };
 
         // Create timestamp data
         let timestamp_data = SpaceTimeTimestamps::new(all_timestamps);
 
         // Convert series data to aligned format
-        let mut series_data = HashMap::new();
+        // Pre-allocate HashMap with estimated size
+        let mut series_data = HashMap::with_capacity(data.len());
         for (series_id, points) in data {
             let aligned = SpaceTimeAlignedData::from_points(&points, &timestamp_data);
             series_data.insert(series_id, aligned);
@@ -918,6 +1067,11 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
     }
 
     /// Perform windowed aggregation
+    ///
+    /// # Performance
+    /// - Uses binary search for timestamp lookup instead of linear scan
+    /// - Pre-allocates result vector with estimated capacity
+    /// - Optimizes for common case of aligned timestamps
     fn aggregate_windowed(
         &self,
         data: &SpaceTimeMultiSeriesData,
@@ -927,14 +1081,8 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
     ) -> Result<UnifiedTimeSeries> {
         let needs_values = matches!(function, AggregateFunction::Quantile(_));
 
-        // Build index from timestamp to position for efficient lookup
-        let ts_index: BTreeMap<i64, usize> = data
-            .timestamps
-            .timestamps
-            .iter()
-            .enumerate()
-            .map(|(i, &ts)| (ts, i))
-            .collect();
+        // Note: We use binary search directly on the sorted timestamps array
+        // instead of building a BTreeMap index, which is more memory-efficient
 
         // Iterate over windows
         // Use end_time + 1 to include the last timestamp in the final window
@@ -945,7 +1093,27 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
             step,
         );
 
-        let mut points = Vec::new();
+        // Estimate number of windows for pre-allocation
+        // SEC: Use checked arithmetic to prevent overflow
+        let window_ms = window.as_millis().try_into().unwrap_or(i64::MAX);
+        let step_ms = step
+            .map(|s| s.as_millis().try_into().unwrap_or(i64::MAX))
+            .unwrap_or(window_ms);
+        let time_range = data
+            .timestamps
+            .end_time()
+            .saturating_sub(data.timestamps.start_time());
+        let estimated_windows = if step_ms > 0 {
+            time_range
+                .checked_div(step_ms)
+                .and_then(|n| n.checked_add(1))
+                .map(|n| n.max(1) as usize)
+                .unwrap_or(usize::MAX)
+        } else {
+            1
+        };
+
+        let mut points = Vec::with_capacity(estimated_windows);
 
         for (window_start, window_end) in windows {
             let mut state = if needs_values {
@@ -954,17 +1122,25 @@ impl<S: DataSource> SpaceTimeAggregator<S> {
                 AggregateState::new()
             };
 
-            // Find indices within this window using BTreeMap range
-            let range_indices: Vec<usize> = ts_index
-                .range(window_start..window_end)
-                .map(|(_, &idx)| idx)
-                .collect();
+            // PERF: Use binary search to find range bounds instead of collecting all indices
+            // This is more memory-efficient for large timestamp arrays
+            let start_idx = data
+                .timestamps
+                .timestamps
+                .binary_search(&window_start)
+                .unwrap_or_else(|idx| idx);
+            let end_idx = data
+                .timestamps
+                .timestamps
+                .binary_search(&window_end)
+                .unwrap_or_else(|idx| idx.min(data.timestamps.timestamps.len()));
 
             // Aggregate values at these indices from all series
-            for aligned in data.series.values() {
-                for &idx in &range_indices {
+            // PERF: Iterate over indices directly instead of collecting into Vec first
+            for idx in start_idx..end_idx {
+                let timestamp = data.timestamps.timestamps[idx];
+                for aligned in data.series.values() {
                     if let Some(value) = aligned.values.get(idx).copied().flatten() {
-                        let timestamp = data.timestamps.timestamps[idx];
                         state.add(timestamp, value);
                     }
                 }

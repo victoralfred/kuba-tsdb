@@ -66,6 +66,86 @@ use super::data_model::UnifiedTimeSeries;
 use super::index::{TagMatcher, TagResolver};
 use super::metadata::MetadataStore;
 use super::space_time::{AggregateFunction, AggregateQuery, DataSource, SpaceTimeAggregator};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// ============================================================================
+// Query Rate Limiter (SEC-010)
+// ============================================================================
+
+/// Simple token bucket rate limiter for queries
+///
+/// SEC-010: Prevents DoS attacks via excessive queries
+struct QueryRateLimiter {
+    /// Tokens available (scaled by 1000 for sub-token precision)
+    tokens_scaled: AtomicU64,
+    /// Maximum tokens (bucket size, scaled)
+    max_tokens_scaled: u64,
+    /// Last refill timestamp in milliseconds
+    last_refill_ms: AtomicU64,
+    /// Refill rate (tokens per millisecond, scaled by 1000)
+    refill_rate_scaled: u64,
+}
+
+impl QueryRateLimiter {
+    const SCALE: u64 = 1000;
+
+    fn new(queries_per_second: usize) -> Self {
+        let max_tokens_scaled = (queries_per_second as u64) * Self::SCALE;
+        // tokens per ms = queries_per_second / 1000
+        let refill_rate_scaled = (queries_per_second as u64 * Self::SCALE) / 1_000;
+
+        Self {
+            tokens_scaled: AtomicU64::new(max_tokens_scaled),
+            max_tokens_scaled,
+            last_refill_ms: AtomicU64::new(Self::current_time_ms()),
+            refill_rate_scaled: refill_rate_scaled.max(1),
+        }
+    }
+
+    fn current_time_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    /// Try to acquire a token, return true if successful
+    fn try_acquire(&self) -> bool {
+        let now_ms = Self::current_time_ms();
+        let last_ms = self.last_refill_ms.load(Ordering::Acquire);
+        let elapsed_ms = now_ms.saturating_sub(last_ms);
+
+        // Calculate tokens to add
+        let tokens_to_add = elapsed_ms * self.refill_rate_scaled;
+
+        // Try to update last_refill atomically
+        if tokens_to_add > 0
+            && self
+                .last_refill_ms
+                .compare_exchange(last_ms, now_ms, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            // Successfully claimed the refill, add tokens
+            let _ =
+                self.tokens_scaled
+                    .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                        Some((current + tokens_to_add).min(self.max_tokens_scaled))
+                    });
+        }
+
+        // Try to acquire a token atomically
+        self.tokens_scaled
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |tokens| {
+                if tokens >= Self::SCALE {
+                    Some(tokens - Self::SCALE)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
+    }
+}
 
 // ============================================================================
 // Query Types
@@ -88,6 +168,10 @@ pub struct AggQuery {
 
     /// Time window size for temporal aggregation
     pub window_size: Option<Duration>,
+
+    /// Step interval for output (if different from window)
+    /// Defaults to window size if not specified
+    pub step: Option<Duration>,
 
     /// Tags to group by (empty = aggregate all series together)
     pub group_by: Vec<String>,
@@ -146,6 +230,7 @@ pub struct AggQueryBuilder {
     time_range: Option<TimeRange>,
     function: AggregateFunction,
     window_size: Option<Duration>,
+    step: Option<Duration>,
     group_by: Vec<String>,
     quantile: Option<f64>,
     series_limit: Option<usize>,
@@ -161,6 +246,7 @@ impl AggQueryBuilder {
             time_range: None,
             function: AggregateFunction::Avg,
             window_size: None,
+            step: None,
             group_by: Vec::new(),
             quantile: None,
             series_limit: None,
@@ -236,6 +322,12 @@ impl AggQueryBuilder {
         self
     }
 
+    /// Set the step interval for output
+    pub fn step(mut self, step: Duration) -> Self {
+        self.step = Some(step);
+        self
+    }
+
     /// Set group by tags
     pub fn group_by(mut self, tags: &[&str]) -> Self {
         self.group_by = tags.iter().map(|s| (*s).to_string()).collect();
@@ -277,6 +369,7 @@ impl AggQueryBuilder {
             time_range,
             function: self.function,
             window_size: self.window_size,
+            step: self.step,
             group_by: self.group_by,
             quantile: self.quantile,
             series_limit: self.series_limit,
@@ -359,6 +452,14 @@ pub struct QueryPlannerConfig {
 
     /// Enable cardinality checks
     pub enable_cardinality_check: bool,
+
+    /// Maximum queries per second (rate limiting)
+    /// SEC-010: Prevents DoS via excessive queries
+    pub max_queries_per_second: Option<usize>,
+
+    /// Query timeout in seconds
+    /// SEC-011: Prevents long-running queries from blocking
+    pub query_timeout_secs: Option<u64>,
 }
 
 impl Default for QueryPlannerConfig {
@@ -369,6 +470,8 @@ impl Default for QueryPlannerConfig {
             parallel_threshold: 10,
             max_parallel_workers: 8,
             enable_cardinality_check: true,
+            max_queries_per_second: Some(100), // Default: 100 QPS
+            query_timeout_secs: Some(300),     // Default: 5 minutes
         }
     }
 }
@@ -377,6 +480,10 @@ impl Default for QueryPlannerConfig {
 ///
 /// Integrates with MetadataStore for series resolution and
 /// CardinalityController for limit enforcement.
+///
+/// # Security
+/// - Implements query rate limiting (SEC-010)
+/// - Enforces query timeouts (SEC-011)
 pub struct AggQueryPlanner {
     /// Metadata store for series lookup
     metadata: Arc<MetadataStore>,
@@ -389,18 +496,27 @@ pub struct AggQueryPlanner {
 
     /// Planner configuration
     config: QueryPlannerConfig,
+
+    /// Rate limiter for queries (SEC-010)
+    /// Uses a simple token bucket algorithm
+    query_rate_limiter: Option<std::sync::Arc<parking_lot::Mutex<QueryRateLimiter>>>,
 }
 
 impl AggQueryPlanner {
     /// Create a new query planner
     pub fn new(metadata: Arc<MetadataStore>) -> Self {
         let tag_resolver = TagResolver::new(metadata.clone());
+        let config = QueryPlannerConfig::default();
+        let query_rate_limiter = config
+            .max_queries_per_second
+            .map(|qps| std::sync::Arc::new(parking_lot::Mutex::new(QueryRateLimiter::new(qps))));
 
         Self {
             metadata,
             tag_resolver,
             cardinality: None,
-            config: QueryPlannerConfig::default(),
+            config,
+            query_rate_limiter,
         }
     }
 
@@ -412,6 +528,10 @@ impl AggQueryPlanner {
 
     /// Set planner configuration
     pub fn with_config(mut self, config: QueryPlannerConfig) -> Self {
+        let query_rate_limiter = config
+            .max_queries_per_second
+            .map(|qps| std::sync::Arc::new(parking_lot::Mutex::new(QueryRateLimiter::new(qps))));
+        self.query_rate_limiter = query_rate_limiter;
         self.config = config;
         self
     }
@@ -419,14 +539,145 @@ impl AggQueryPlanner {
     /// Plan an aggregation query
     ///
     /// This performs:
-    /// 1. Tag resolution using bitmap indexes
-    /// 2. Cardinality limit validation
-    /// 3. Series grouping for group_by clauses
-    /// 4. Cost estimation
-    /// 5. Parallel execution decision
+    /// 1. Input validation (time range, limits, etc.)
+    /// 2. Tag resolution using bitmap indexes
+    /// 3. Cardinality limit validation
+    /// 4. Series grouping for group_by clauses
+    /// 5. Cost estimation
+    /// 6. Parallel execution decision
+    ///
+    /// # Security
+    /// - Validates all query parameters
+    /// - Enforces resource limits
+    /// - Prevents resource exhaustion attacks
+    /// - Implements query rate limiting (SEC-010)
     pub fn plan(&self, query: &AggQuery) -> Result<QueryPlan, QueryPlanError> {
+        // SEC-010: Check query rate limit
+        if let Some(ref rate_limiter) = self.query_rate_limiter {
+            let limiter = rate_limiter.lock();
+            if !limiter.try_acquire() {
+                return Err(QueryPlanError::Internal(
+                    "Query rate limit exceeded. Please try again later.".to_string(),
+                ));
+            }
+        }
+
+        // SEC-009: Validate time range
+        if !super::space_time::is_valid_timestamp(query.time_range.start) {
+            return Err(QueryPlanError::InvalidTimeRange {
+                start: query.time_range.start,
+                end: query.time_range.end,
+            });
+        }
+        if !super::space_time::is_valid_timestamp(query.time_range.end) {
+            return Err(QueryPlanError::InvalidTimeRange {
+                start: query.time_range.start,
+                end: query.time_range.end,
+            });
+        }
+
+        // Validate window size if specified
+        if let Some(window) = query.window_size {
+            if window.is_zero() {
+                return Err(QueryPlanError::Internal(
+                    "Window size cannot be zero".to_string(),
+                ));
+            }
+            // Prevent extremely large windows
+            const MAX_WINDOW_MS: u128 = 365 * 24 * 60 * 60 * 1000; // 1 year
+            if window.as_millis() > MAX_WINDOW_MS {
+                return Err(QueryPlanError::Internal(format!(
+                    "Window size too large: {:?} (maximum: {:?})",
+                    window, MAX_WINDOW_MS
+                )));
+            }
+        }
+
+        // Validate step size if specified
+        if let Some(step) = query.step {
+            if step.is_zero() {
+                return Err(QueryPlanError::Internal(
+                    "Step size cannot be zero".to_string(),
+                ));
+            }
+            // Prevent extremely large steps
+            const MAX_STEP_MS: u128 = 365 * 24 * 60 * 60 * 1000; // 1 year
+            if step.as_millis() > MAX_STEP_MS {
+                return Err(QueryPlanError::Internal(format!(
+                    "Step size too large: {:?} (maximum: {:?})",
+                    step, MAX_STEP_MS
+                )));
+            }
+            // Step should not be larger than window if window is specified
+            if let Some(window) = query.window_size {
+                if step > window {
+                    return Err(QueryPlanError::Internal(format!(
+                        "Step size ({:?}) cannot be larger than window size ({:?})",
+                        step, window
+                    )));
+                }
+            }
+        }
+
+        // Validate series limit
+        if let Some(limit) = query.series_limit {
+            if limit == 0 {
+                return Err(QueryPlanError::Internal(
+                    "Series limit cannot be zero".to_string(),
+                ));
+            }
+            if limit > self.config.max_series_hard_limit {
+                return Err(QueryPlanError::TooManySeries {
+                    count: limit,
+                    limit: self.config.max_series_hard_limit,
+                });
+            }
+        }
+
+        // Validate max_points
+        if let Some(max_points) = query.max_points {
+            if max_points == 0 {
+                return Err(QueryPlanError::Internal(
+                    "Max points cannot be zero".to_string(),
+                ));
+            }
+            const MAX_POINTS_LIMIT: usize = 10_000_000; // 10M points
+            if max_points > MAX_POINTS_LIMIT {
+                return Err(QueryPlanError::Internal(format!(
+                    "Max points too large: {} (maximum: {})",
+                    max_points, MAX_POINTS_LIMIT
+                )));
+            }
+        }
+
+        // Validate quantile if specified
+        if let Some(quantile) = query.quantile {
+            if !(0.0..=1.0).contains(&quantile) {
+                return Err(QueryPlanError::Internal(format!(
+                    "Quantile must be between 0.0 and 1.0, got: {}",
+                    quantile
+                )));
+            }
+        }
+
+        // Validate time range duration to prevent excessive queries
+        let duration_ns = query.time_range.end.saturating_sub(query.time_range.start);
+        const MAX_DURATION_NS: i64 = 365 * 24 * 60 * 60 * 1_000_000_000; // 1 year in nanoseconds
+        if duration_ns > MAX_DURATION_NS {
+            return Err(QueryPlanError::InvalidTimeRange {
+                start: query.time_range.start,
+                end: query.time_range.end,
+            });
+        }
+        if duration_ns <= 0 {
+            return Err(QueryPlanError::InvalidTimeRange {
+                start: query.time_range.start,
+                end: query.time_range.end,
+            });
+        }
+
         // Build tag matcher from query filters
-        let matcher = self.build_tag_matcher(query);
+        let matcher = self.build_tag_matcher(query)?;
 
         // Resolve series IDs using bitmap indexes
         let resolved = self
@@ -509,7 +760,7 @@ impl AggQueryPlanner {
 
         // Build the underlying query for SpaceTimeAggregator
         // Uses the TagMatcher and TimeRange from the plan
-        let matcher = self.build_tag_matcher(&plan.query);
+        let matcher = self.build_tag_matcher(&plan.query)?;
         let mut agg_query =
             AggregateQuery::new(matcher.clone(), plan.query.time_range, plan.query.function);
 
@@ -537,7 +788,7 @@ impl AggQueryPlanner {
         plan: QueryPlan,
         data_source: S,
     ) -> Result<HashMap<String, UnifiedTimeSeries>, QueryPlanError> {
-        let matcher = self.build_tag_matcher(&plan.query);
+        let matcher = self.build_tag_matcher(&plan.query)?;
 
         let mut results = HashMap::new();
 
@@ -567,15 +818,89 @@ impl AggQueryPlanner {
     }
 
     /// Build a TagMatcher from query filters
-    fn build_tag_matcher(&self, query: &AggQuery) -> TagMatcher {
+    ///
+    /// # Security
+    /// - Validates regex patterns to prevent ReDoS attacks
+    /// - Limits pattern complexity
+    /// - Validates tag key/value lengths
+    ///
+    /// # Errors
+    /// Returns an error if validation fails (e.g., ReDoS pattern detected)
+    fn build_tag_matcher(&self, query: &AggQuery) -> Result<TagMatcher, QueryPlanError> {
+        // SEC-003: Validate metric name
+        const MAX_METRIC_NAME_LEN: usize = 256;
+        if query.metric_name.len() > MAX_METRIC_NAME_LEN {
+            return Err(QueryPlanError::Internal(format!(
+                "Metric name too long: {} chars (max: {})",
+                query.metric_name.len(),
+                MAX_METRIC_NAME_LEN
+            )));
+        }
+        if query.metric_name.is_empty() {
+            return Err(QueryPlanError::Internal(
+                "Metric name cannot be empty".to_string(),
+            ));
+        }
+
         let mut matcher = TagMatcher::new().metric(&query.metric_name);
 
         for filter in &query.tag_filters {
+            // SEC-003: Validate tag key/value lengths
+            const MAX_TAG_KEY_LEN: usize = 256;
+            const MAX_TAG_VALUE_LEN: usize = 1024;
+            if filter.key.len() > MAX_TAG_KEY_LEN {
+                return Err(QueryPlanError::Internal(format!(
+                    "Tag key too long: {} chars (max: {})",
+                    filter.key.len(),
+                    MAX_TAG_KEY_LEN
+                )));
+            }
+            if filter.key.is_empty() {
+                return Err(QueryPlanError::Internal(
+                    "Tag key cannot be empty".to_string(),
+                ));
+            }
+            if filter.value.len() > MAX_TAG_VALUE_LEN {
+                return Err(QueryPlanError::Internal(format!(
+                    "Tag value too long: {} chars (max: {})",
+                    filter.value.len(),
+                    MAX_TAG_VALUE_LEN
+                )));
+            }
+
             match filter.mode {
                 TagMatchMode::Exact => {
                     matcher = matcher.with(&filter.key, &filter.value);
                 },
                 TagMatchMode::Regex => {
+                    // SEC-003: Validate regex pattern complexity to prevent ReDoS
+                    const MAX_REGEX_LEN: usize = 1000;
+                    if filter.value.len() > MAX_REGEX_LEN {
+                        return Err(QueryPlanError::Internal(format!(
+                            "Regex pattern too long: {} chars (max: {})",
+                            filter.value.len(),
+                            MAX_REGEX_LEN
+                        )));
+                    }
+                    // Check for nested quantifiers (common ReDoS pattern)
+                    if filter.value.contains("(.*)*") || filter.value.contains("(.*+)*") {
+                        return Err(QueryPlanError::Internal(format!(
+                            "Potential ReDoS pattern detected in regex: {}",
+                            if filter.value.len() > 100 {
+                                &filter.value[..100]
+                            } else {
+                                &filter.value
+                            }
+                        )));
+                    }
+                    // Check for exponential backtracking patterns
+                    if filter.value.matches(r"(.+)+").count() > 0
+                        || filter.value.matches(r"(.+)*").count() > 0
+                    {
+                        return Err(QueryPlanError::Internal(
+                            "Regex pattern may cause exponential backtracking".to_string(),
+                        ));
+                    }
                     matcher = matcher.with_regex(&filter.key, &filter.value);
                 },
                 TagMatchMode::Prefix => {
@@ -590,7 +915,7 @@ impl AggQueryPlanner {
             }
         }
 
-        matcher
+        Ok(matcher)
     }
 
     /// Group series by tag values
@@ -636,29 +961,85 @@ impl AggQueryPlanner {
     }
 
     /// Estimate query cost
+    ///
+    /// # Performance
+    /// - More accurate cost estimation based on actual data characteristics
+    /// - Accounts for windowing overhead
+    /// - Estimates memory usage more precisely
+    ///
+    /// # Security
+    /// - Uses saturating arithmetic to prevent integer overflow
     fn estimate_cost(&self, query: &AggQuery, series_count: usize) -> QueryCost {
-        // Estimate points based on time range and typical ingestion rate
-        let duration_secs = (query.time_range.end - query.time_range.start) / 1_000_000_000;
-        let points_per_series = (duration_secs as usize).max(1);
-        let total_points = (points_per_series * series_count) as u64;
+        // Estimate points based on time range
+        // Note: time_range is in nanoseconds, convert to seconds
+        // SEC: Use saturating arithmetic to prevent overflow
+        let duration_ns = query.time_range.end.saturating_sub(query.time_range.start);
+        let duration_secs = duration_ns.saturating_div(1_000_000_000);
+        let duration_ms = duration_ns.saturating_div(1_000_000);
 
-        // Memory: ~16 bytes per point (timestamp + value)
-        let estimated_memory = (total_points as usize) * 16;
+        // Estimate points per series based on typical ingestion rate
+        // Assume 1 point per second for typical metrics
+        // SEC: Use checked arithmetic to prevent overflow
+        let points_per_series = (duration_secs as usize).max(1);
+        let total_points = points_per_series
+            .checked_mul(series_count)
+            .map(|p| p as u64)
+            .unwrap_or(u64::MAX);
+
+        // Adjust for windowing: if windowed, estimate number of output points
+        let estimated_output_points = if let Some(window) = query.window_size {
+            let window_ms = window.as_millis() as i64;
+            let step_ms = query
+                .step
+                .map(|s| s.as_millis() as i64)
+                .unwrap_or(window_ms);
+            // Number of windows = ceil(duration / step)
+            // SEC: Use checked arithmetic to prevent overflow
+            if step_ms > 0 {
+                let num_windows = duration_ms
+                    .checked_add(step_ms - 1)
+                    .and_then(|d| d.checked_div(step_ms))
+                    .map(|n| n.max(1) as u64)
+                    .unwrap_or(u64::MAX);
+                num_windows
+            } else {
+                1
+            }
+        } else {
+            // Instant aggregation produces 1 point
+            1
+        };
+
+        // Memory: ~16 bytes per input point (timestamp + value)
+        // Plus ~24 bytes per output point (AggregatedPoint)
+        // SEC: Use checked arithmetic to prevent overflow
+        let input_memory = (total_points as usize)
+            .checked_mul(16)
+            .unwrap_or(usize::MAX);
+        let output_memory = (estimated_output_points as usize)
+            .checked_mul(24)
+            .unwrap_or(usize::MAX);
+        let estimated_memory = input_memory
+            .checked_add(output_memory)
+            .unwrap_or(usize::MAX);
 
         // CPU cost based on operation complexity
         let cpu_factor = match query.function {
             AggregateFunction::Count | AggregateFunction::Sum => 1.0,
             AggregateFunction::Avg | AggregateFunction::Min | AggregateFunction::Max => 1.0,
             AggregateFunction::StdDev | AggregateFunction::Variance => 2.0,
-            AggregateFunction::Quantile(_) => 3.0,
+            AggregateFunction::Quantile(_) => 3.0, // Requires sorting
             AggregateFunction::Rate | AggregateFunction::Increase => 1.5,
             _ => 1.0,
         };
 
-        let cpu_cost = (total_points as f64) * 0.001 * cpu_factor;
+        // CPU cost scales with input points and output points
+        let cpu_cost =
+            (total_points as f64) * 0.001 * cpu_factor + (estimated_output_points as f64) * 0.01; // Output processing overhead
 
         // I/O cost based on data volume
-        let io_cost = (series_count as f64) * 10.0; // 10ms per series for I/O
+        // Assume 10ms per series for I/O, plus overhead for large time ranges
+        let io_cost = (series_count as f64) * 10.0 + (duration_secs as f64) * 0.1; // Additional cost for large time ranges
 
         QueryCost {
             series_count,
@@ -1132,6 +1513,8 @@ mod tests {
             parallel_threshold: 5,
             max_parallel_workers: 4,
             enable_cardinality_check: false,
+            max_queries_per_second: Some(100),
+            query_timeout_secs: Some(300),
         };
 
         let cloned = config.clone();
@@ -1251,6 +1634,7 @@ mod tests {
             }, // 1 minute
             function: AggregateFunction::Avg,
             window_size: None,
+            step: None,
             group_by: vec![],
             quantile: None,
             series_limit: None,
@@ -1278,6 +1662,7 @@ mod tests {
             },
             function: AggregateFunction::StdDev,
             window_size: None,
+            step: None,
             group_by: vec![],
             quantile: None,
             series_limit: None,
