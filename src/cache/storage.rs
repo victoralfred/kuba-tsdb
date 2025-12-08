@@ -310,20 +310,29 @@ impl MemoryTracker {
     /// # Security
     /// - Uses saturating arithmetic to prevent overflow
     /// - Caps at max_bytes to prevent DoS via memory exhaustion
+    /// - Maintains invariant: per_shard_bytes[i] <= current_bytes <= max_bytes
     pub fn on_insert(&self, shard_id: usize, size: usize) {
         // SEC: Use saturating arithmetic to prevent overflow
         // If overflow would occur, cap at max_bytes
-        let new_total = self
-            .current_bytes
-            .load(Ordering::Relaxed)
-            .saturating_add(size);
+        let current = self.current_bytes.load(Ordering::Relaxed);
+        let new_total = current.saturating_add(size);
         let capped_total = new_total.min(self.max_bytes);
         self.current_bytes.store(capped_total, Ordering::Relaxed);
 
+        // SEC: Calculate actual size added (may be less than requested if capped)
+        // This maintains the invariant that per_shard_bytes <= current_bytes
+        let actual_size_added = capped_total.saturating_sub(current);
+
         // Update per-shard tracking (also with overflow protection)
+        // SEC: Cap shard bytes to maintain invariant: per_shard_bytes[i] <= current_bytes
         if let Some(shard_bytes) = self.per_shard_bytes.get(shard_id) {
-            let new_shard = shard_bytes.load(Ordering::Relaxed).saturating_add(size);
-            shard_bytes.store(new_shard, Ordering::Relaxed);
+            let current_shard = shard_bytes.load(Ordering::Relaxed);
+            let new_shard = current_shard.saturating_add(actual_size_added);
+            // SEC: Cap shard bytes at current_bytes (not max_bytes) to maintain precise invariant
+            // This ensures per_shard_bytes[i] <= current_bytes <= max_bytes
+            // Using current_bytes ensures the invariant is maintained even if current_bytes < max_bytes
+            let capped_shard = new_shard.min(capped_total);
+            shard_bytes.store(capped_shard, Ordering::Relaxed);
         }
     }
 
@@ -1053,9 +1062,10 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
 
         // SEC: Limit eviction attempts to prevent DoS
         const MAX_TOTAL_EVICTION_ATTEMPTS: usize = 1000;
+        let mut total_attempts = 0;
 
         // Try to evict from each shard in round-robin
-        for total_attempts in 0..self.shards.len() * 10 {
+        for _ in 0..self.shards.len() * 10 {
             // Max 10 attempts per shard
             if freed_bytes >= target_bytes {
                 return true;
@@ -1065,6 +1075,7 @@ impl<T: Clone + Send + Sync + 'static> CacheManager<T> {
                 // Prevent infinite loop
                 break;
             }
+            total_attempts += 1;
 
             // Find shard with most memory usage
             let mut max_shard_id = 0;

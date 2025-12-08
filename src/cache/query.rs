@@ -351,9 +351,75 @@ impl QueryCache {
             return;
         }
 
-        self.evict_if_needed(entry_size);
+        // Check if we're replacing an existing entry (need read lock first)
+        let old_entry_size = {
+            let entries = self.entries.read();
+            entries.get(&key).map(|e| e.size_bytes).unwrap_or(0)
+        };
+
+        // Calculate net size change (new entry - old entry if replacing)
+        // If replacing, we only need to evict for the net increase
+        let net_size_needed = if entry_size > old_entry_size {
+            entry_size - old_entry_size
+        } else {
+            // Old entry is larger or equal, so no additional space needed
+            // But we still need to evict if we're at entry count limit
+            0
+        };
+
+        // SEC: Evict entries to make space, but only insert if eviction succeeded
+        // This prevents silently exceeding cache size limits
+        // For size-based eviction, only evict for net size needed (if replacing)
+        // For count-based eviction, evict if at limit and not replacing
+        let needs_eviction = if net_size_needed > 0 {
+            // Need space for net size increase
+            true
+        } else {
+            // Check entry count limit (only if not replacing)
+            let entry_count = self.entries.read().len();
+            entry_count >= self.config.max_entries && old_entry_size == 0
+        };
+
+        if needs_eviction {
+            let size_to_evict = if net_size_needed > 0 {
+                net_size_needed
+            } else {
+                // For count-based eviction, we still need to check size limit
+                // Use a small value to trigger size check in evict_if_needed
+                1
+            };
+
+            if !self.evict_if_needed(size_to_evict) {
+                // Eviction failed to free enough space - don't insert
+                // This prevents cache from exceeding size limits while current_size
+                // reports it's at the limit
+                return;
+            }
+        }
 
         let mut entries = self.entries.write();
+
+        // SEC: Final verification - check we have space after accounting for old entry removal
+        let current = self.current_size.load(Ordering::Relaxed);
+        let current_usize = if current > usize::MAX as u64 {
+            usize::MAX
+        } else {
+            current as usize
+        };
+
+        // After removing old entry, we'll have: current - old_entry_size + entry_size
+        // = current + (entry_size - old_entry_size) = current + net_size_needed
+        if net_size_needed > 0 {
+            if let Some(total) = current_usize.checked_add(net_size_needed) {
+                if total > self.config.max_size_bytes {
+                    // Still over limit - don't insert
+                    return;
+                }
+            } else {
+                // Overflow would occur - don't insert
+                return;
+            }
+        }
 
         // Remove old entry from series index if it exists
         if let Some(old_entry) = entries.get(&key) {
@@ -380,12 +446,24 @@ impl QueryCache {
             }
         }
 
-        // SEC: Use saturating addition to prevent overflow
+        // SEC: Update size tracking accurately
+        // We've already removed the old entry (if it existed) and verified we have space
+        // Use checked arithmetic to be safe
         let current = self.current_size.load(Ordering::Relaxed);
-        let new_size = current.saturating_add(entry_size as u64);
-        // SEC: Cap at max_size_bytes to prevent DoS
-        let capped_size = new_size.min(self.config.max_size_bytes as u64);
-        self.current_size.store(capped_size, Ordering::Relaxed);
+        if let Some(new_size) = current.checked_add(entry_size as u64) {
+            // SEC: Final safety check - never exceed max_size_bytes
+            // This should never happen if our checks above worked correctly,
+            // but we enforce it anyway for safety
+            if new_size > self.config.max_size_bytes as u64 {
+                // This indicates a bug - we should have rejected this earlier
+                // Don't insert to maintain cache size integrity
+                return;
+            }
+            self.current_size.store(new_size, Ordering::Relaxed);
+        } else {
+            // Overflow - don't insert to maintain cache integrity
+            return;
+        }
         entries.insert(key, entry);
     }
 
@@ -533,11 +611,15 @@ impl QueryCache {
 
     /// Evict entries if cache is over limits
     ///
+    /// # Returns
+    /// - `true` if enough space was freed (or space was already available)
+    /// - `false` if eviction failed to free sufficient space
+    ///
     /// # Security
     /// - Uses checked arithmetic to prevent overflow
     /// - Limits eviction attempts to prevent DoS
     /// - Handles race conditions in size tracking
-    fn evict_if_needed(&self, new_entry_size: usize) {
+    fn evict_if_needed(&self, new_entry_size: usize) -> bool {
         let mut entries = self.entries.write();
 
         // SEC: Limit eviction attempts to prevent DoS
@@ -565,14 +647,16 @@ impl QueryCache {
             // SEC: Use checked arithmetic
             if let Some(total) = current_usize.checked_add(new_entry_size) {
                 if total <= self.config.max_size_bytes || entries.is_empty() {
-                    break;
+                    // Enough space available
+                    return true;
                 }
             } else {
                 // Overflow: must evict
             }
 
             if eviction_count_size >= MAX_EVICTION_ATTEMPTS {
-                break; // Prevent infinite loop
+                // Failed to free enough space after max attempts
+                return false;
             }
 
             self.evict_lru(&mut entries);
