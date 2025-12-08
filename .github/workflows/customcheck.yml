@@ -1,4 +1,6 @@
 name: Run Custom Script
+permissions:
+  contents: read
 
 on:
   push:
