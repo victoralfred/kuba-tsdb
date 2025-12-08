@@ -209,7 +209,7 @@ impl AhpacCompressor {
     /// Default is 256, which balances accuracy and performance.
     pub fn with_profile_samples(mut self, samples: usize) -> Self {
         const MAX_PROFILE_SAMPLES: usize = 10_000;
-        self.profile_samples = samples.max(16).min(MAX_PROFILE_SAMPLES);
+        self.profile_samples = samples.clamp(16, MAX_PROFILE_SAMPLES);
         self
     }
 
